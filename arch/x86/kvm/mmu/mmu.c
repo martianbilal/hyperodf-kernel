@@ -2877,11 +2877,13 @@ static int __direct_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 					huge_page_disallowed, &req_level);
 
 	trace_kvm_mmu_spte_requested(gpa, level, pfn);
+	printk(KERN_ALERT "GPA---level---pointerEPTnext--pte\n");
 	for_each_shadow_entry(vcpu, gpa, it) {
 		/*
 		 * We cannot overwrite existing page tables with an NX
 		 * large page, as the leaf could be executable.
 		 */
+		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", it.addr, it.level, it.shadow_addr, *it.sptep);
 		if (nx_huge_page_workaround_enabled)
 			disallowed_hugepage_adjust(*it.sptep, gfn, it.level,
 						   &pfn, &level);
