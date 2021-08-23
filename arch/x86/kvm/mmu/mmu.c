@@ -2097,9 +2097,13 @@ static void shadow_walk_init_using_root(struct kvm_shadow_walk_iterator *iterato
 					struct kvm_vcpu *vcpu, hpa_t root,
 					u64 addr)
 {
+	printk(KERN_ALERT "Inside the shadow walk init");
+	printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", addr, iterator->level, root, iterator->shadow_addr);
+
 	iterator->addr = addr;
 	iterator->shadow_addr = root;
 	iterator->level = vcpu->arch.mmu->shadow_root_level;
+	printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", addr, iterator->level, root, iterator->shadow_addr);
 
 	if (iterator->level == PT64_ROOT_4LEVEL &&
 	    vcpu->arch.mmu->root_level < PT64_ROOT_4LEVEL &&
@@ -2120,6 +2124,7 @@ static void shadow_walk_init_using_root(struct kvm_shadow_walk_iterator *iterato
 		if (!iterator->shadow_addr)
 			iterator->level = 0;
 	}
+	printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", addr, iterator->level, root, iterator->shadow_addr);
 }
 
 static void shadow_walk_init(struct kvm_shadow_walk_iterator *iterator,
@@ -2136,6 +2141,7 @@ static bool shadow_walk_okay(struct kvm_shadow_walk_iterator *iterator)
 
 	iterator->index = SHADOW_PT_INDEX(iterator->addr, iterator->level);
 	iterator->sptep	= ((u64 *)__va(iterator->shadow_addr)) + iterator->index;
+	printk(KERN_ALERT "__va(shadow addr) : %llu", *((u64 *)__va(iterator->shadow_addr)+iterator->index));
 	return true;
 }
 
@@ -2875,15 +2881,18 @@ static int __direct_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 
 	level = kvm_mmu_hugepage_adjust(vcpu, gfn, max_level, &pfn,
 					huge_page_disallowed, &req_level);
-
+	printk(KERN_ALERT "Shadow Root Level :: %d ", vcpu->arch.mmu->shadow_root_level);
+	printk(KERN_ALERT "first =====> gpa: %llu  -- level: %d -- pfn: %llu", gpa, level, pfn);
 	trace_kvm_mmu_spte_requested(gpa, level, pfn);
+	printk(KERN_ALERT "second =====> gpa: %llu  -- level: %d -- pfn: %llu", gpa, level, pfn);
 	printk(KERN_ALERT "GPA---level---pointerEPTnext--pte\n");
 	for_each_shadow_entry(vcpu, gpa, it) {
 		/*
 		 * We cannot overwrite existing page tables with an NX
 		 * large page, as the leaf could be executable.
 		 */
-		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", it.addr, it.level, it.shadow_addr, *it.sptep);
+		printk(KERN_ALERT "page offset : %lu", PAGE_OFFSET);
+		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu --- %u\n", it.addr, it.level, it.shadow_addr, (*it.sptep & PT64_BASE_ADDR_MASK), it.index);
 		if (nx_huge_page_workaround_enabled)
 			disallowed_hugepage_adjust(*it.sptep, gfn, it.level,
 						   &pfn, &level);
@@ -3758,6 +3767,9 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	else
 		r = __direct_map(vcpu, gpa, error_code, map_writable, max_level, pfn,
 				 prefault, is_tdp);
+		printk(KERN_ALERT "gpa at the time of calling direct_map : %llu", gpa);
+		printk(KERN_ALERT "TDP set or NOT : :: : : %d", is_tdp_mmu_root(vcpu->kvm, vcpu->arch.mmu->root_hpa));
+		
 
 out_unlock:
 	if (is_tdp_mmu_root(vcpu->kvm, vcpu->arch.mmu->root_hpa))
