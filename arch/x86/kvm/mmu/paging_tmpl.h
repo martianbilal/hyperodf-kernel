@@ -976,7 +976,7 @@ static gpa_t FNAME(gva_to_gpa)(struct kvm_vcpu *vcpu, gpa_t addr, u32 access,
 	struct guest_walker walker;
 	gpa_t gpa = UNMAPPED_GVA;
 	int r;
-
+	printk(KERN_ALERT " +++++++++++++++++ INSIDE GVA to GPA ++ +++ ++ ++ +++++++++++++++");
 	r = FNAME(walk_addr)(&walker, vcpu, addr, access);
 
 	if (r) {
@@ -1004,6 +1004,7 @@ static gpa_t FNAME(gva_to_gpa_nested)(struct kvm_vcpu *vcpu, gpa_t vaddr,
 #endif
 
 	r = FNAME(walk_addr_nested)(&walker, vcpu, vaddr, access);
+	printk(KERN_ALERT " +++++++++++++++++ INSIDE NESTED GVA to GPA ++ +++ ++ ++ +++++++++++++++");
 
 	if (r) {
 		gpa = gfn_to_gpa(walker.gfn);

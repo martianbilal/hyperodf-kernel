@@ -163,6 +163,7 @@ static inline void *phys_to_virt(phys_addr_t address)
  */
 static inline unsigned int isa_virt_to_bus(volatile void *address)
 {
+	printk(KERN_ALERT "Converting from virt to phys ==================");
 	return (unsigned int)virt_to_phys(address);
 }
 #define isa_bus_to_virt		phys_to_virt

@@ -2015,6 +2015,7 @@ static struct kvm_mmu_page *kvm_mmu_get_page(struct kvm_vcpu *vcpu,
 	int collisions = 0;
 	LIST_HEAD(invalid_list);
 
+	printk(KERN_ALERT "INSIDE THE KVM MMU GET PAGE<<<--");
 	role = vcpu->arch.mmu->mmu_role.base;
 	role.level = level;
 	role.direct = direct;
@@ -2097,13 +2098,10 @@ static void shadow_walk_init_using_root(struct kvm_shadow_walk_iterator *iterato
 					struct kvm_vcpu *vcpu, hpa_t root,
 					u64 addr)
 {
-	printk(KERN_ALERT "Inside the shadow walk init");
-	printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", addr, iterator->level, root, iterator->shadow_addr);
 
 	iterator->addr = addr;
 	iterator->shadow_addr = root;
 	iterator->level = vcpu->arch.mmu->shadow_root_level;
-	printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", addr, iterator->level, root, iterator->shadow_addr);
 
 	if (iterator->level == PT64_ROOT_4LEVEL &&
 	    vcpu->arch.mmu->root_level < PT64_ROOT_4LEVEL &&
@@ -2124,7 +2122,6 @@ static void shadow_walk_init_using_root(struct kvm_shadow_walk_iterator *iterato
 		if (!iterator->shadow_addr)
 			iterator->level = 0;
 	}
-	printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", addr, iterator->level, root, iterator->shadow_addr);
 }
 
 static void shadow_walk_init(struct kvm_shadow_walk_iterator *iterator,
@@ -2141,7 +2138,6 @@ static bool shadow_walk_okay(struct kvm_shadow_walk_iterator *iterator)
 
 	iterator->index = SHADOW_PT_INDEX(iterator->addr, iterator->level);
 	iterator->sptep	= ((u64 *)__va(iterator->shadow_addr)) + iterator->index;
-	printk(KERN_ALERT "__va(shadow addr) : %llu", *((u64 *)__va(iterator->shadow_addr)+iterator->index));
 	return true;
 }
 
@@ -2480,7 +2476,6 @@ static int kvm_mmu_unprotect_page_virt(struct kvm_vcpu *vcpu, gva_t gva)
 
 	if (vcpu->arch.mmu->direct_map)
 		return 0;
-
 	gpa = kvm_mmu_gva_to_gpa_read(vcpu, gva, NULL);
 
 	r = kvm_mmu_unprotect_page(vcpu->kvm, gpa >> PAGE_SHIFT);
@@ -2876,23 +2871,24 @@ static int __direct_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	gfn_t gfn = gpa >> PAGE_SHIFT;
 	gfn_t base_gfn = gfn;
 
+	printk(KERN_ALERT "==================== Starting the function trace ==============");
+	dump_stack();
+
 	if (WARN_ON(!VALID_PAGE(vcpu->arch.mmu->root_hpa)))
 		return RET_PF_RETRY;
 
 	level = kvm_mmu_hugepage_adjust(vcpu, gfn, max_level, &pfn,
 					huge_page_disallowed, &req_level);
 	printk(KERN_ALERT "Shadow Root Level :: %d ", vcpu->arch.mmu->shadow_root_level);
-	printk(KERN_ALERT "first =====> gpa: %llu  -- level: %d -- pfn: %llu", gpa, level, pfn);
 	trace_kvm_mmu_spte_requested(gpa, level, pfn);
-	printk(KERN_ALERT "second =====> gpa: %llu  -- level: %d -- pfn: %llu", gpa, level, pfn);
+	
 	printk(KERN_ALERT "GPA---level---pointerEPTnext--pte\n");
 	for_each_shadow_entry(vcpu, gpa, it) {
 		/*
 		 * We cannot overwrite existing page tables with an NX
 		 * large page, as the leaf could be executable.
 		 */
-		printk(KERN_ALERT "page offset : %lu", PAGE_OFFSET);
-		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu --- %u\n", it.addr, it.level, it.shadow_addr, (*it.sptep & PT64_BASE_ADDR_MASK), it.index);
+		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", it.addr, it.level, it.shadow_addr, (*it.sptep & PT64_BASE_ADDR_MASK));
 		if (nx_huge_page_workaround_enabled)
 			disallowed_hugepage_adjust(*it.sptep, gfn, it.level,
 						   &pfn, &level);
@@ -3248,6 +3244,7 @@ static hpa_t mmu_alloc_root(struct kvm_vcpu *vcpu, gfn_t gfn, gva_t gva,
 	++sp->root_count;
 
 	write_unlock(&vcpu->kvm->mmu_lock);
+	printk(KERN_ALERT "HERE ++++++++++++++++++++++++++++++++++++++++++++++++++_____________3 %llu ---- %lu --- %u", (u64)gva, __pa(sp->spt), direct);
 	return __pa(sp->spt);
 }
 
@@ -3280,6 +3277,8 @@ static int mmu_alloc_direct_roots(struct kvm_vcpu *vcpu)
 				return -ENOSPC;
 			vcpu->arch.mmu->pae_root[i] = root | PT_PRESENT_MASK;
 		}
+	printk(KERN_ALERT "HERE ++++++++++++++++++++++++++++++++++++++++++++++++++_____________4");
+
 		vcpu->arch.mmu->root_hpa = __pa(vcpu->arch.mmu->pae_root);
 	} else
 		BUG();
@@ -3360,6 +3359,8 @@ static int mmu_alloc_shadow_roots(struct kvm_vcpu *vcpu)
 			return -ENOSPC;
 		vcpu->arch.mmu->pae_root[i] = root | pm_mask;
 	}
+	printk(KERN_ALERT "HERE ++++++++++++++++++++++++++++++++++++++++++++++++++_____________");
+
 	vcpu->arch.mmu->root_hpa = __pa(vcpu->arch.mmu->pae_root);
 
 	/*
@@ -3376,11 +3377,13 @@ static int mmu_alloc_shadow_roots(struct kvm_vcpu *vcpu)
 			lm_root = (void*)get_zeroed_page(GFP_KERNEL_ACCOUNT);
 			if (!lm_root)
 				return -ENOMEM;
+			printk(KERN_ALERT "HERE ++++++++++++++++++++++++++++++++++++++++++++++++++_____________1");
 
 			lm_root[0] = __pa(vcpu->arch.mmu->pae_root) | pm_mask;
 
 			vcpu->arch.mmu->lm_root = lm_root;
 		}
+		printk(KERN_ALERT "HERE ++++++++++++++++++++++++++++++++++++++++++++++++++_____________2");
 
 		vcpu->arch.mmu->root_hpa = __pa(vcpu->arch.mmu->lm_root);
 	}
@@ -3767,8 +3770,7 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	else
 		r = __direct_map(vcpu, gpa, error_code, map_writable, max_level, pfn,
 				 prefault, is_tdp);
-		printk(KERN_ALERT "gpa at the time of calling direct_map : %llu", gpa);
-		printk(KERN_ALERT "TDP set or NOT : :: : : %d", is_tdp_mmu_root(vcpu->kvm, vcpu->arch.mmu->root_hpa));
+		
 		
 
 out_unlock:
@@ -3837,7 +3839,7 @@ int kvm_tdp_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 		if (kvm_mtrr_check_gfn_range_consistency(vcpu, base, page_num))
 			break;
 	}
-
+	printk(KERN_ALERT "direct page fault originating from here --------------------------");
 	return direct_page_fault(vcpu, gpa, error_code, prefault,
 				 max_level, true);
 }
@@ -4550,6 +4552,8 @@ static void init_kvm_tdp_mmu(struct kvm_vcpu *vcpu)
 		context->gva_to_gpa = nonpaging_gva_to_gpa;
 		context->root_level = 0;
 	} else if (is_long_mode(vcpu)) {
+		printk(KERN_ALERT "LONG mode working ===== == == = =");
+		printk(KERN_ALERT "paging or not %d \n", is_paging(vcpu));
 		context->nx = is_nx(vcpu);
 		context->root_level = is_la57_mode(vcpu) ?
 				PT64_ROOT_5LEVEL : PT64_ROOT_4LEVEL;
@@ -4566,7 +4570,7 @@ static void init_kvm_tdp_mmu(struct kvm_vcpu *vcpu)
 		reset_rsvds_bits_mask(vcpu, context);
 		context->gva_to_gpa = paging32_gva_to_gpa;
 	}
-
+	printk(KERN_ALERT "tdp mmu working =====================\n");
 	update_permission_bitmask(vcpu, context, false);
 	update_pkru_bitmask(vcpu, context, false);
 	update_last_nonleaf_level(vcpu, context);
@@ -4703,6 +4707,7 @@ void kvm_init_shadow_ept_mmu(struct kvm_vcpu *vcpu, bool execonly,
 						   execonly, level);
 
 	__kvm_mmu_new_pgd(vcpu, new_eptp, new_role.base, true, true);
+
 
 	if (new_role.as_u64 == context->mmu_role.as_u64)
 		return;

@@ -830,7 +830,6 @@ int kvm_tdp_mmu_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 
 		if (iter.level == level)
 			break;
-		printk(KERN_ALERT " == TDP -- %d --- %llu\n", iter.level, iter.sptep);
 
 		/*
 		 * If there is an SPTE mapping a large page at a higher level
