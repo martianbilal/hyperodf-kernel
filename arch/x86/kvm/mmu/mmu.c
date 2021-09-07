@@ -2872,7 +2872,7 @@ static int __direct_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	gfn_t base_gfn = gfn;
 
 	printk(KERN_ALERT "==================== Starting the function trace ==============");
-	dump_stack();
+	// dump_stack();
 
 	if (WARN_ON(!VALID_PAGE(vcpu->arch.mmu->root_hpa)))
 		return RET_PF_RETRY;
