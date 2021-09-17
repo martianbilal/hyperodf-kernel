@@ -20,6 +20,7 @@
 #include <asm/hypervisor.h>
 #include <asm/mem_encrypt.h>
 #include <asm/x86_init.h>
+#include <asm/reboot.h>
 #include <asm/kvmclock.h>
 
 static int kvmclock __initdata = 1;
@@ -43,6 +44,7 @@ static int __init parse_no_kvmclock_vsyscall(char *arg)
 early_param("no-kvmclock-vsyscall", parse_no_kvmclock_vsyscall);
 
 /* Aligned to page sizes to match whats mapped via vsyscalls to userspace */
+#define HV_CLOCK_SIZE	(sizeof(struct pvclock_vsyscall_time_info) * NR_CPUS)
 #define HVC_BOOT_ARRAY_SIZE \
 	(PAGE_SIZE / sizeof(struct pvclock_vsyscall_time_info))
 
@@ -157,19 +159,12 @@ bool kvm_check_and_clear_guest_paused(void)
 	return ret;
 }
 
-static int kvm_cs_enable(struct clocksource *cs)
-{
-	vclocks_set_used(VDSO_CLOCKMODE_PVCLOCK);
-	return 0;
-}
-
 struct clocksource kvm_clock = {
 	.name	= "kvm-clock",
 	.read	= kvm_clock_get_cycles,
 	.rating	= 400,
 	.mask	= CLOCKSOURCE_MASK(64),
 	.flags	= CLOCK_SOURCE_IS_CONTINUOUS,
-	.enable	= kvm_cs_enable,
 };
 EXPORT_SYMBOL_GPL(kvm_clock);
 
@@ -202,9 +197,28 @@ static void kvm_setup_secondary_clock(void)
 }
 #endif
 
-void kvmclock_disable(void)
+/*
+ * After the clock is registered, the host will keep writing to the
+ * registered memory location. If the guest happens to shutdown, this memory
+ * won't be valid. In cases like kexec, in which you install a new kernel, this
+ * means a random memory location will be kept being written. So before any
+ * kind of shutdown from our side, we unregister the clock by writing anything
+ * that does not have the 'enable' bit set in the msr
+ */
+#ifdef CONFIG_KEXEC_CORE
+static void kvm_crash_shutdown(struct pt_regs *regs)
 {
 	native_write_msr(msr_kvm_system_time, 0, 0);
+	kvm_disable_steal_time();
+	native_machine_crash_shutdown(regs);
+}
+#endif
+
+static void kvm_shutdown(void)
+{
+	native_write_msr(msr_kvm_system_time, 0, 0);
+	kvm_disable_steal_time();
+	native_machine_shutdown();
 }
 
 static void __init kvmclock_init_mem(void)
@@ -248,19 +262,20 @@ static void __init kvmclock_init_mem(void)
 
 static int __init kvm_setup_vsyscall_timeinfo(void)
 {
-	kvmclock_init_mem();
-
 #ifdef CONFIG_X86_64
-	if (per_cpu(hv_clock_per_cpu, 0) && kvmclock_vsyscall) {
-		u8 flags;
+	u8 flags;
 
-		flags = pvclock_read_flags(&hv_clock_boot[0].pvti);
-		if (!(flags & PVCLOCK_TSC_STABLE_BIT))
-			return 0;
+	if (!per_cpu(hv_clock_per_cpu, 0) || !kvmclock_vsyscall)
+		return 0;
 
-		kvm_clock.vdso_clock_mode = VDSO_CLOCKMODE_PVCLOCK;
-	}
+	flags = pvclock_read_flags(&hv_clock_boot[0].pvti);
+	if (!(flags & PVCLOCK_TSC_STABLE_BIT))
+		return 0;
+
+	kvm_clock.archdata.vclock_mode = VCLOCK_PVCLOCK;
 #endif
+
+	kvmclock_init_mem();
 
 	return 0;
 }
@@ -331,6 +346,10 @@ void __init kvmclock_init(void)
 #endif
 	x86_platform.save_sched_clock_state = kvm_save_sched_clock_state;
 	x86_platform.restore_sched_clock_state = kvm_restore_sched_clock_state;
+	machine_ops.shutdown  = kvm_shutdown;
+#ifdef CONFIG_KEXEC_CORE
+	machine_ops.crash_shutdown  = kvm_crash_shutdown;
+#endif
 	kvm_get_preset_lpj();
 
 	/*

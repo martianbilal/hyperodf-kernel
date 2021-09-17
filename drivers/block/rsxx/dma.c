@@ -80,7 +80,7 @@ struct dma_tracker {
 struct dma_tracker_list {
 	spinlock_t		lock;
 	int			head;
-	struct dma_tracker	list[];
+	struct dma_tracker	list[0];
 };
 
 
@@ -944,7 +944,8 @@ failed_dma_setup:
 			ctrl->done_wq = NULL;
 		}
 
-		vfree(ctrl->trackers);
+		if (ctrl->trackers)
+			vfree(ctrl->trackers);
 
 		if (ctrl->status.buf)
 			dma_free_coherent(&card->dev->dev, STATUS_BUFFER_SIZE8,

@@ -34,7 +34,6 @@
 #include <drm/drm_bridge.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_device.h>
-#include <drm/drm_drv.h>
 #include <drm/drm_plane_helper.h>
 #include <drm/drm_print.h>
 #include <drm/drm_self_refresh_helper.h>
@@ -122,8 +121,7 @@ static int handle_conflicting_encoders(struct drm_atomic_state *state,
 			continue;
 
 		if (funcs->atomic_best_encoder)
-			new_encoder = funcs->atomic_best_encoder(connector,
-								 state);
+			new_encoder = funcs->atomic_best_encoder(connector, new_conn_state);
 		else if (funcs->best_encoder)
 			new_encoder = funcs->best_encoder(connector);
 		else
@@ -346,7 +344,8 @@ update_connector_routing(struct drm_atomic_state *state,
 	funcs = connector->helper_private;
 
 	if (funcs->atomic_best_encoder)
-		new_encoder = funcs->atomic_best_encoder(connector, state);
+		new_encoder = funcs->atomic_best_encoder(connector,
+							 new_connector_state);
 	else if (funcs->best_encoder)
 		new_encoder = funcs->best_encoder(connector);
 	else
@@ -438,12 +437,12 @@ mode_fixup(struct drm_atomic_state *state)
 		funcs = encoder->helper_private;
 
 		bridge = drm_bridge_chain_get_first_bridge(encoder);
-		ret = drm_atomic_bridge_chain_check(bridge,
-						    new_crtc_state,
-						    new_conn_state);
-		if (ret) {
-			DRM_DEBUG_ATOMIC("Bridge atomic check failed\n");
-			return ret;
+		ret = drm_bridge_chain_mode_fixup(bridge,
+					&new_crtc_state->mode,
+					&new_crtc_state->adjusted_mode);
+		if (!ret) {
+			DRM_DEBUG_ATOMIC("Bridge fixup failed\n");
+			return -EINVAL;
 		}
 
 		if (funcs && funcs->atomic_check) {
@@ -507,8 +506,7 @@ static enum drm_mode_status mode_valid_path(struct drm_connector *connector,
 	}
 
 	bridge = drm_bridge_chain_get_first_bridge(encoder);
-	ret = drm_bridge_chain_mode_valid(bridge, &connector->display_info,
-					  mode);
+	ret = drm_bridge_chain_mode_valid(bridge, mode);
 	if (ret != MODE_OK) {
 		DRM_DEBUG_ATOMIC("[BRIDGE] mode_valid() failed\n");
 		return ret;
@@ -585,7 +583,6 @@ mode_valid(struct drm_atomic_state *state)
  * &drm_crtc_state.connectors_changed is set when a connector is added or
  * removed from the CRTC.  &drm_crtc_state.active_changed is set when
  * &drm_crtc_state.active changes, which is used for DPMS.
- * &drm_crtc_state.no_vblank is set from the result of drm_dev_has_vblank().
  * See also: drm_atomic_crtc_needs_modeset()
  *
  * IMPORTANT:
@@ -652,11 +649,6 @@ drm_atomic_helper_check_modeset(struct drm_device *dev,
 
 			return -EINVAL;
 		}
-
-		if (drm_dev_has_vblank(dev))
-			new_crtc_state->no_vblank = false;
-		else
-			new_crtc_state->no_vblank = true;
 	}
 
 	ret = handle_conflicting_encoders(state, false);
@@ -734,26 +726,6 @@ drm_atomic_helper_check_modeset(struct drm_device *dev,
 
 		if (funcs->atomic_check)
 			ret = funcs->atomic_check(connector, state);
-		if (ret)
-			return ret;
-	}
-
-	/*
-	 * Iterate over all connectors again, and add all affected bridges to
-	 * the state.
-	 */
-	for_each_oldnew_connector_in_state(state, connector,
-					   old_connector_state,
-					   new_connector_state, i) {
-		struct drm_encoder *encoder;
-
-		encoder = old_connector_state->best_encoder;
-		ret = drm_atomic_add_encoder_bridges(state, encoder);
-		if (ret)
-			return ret;
-
-		encoder = new_connector_state->best_encoder;
-		ret = drm_atomic_add_encoder_bridges(state, encoder);
 		if (ret)
 			return ret;
 	}
@@ -918,7 +890,7 @@ drm_atomic_helper_check_planes(struct drm_device *dev,
 		if (!funcs || !funcs->atomic_check)
 			continue;
 
-		ret = funcs->atomic_check(crtc, state);
+		ret = funcs->atomic_check(crtc, new_crtc_state);
 		if (ret) {
 			DRM_DEBUG_ATOMIC("[CRTC:%d:%s] atomic driver check failed\n",
 					 crtc->base.id, crtc->name);
@@ -1093,13 +1065,13 @@ disable_outputs(struct drm_device *dev, struct drm_atomic_state *old_state)
 		if (new_crtc_state->enable && funcs->prepare)
 			funcs->prepare(crtc);
 		else if (funcs->atomic_disable)
-			funcs->atomic_disable(crtc, old_state);
+			funcs->atomic_disable(crtc, old_crtc_state);
 		else if (funcs->disable)
 			funcs->disable(crtc);
 		else if (funcs->dpms)
 			funcs->dpms(crtc, DRM_MODE_DPMS_OFF);
 
-		if (!drm_dev_has_vblank(dev))
+		if (!(dev->irq_enabled && dev->num_crtcs))
 			continue;
 
 		ret = drm_crtc_vblank_get(crtc);
@@ -1115,7 +1087,9 @@ disable_outputs(struct drm_device *dev, struct drm_atomic_state *old_state)
  * @old_state: atomic state object with old state structures
  *
  * This function updates all the various legacy modeset state pointers in
- * connectors, encoders and CRTCs.
+ * connectors, encoders and CRTCs. It also updates the timestamping constants
+ * used for precise vblank timestamps by calling
+ * drm_calc_timestamping_constants().
  *
  * Drivers can use this for building their own atomic commit if they don't have
  * a pure helper-based modeset implementation.
@@ -1184,30 +1158,13 @@ drm_atomic_helper_update_legacy_modeset_state(struct drm_device *dev,
 			crtc->x = new_plane_state->src_x >> 16;
 			crtc->y = new_plane_state->src_y >> 16;
 		}
-	}
-}
-EXPORT_SYMBOL(drm_atomic_helper_update_legacy_modeset_state);
 
-/**
- * drm_atomic_helper_calc_timestamping_constants - update vblank timestamping constants
- * @state: atomic state object
- *
- * Updates the timestamping constants used for precise vblank timestamps
- * by calling drm_calc_timestamping_constants() for all enabled crtcs in @state.
- */
-void drm_atomic_helper_calc_timestamping_constants(struct drm_atomic_state *state)
-{
-	struct drm_crtc_state *new_crtc_state;
-	struct drm_crtc *crtc;
-	int i;
-
-	for_each_new_crtc_in_state(state, crtc, new_crtc_state, i) {
 		if (new_crtc_state->enable)
 			drm_calc_timestamping_constants(crtc,
 							&new_crtc_state->adjusted_mode);
 	}
 }
-EXPORT_SYMBOL(drm_atomic_helper_calc_timestamping_constants);
+EXPORT_SYMBOL(drm_atomic_helper_update_legacy_modeset_state);
 
 static void
 crtc_set_mode(struct drm_device *dev, struct drm_atomic_state *old_state)
@@ -1291,7 +1248,6 @@ void drm_atomic_helper_commit_modeset_disables(struct drm_device *dev,
 	disable_outputs(dev, old_state);
 
 	drm_atomic_helper_update_legacy_modeset_state(dev, old_state);
-	drm_atomic_helper_calc_timestamping_constants(old_state);
 
 	crtc_set_mode(dev, old_state);
 }
@@ -1313,7 +1269,7 @@ static void drm_atomic_helper_commit_writebacks(struct drm_device *dev,
 
 		if (new_conn_state->writeback_job && new_conn_state->writeback_job->fb) {
 			WARN_ON(connector->connector_type != DRM_MODE_CONNECTOR_WRITEBACK);
-			funcs->atomic_commit(connector, old_state);
+			funcs->atomic_commit(connector, new_conn_state);
 		}
 	}
 }
@@ -1358,7 +1314,7 @@ void drm_atomic_helper_commit_modeset_enables(struct drm_device *dev,
 			DRM_DEBUG_ATOMIC("enabling [CRTC:%d:%s]\n",
 					 crtc->base.id, crtc->name);
 			if (funcs->atomic_enable)
-				funcs->atomic_enable(crtc, old_state);
+				funcs->atomic_enable(crtc, old_crtc_state);
 			else if (funcs->commit)
 				funcs->commit(crtc);
 		}
@@ -1736,11 +1692,8 @@ int drm_atomic_helper_async_check(struct drm_device *dev,
 	 * overridden by a previous synchronous update's state.
 	 */
 	if (old_plane_state->commit &&
-	    !try_wait_for_completion(&old_plane_state->commit->hw_done)) {
-		DRM_DEBUG_ATOMIC("[PLANE:%d:%s] inflight previous commit preventing async commit\n",
-			plane->base.id, plane->name);
+	    !try_wait_for_completion(&old_plane_state->commit->hw_done))
 		return -EBUSY;
-	}
 
 	return funcs->atomic_async_check(plane, new_plane_state);
 }
@@ -1958,9 +1911,6 @@ static int stall_checks(struct drm_crtc *crtc, bool nonblock)
 			 * commit with nonblocking ones. */
 			if (!completed && nonblock) {
 				spin_unlock(&crtc->commit_lock);
-				DRM_DEBUG_ATOMIC("[CRTC:%d:%s] busy with a previous commit\n",
-					crtc->base.id, crtc->name);
-
 				return -EBUSY;
 			}
 		} else if (i == 1) {
@@ -2040,9 +1990,6 @@ crtc_or_fake_commit(struct drm_atomic_state *state, struct drm_crtc *crtc)
  * should always call this function from their
  * &drm_mode_config_funcs.atomic_commit hook.
  *
- * Drivers that need to extend the commit setup to private objects can use the
- * &drm_mode_config_helper_funcs.atomic_commit_setup hook.
- *
  * To be able to use this support drivers need to use a few more helper
  * functions. drm_atomic_helper_wait_for_dependencies() must be called before
  * actually committing the hardware state, and for nonblocking commits this call
@@ -2086,10 +2033,7 @@ int drm_atomic_helper_setup_commit(struct drm_atomic_state *state,
 	struct drm_plane *plane;
 	struct drm_plane_state *old_plane_state, *new_plane_state;
 	struct drm_crtc_commit *commit;
-	const struct drm_mode_config_helper_funcs *funcs;
 	int i, ret;
-
-	funcs = state->dev->mode_config.helper_private;
 
 	for_each_oldnew_crtc_in_state(state, crtc, old_crtc_state, new_crtc_state, i) {
 		commit = kzalloc(sizeof(*commit), GFP_KERNEL);
@@ -2141,12 +2085,8 @@ int drm_atomic_helper_setup_commit(struct drm_atomic_state *state,
 		/* Userspace is not allowed to get ahead of the previous
 		 * commit with nonblocking ones. */
 		if (nonblock && old_conn_state->commit &&
-		    !try_wait_for_completion(&old_conn_state->commit->flip_done)) {
-			DRM_DEBUG_ATOMIC("[CONNECTOR:%d:%s] busy with a previous commit\n",
-				conn->base.id, conn->name);
-
+		    !try_wait_for_completion(&old_conn_state->commit->flip_done))
 			return -EBUSY;
-		}
 
 		/* Always track connectors explicitly for e.g. link retraining. */
 		commit = crtc_or_fake_commit(state, new_conn_state->crtc ?: old_conn_state->crtc);
@@ -2160,12 +2100,8 @@ int drm_atomic_helper_setup_commit(struct drm_atomic_state *state,
 		/* Userspace is not allowed to get ahead of the previous
 		 * commit with nonblocking ones. */
 		if (nonblock && old_plane_state->commit &&
-		    !try_wait_for_completion(&old_plane_state->commit->flip_done)) {
-			DRM_DEBUG_ATOMIC("[PLANE:%d:%s] busy with a previous commit\n",
-				plane->base.id, plane->name);
-
+		    !try_wait_for_completion(&old_plane_state->commit->flip_done))
 			return -EBUSY;
-		}
 
 		/* Always track planes explicitly for async pageflip support. */
 		commit = crtc_or_fake_commit(state, new_plane_state->crtc ?: old_plane_state->crtc);
@@ -2174,9 +2110,6 @@ int drm_atomic_helper_setup_commit(struct drm_atomic_state *state,
 
 		new_plane_state->commit = drm_crtc_commit_get(commit);
 	}
-
-	if (funcs && funcs->atomic_commit_setup)
-		return funcs->atomic_commit_setup(state);
 
 	return 0;
 }
@@ -2282,9 +2215,7 @@ EXPORT_SYMBOL(drm_atomic_helper_wait_for_dependencies);
  * when a job is queued, and any change to the pipeline that does not touch the
  * connector is leading to timeouts when calling
  * drm_atomic_helper_wait_for_vblanks() or
- * drm_atomic_helper_wait_for_flip_done(). In addition to writeback
- * connectors, this function can also fake VBLANK events for CRTCs without
- * VBLANK interrupt.
+ * drm_atomic_helper_wait_for_flip_done().
  *
  * This is part of the atomic helper support for nonblocking commits, see
  * drm_atomic_helper_setup_commit() for an overview.
@@ -2530,7 +2461,7 @@ void drm_atomic_helper_commit_planes(struct drm_device *dev,
 		if (active_only && !new_crtc_state->active)
 			continue;
 
-		funcs->atomic_begin(crtc, old_state);
+		funcs->atomic_begin(crtc, old_crtc_state);
 	}
 
 	for_each_oldnew_plane_in_state(old_state, plane, old_plane_state, new_plane_state, i) {
@@ -2588,7 +2519,7 @@ void drm_atomic_helper_commit_planes(struct drm_device *dev,
 		if (active_only && !new_crtc_state->active)
 			continue;
 
-		funcs->atomic_flush(crtc, old_state);
+		funcs->atomic_flush(crtc, old_crtc_state);
 	}
 }
 EXPORT_SYMBOL(drm_atomic_helper_commit_planes);
@@ -2626,7 +2557,7 @@ drm_atomic_helper_commit_planes_on_crtc(struct drm_crtc_state *old_crtc_state)
 
 	crtc_funcs = crtc->helper_private;
 	if (crtc_funcs && crtc_funcs->atomic_begin)
-		crtc_funcs->atomic_begin(crtc, old_state);
+		crtc_funcs->atomic_begin(crtc, old_crtc_state);
 
 	drm_for_each_plane_mask(plane, crtc->dev, plane_mask) {
 		struct drm_plane_state *old_plane_state =
@@ -2652,7 +2583,7 @@ drm_atomic_helper_commit_planes_on_crtc(struct drm_crtc_state *old_crtc_state)
 	}
 
 	if (crtc_funcs && crtc_funcs->atomic_flush)
-		crtc_funcs->atomic_flush(crtc, old_state);
+		crtc_funcs->atomic_flush(crtc, old_crtc_state);
 }
 EXPORT_SYMBOL(drm_atomic_helper_commit_planes_on_crtc);
 
@@ -3030,7 +2961,7 @@ int drm_atomic_helper_set_config(struct drm_mode_set *set,
 
 	ret = handle_conflicting_encoders(state, true);
 	if (ret)
-		goto fail;
+		return ret;
 
 	ret = drm_atomic_commit(state);
 
@@ -3146,7 +3077,7 @@ void drm_atomic_helper_shutdown(struct drm_device *dev)
 	if (ret)
 		DRM_ERROR("Disabling all crtc's during unload failed with %i\n", ret);
 
-	DRM_MODESET_LOCK_ALL_END(dev, ctx, ret);
+	DRM_MODESET_LOCK_ALL_END(ctx, ret);
 }
 EXPORT_SYMBOL(drm_atomic_helper_shutdown);
 
@@ -3286,7 +3217,7 @@ struct drm_atomic_state *drm_atomic_helper_suspend(struct drm_device *dev)
 	}
 
 unlock:
-	DRM_MODESET_LOCK_ALL_END(dev, ctx, err);
+	DRM_MODESET_LOCK_ALL_END(ctx, err);
 	if (err)
 		return ERR_PTR(err);
 
@@ -3367,7 +3298,7 @@ int drm_atomic_helper_resume(struct drm_device *dev,
 
 	err = drm_atomic_helper_commit_duplicated_state(state, &ctx);
 
-	DRM_MODESET_LOCK_ALL_END(dev, ctx, err);
+	DRM_MODESET_LOCK_ALL_END(ctx, err);
 	drm_atomic_state_put(state);
 
 	return err;
@@ -3509,42 +3440,71 @@ fail:
 EXPORT_SYMBOL(drm_atomic_helper_page_flip_target);
 
 /**
- * drm_atomic_helper_bridge_propagate_bus_fmt() - Propagate output format to
- *						  the input end of a bridge
- * @bridge: bridge control structure
- * @bridge_state: new bridge state
- * @crtc_state: new CRTC state
- * @conn_state: new connector state
- * @output_fmt: tested output bus format
- * @num_input_fmts: will contain the size of the returned array
+ * drm_atomic_helper_legacy_gamma_set - set the legacy gamma correction table
+ * @crtc: CRTC object
+ * @red: red correction table
+ * @green: green correction table
+ * @blue: green correction table
+ * @size: size of the tables
+ * @ctx: lock acquire context
  *
- * This helper is a pluggable implementation of the
- * &drm_bridge_funcs.atomic_get_input_bus_fmts operation for bridges that don't
- * modify the bus configuration between their input and their output. It
- * returns an array of input formats with a single element set to @output_fmt.
- *
- * RETURNS:
- * a valid format array of size @num_input_fmts, or NULL if the allocation
- * failed
+ * Implements support for legacy gamma correction table for drivers
+ * that support color management through the DEGAMMA_LUT/GAMMA_LUT
+ * properties. See drm_crtc_enable_color_mgmt() and the containing chapter for
+ * how the atomic color management and gamma tables work.
  */
-u32 *
-drm_atomic_helper_bridge_propagate_bus_fmt(struct drm_bridge *bridge,
-					struct drm_bridge_state *bridge_state,
-					struct drm_crtc_state *crtc_state,
-					struct drm_connector_state *conn_state,
-					u32 output_fmt,
-					unsigned int *num_input_fmts)
+int drm_atomic_helper_legacy_gamma_set(struct drm_crtc *crtc,
+				       u16 *red, u16 *green, u16 *blue,
+				       uint32_t size,
+				       struct drm_modeset_acquire_ctx *ctx)
 {
-	u32 *input_fmts;
+	struct drm_device *dev = crtc->dev;
+	struct drm_atomic_state *state;
+	struct drm_crtc_state *crtc_state;
+	struct drm_property_blob *blob = NULL;
+	struct drm_color_lut *blob_data;
+	int i, ret = 0;
+	bool replaced;
 
-	input_fmts = kzalloc(sizeof(*input_fmts), GFP_KERNEL);
-	if (!input_fmts) {
-		*num_input_fmts = 0;
-		return NULL;
+	state = drm_atomic_state_alloc(crtc->dev);
+	if (!state)
+		return -ENOMEM;
+
+	blob = drm_property_create_blob(dev,
+					sizeof(struct drm_color_lut) * size,
+					NULL);
+	if (IS_ERR(blob)) {
+		ret = PTR_ERR(blob);
+		blob = NULL;
+		goto fail;
 	}
 
-	*num_input_fmts = 1;
-	input_fmts[0] = output_fmt;
-	return input_fmts;
+	/* Prepare GAMMA_LUT with the legacy values. */
+	blob_data = blob->data;
+	for (i = 0; i < size; i++) {
+		blob_data[i].red = red[i];
+		blob_data[i].green = green[i];
+		blob_data[i].blue = blue[i];
+	}
+
+	state->acquire_ctx = ctx;
+	crtc_state = drm_atomic_get_crtc_state(state, crtc);
+	if (IS_ERR(crtc_state)) {
+		ret = PTR_ERR(crtc_state);
+		goto fail;
+	}
+
+	/* Reset DEGAMMA_LUT and CTM properties. */
+	replaced  = drm_property_replace_blob(&crtc_state->degamma_lut, NULL);
+	replaced |= drm_property_replace_blob(&crtc_state->ctm, NULL);
+	replaced |= drm_property_replace_blob(&crtc_state->gamma_lut, blob);
+	crtc_state->color_mgmt_changed |= replaced;
+
+	ret = drm_atomic_commit(state);
+
+fail:
+	drm_atomic_state_put(state);
+	drm_property_blob_put(blob);
+	return ret;
 }
-EXPORT_SYMBOL(drm_atomic_helper_bridge_propagate_bus_fmt);
+EXPORT_SYMBOL(drm_atomic_helper_legacy_gamma_set);

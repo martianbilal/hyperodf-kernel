@@ -97,7 +97,6 @@
 #include <linux/atomic.h>
 
 #include <linux/kasan.h>
-#include <linux/kfence.h>
 #include <linux/kmemleak.h>
 #include <linux/memory_hotplug.h>
 
@@ -590,7 +589,7 @@ static struct kmemleak_object *create_object(unsigned long ptr, size_t size,
 	atomic_set(&object->use_count, 1);
 	object->flags = OBJECT_ALLOCATED;
 	object->pointer = ptr;
-	object->size = kfence_ksize((void *)ptr) ?: size;
+	object->size = size;
 	object->excess_ref = 0;
 	object->min_count = min_count;
 	object->count = 0;			/* white color initially */
@@ -1170,10 +1169,8 @@ static bool update_checksum(struct kmemleak_object *object)
 	u32 old_csum = object->checksum;
 
 	kasan_disable_current();
-	kcsan_disable_current();
 	object->checksum = crc32(0, (void *)object->pointer, object->size);
 	kasan_enable_current();
-	kcsan_enable_current();
 
 	return object->checksum != old_csum;
 }
@@ -1472,15 +1469,15 @@ static void kmemleak_scan(void)
 	if (kmemleak_stack_scan) {
 		struct task_struct *p, *g;
 
-		rcu_read_lock();
-		for_each_process_thread(g, p) {
+		read_lock(&tasklist_lock);
+		do_each_thread(g, p) {
 			void *stack = try_get_task_stack(p);
 			if (stack) {
 				scan_block(stack, stack + THREAD_SIZE, NULL);
 				put_task_stack(p);
 			}
-		}
-		rcu_read_unlock();
+		} while_each_thread(g, p);
+		read_unlock(&tasklist_lock);
 	}
 
 	/*
@@ -1950,7 +1947,7 @@ void __init kmemleak_init(void)
 	create_object((unsigned long)__bss_start, __bss_stop - __bss_start,
 		      KMEMLEAK_GREY, GFP_ATOMIC);
 	/* only register .data..ro_after_init if not within .data */
-	if (&__start_ro_after_init < &_sdata || &__end_ro_after_init > &_edata)
+	if (__start_ro_after_init < _sdata || __end_ro_after_init > _edata)
 		create_object((unsigned long)__start_ro_after_init,
 			      __end_ro_after_init - __start_ro_after_init,
 			      KMEMLEAK_GREY, GFP_ATOMIC);

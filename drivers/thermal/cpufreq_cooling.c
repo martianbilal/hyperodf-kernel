@@ -10,17 +10,17 @@
  *		Viresh Kumar <viresh.kumar@linaro.org>
  *
  */
-#include <linux/cpu.h>
+#include <linux/module.h>
+#include <linux/thermal.h>
 #include <linux/cpufreq.h>
-#include <linux/cpu_cooling.h>
-#include <linux/energy_model.h>
 #include <linux/err.h>
-#include <linux/export.h>
 #include <linux/idr.h>
 #include <linux/pm_opp.h>
 #include <linux/pm_qos.h>
 #include <linux/slab.h>
-#include <linux/thermal.h>
+#include <linux/cpu.h>
+#include <linux/cpu_cooling.h>
+#include <linux/energy_model.h>
 
 #include <trace/events/thermal.h>
 
@@ -76,9 +76,7 @@ struct cpufreq_cooling_device {
 	struct em_perf_domain *em;
 	struct cpufreq_policy *policy;
 	struct list_head node;
-#ifndef CONFIG_SMP
 	struct time_in_idle *idle_time;
-#endif
 	struct freq_qos_request qos_req;
 };
 
@@ -125,34 +123,23 @@ static u32 cpu_power_to_freq(struct cpufreq_cooling_device *cpufreq_cdev,
 {
 	int i;
 
-	for (i = cpufreq_cdev->max_level; i > 0; i--) {
-		if (power >= cpufreq_cdev->em->table[i].power)
+	for (i = cpufreq_cdev->max_level - 1; i >= 0; i--) {
+		if (power > cpufreq_cdev->em->table[i].power)
 			break;
 	}
 
-	return cpufreq_cdev->em->table[i].frequency;
+	return cpufreq_cdev->em->table[i + 1].frequency;
 }
 
 /**
- * get_load() - get load for a cpu
- * @cpufreq_cdev: struct cpufreq_cooling_device for the cpu
- * @cpu: cpu number
- * @cpu_idx: index of the cpu in time_in_idle array
+ * get_load() - get load for a cpu since last updated
+ * @cpufreq_cdev:	&struct cpufreq_cooling_device for this cpu
+ * @cpu:	cpu number
+ * @cpu_idx:	index of the cpu in time_in_idle*
  *
  * Return: The average load of cpu @cpu in percentage since this
  * function was last called.
  */
-#ifdef CONFIG_SMP
-static u32 get_load(struct cpufreq_cooling_device *cpufreq_cdev, int cpu,
-		    int cpu_idx)
-{
-	unsigned long max = arch_scale_cpu_capacity(cpu);
-	unsigned long util;
-
-	util = sched_cpu_util(cpu, max);
-	return (util * 100) / max;
-}
-#else /* !CONFIG_SMP */
 static u32 get_load(struct cpufreq_cooling_device *cpufreq_cdev, int cpu,
 		    int cpu_idx)
 {
@@ -174,7 +161,6 @@ static u32 get_load(struct cpufreq_cooling_device *cpufreq_cdev, int cpu,
 
 	return load;
 }
-#endif /* CONFIG_SMP */
 
 /**
  * get_dynamic_power() - calculate the dynamic power
@@ -196,6 +182,7 @@ static u32 get_dynamic_power(struct cpufreq_cooling_device *cpufreq_cdev,
 /**
  * cpufreq_get_requested_power() - get the current power
  * @cdev:	&thermal_cooling_device pointer
+ * @tz:		a valid thermal zone device pointer
  * @power:	pointer in which to store the resulting power
  *
  * Calculate the current power consumption of the cpus in milliwatts
@@ -216,6 +203,7 @@ static u32 get_dynamic_power(struct cpufreq_cooling_device *cpufreq_cdev,
  * Return: 0 on success, -E* if getting the static power failed.
  */
 static int cpufreq_get_requested_power(struct thermal_cooling_device *cdev,
+				       struct thermal_zone_device *tz,
 				       u32 *power)
 {
 	unsigned long freq;
@@ -265,6 +253,7 @@ static int cpufreq_get_requested_power(struct thermal_cooling_device *cdev,
 /**
  * cpufreq_state2power() - convert a cpu cdev state to power consumed
  * @cdev:	&thermal_cooling_device pointer
+ * @tz:		a valid thermal zone device pointer
  * @state:	cooling device state to be converted
  * @power:	pointer in which to store the resulting power
  *
@@ -277,13 +266,14 @@ static int cpufreq_get_requested_power(struct thermal_cooling_device *cdev,
  * when calculating the static power.
  */
 static int cpufreq_state2power(struct thermal_cooling_device *cdev,
+			       struct thermal_zone_device *tz,
 			       unsigned long state, u32 *power)
 {
 	unsigned int freq, num_cpus, idx;
 	struct cpufreq_cooling_device *cpufreq_cdev = cdev->devdata;
 
 	/* Request state should be less than max_level */
-	if (state > cpufreq_cdev->max_level)
+	if (WARN_ON(state > cpufreq_cdev->max_level))
 		return -EINVAL;
 
 	num_cpus = cpumask_weight(cpufreq_cdev->policy->cpus);
@@ -298,6 +288,7 @@ static int cpufreq_state2power(struct thermal_cooling_device *cdev,
 /**
  * cpufreq_power2state() - convert power to a cooling device state
  * @cdev:	&thermal_cooling_device pointer
+ * @tz:		a valid thermal zone device pointer
  * @power:	power in milliwatts to be converted
  * @state:	pointer in which to store the resulting state
  *
@@ -315,7 +306,8 @@ static int cpufreq_state2power(struct thermal_cooling_device *cdev,
  * device.
  */
 static int cpufreq_power2state(struct thermal_cooling_device *cdev,
-			       u32 power, unsigned long *state)
+			       struct thermal_zone_device *tz, u32 power,
+			       unsigned long *state)
 {
 	unsigned int target_freq;
 	u32 last_load, normalised_power;
@@ -341,54 +333,24 @@ static inline bool em_is_sane(struct cpufreq_cooling_device *cpufreq_cdev,
 		return false;
 
 	policy = cpufreq_cdev->policy;
-	if (!cpumask_equal(policy->related_cpus, em_span_cpus(em))) {
+	if (!cpumask_equal(policy->related_cpus, to_cpumask(em->cpus))) {
 		pr_err("The span of pd %*pbl is misaligned with cpufreq policy %*pbl\n",
-			cpumask_pr_args(em_span_cpus(em)),
+			cpumask_pr_args(to_cpumask(em->cpus)),
 			cpumask_pr_args(policy->related_cpus));
 		return false;
 	}
 
 	nr_levels = cpufreq_cdev->max_level + 1;
-	if (em_pd_nr_perf_states(em) != nr_levels) {
-		pr_err("The number of performance states in pd %*pbl (%u) doesn't match the number of cooling levels (%u)\n",
-			cpumask_pr_args(em_span_cpus(em)),
-			em_pd_nr_perf_states(em), nr_levels);
+	if (em->nr_cap_states != nr_levels) {
+		pr_err("The number of cap states in pd %*pbl (%u) doesn't match the number of cooling levels (%u)\n",
+			cpumask_pr_args(to_cpumask(em->cpus)),
+			em->nr_cap_states, nr_levels);
 		return false;
 	}
 
 	return true;
 }
 #endif /* CONFIG_THERMAL_GOV_POWER_ALLOCATOR */
-
-#ifdef CONFIG_SMP
-static inline int allocate_idle_time(struct cpufreq_cooling_device *cpufreq_cdev)
-{
-	return 0;
-}
-
-static inline void free_idle_time(struct cpufreq_cooling_device *cpufreq_cdev)
-{
-}
-#else
-static int allocate_idle_time(struct cpufreq_cooling_device *cpufreq_cdev)
-{
-	unsigned int num_cpus = cpumask_weight(cpufreq_cdev->policy->related_cpus);
-
-	cpufreq_cdev->idle_time = kcalloc(num_cpus,
-					  sizeof(*cpufreq_cdev->idle_time),
-					  GFP_KERNEL);
-	if (!cpufreq_cdev->idle_time)
-		return -ENOMEM;
-
-	return 0;
-}
-
-static void free_idle_time(struct cpufreq_cooling_device *cpufreq_cdev)
-{
-	kfree(cpufreq_cdev->idle_time);
-	cpufreq_cdev->idle_time = NULL;
-}
-#endif /* CONFIG_SMP */
 
 static unsigned int get_state_freq(struct cpufreq_cooling_device *cpufreq_cdev,
 				   unsigned long state)
@@ -469,33 +431,21 @@ static int cpufreq_set_cur_state(struct thermal_cooling_device *cdev,
 				 unsigned long state)
 {
 	struct cpufreq_cooling_device *cpufreq_cdev = cdev->devdata;
-	struct cpumask *cpus;
-	unsigned int frequency;
-	unsigned long max_capacity, capacity;
 	int ret;
 
 	/* Request state should be less than max_level */
-	if (state > cpufreq_cdev->max_level)
+	if (WARN_ON(state > cpufreq_cdev->max_level))
 		return -EINVAL;
 
 	/* Check if the old cooling action is same as new cooling action */
 	if (cpufreq_cdev->cpufreq_state == state)
 		return 0;
 
-	frequency = get_state_freq(cpufreq_cdev, state);
+	cpufreq_cdev->cpufreq_state = state;
 
-	ret = freq_qos_update_request(&cpufreq_cdev->qos_req, frequency);
-	if (ret >= 0) {
-		cpufreq_cdev->cpufreq_state = state;
-		cpus = cpufreq_cdev->policy->cpus;
-		max_capacity = arch_scale_cpu_capacity(cpumask_first(cpus));
-		capacity = frequency * max_capacity;
-		capacity /= cpufreq_cdev->policy->cpuinfo.max_freq;
-		arch_set_thermal_pressure(cpus, max_capacity - capacity);
-		ret = 0;
-	}
-
-	return ret;
+	ret = freq_qos_update_request(&cpufreq_cdev->qos_req,
+				      get_state_freq(cpufreq_cdev, state));
+	return ret < 0 ? ret : 0;
 }
 
 /* Bind cpufreq callbacks to thermal cooling device ops */
@@ -529,7 +479,7 @@ __cpufreq_cooling_register(struct device_node *np,
 	struct thermal_cooling_device *cdev;
 	struct cpufreq_cooling_device *cpufreq_cdev;
 	char dev_name[THERMAL_NAME_LENGTH];
-	unsigned int i;
+	unsigned int i, num_cpus;
 	struct device *dev;
 	int ret;
 	struct thermal_cooling_device_ops *cooling_ops;
@@ -539,6 +489,7 @@ __cpufreq_cooling_register(struct device_node *np,
 		pr_warn("No cpu device for cpu %d\n", policy->cpu);
 		return ERR_PTR(-ENODEV);
 	}
+
 
 	if (IS_ERR_OR_NULL(policy)) {
 		pr_err("%s: cpufreq policy isn't valid: %p\n", __func__, policy);
@@ -557,10 +508,12 @@ __cpufreq_cooling_register(struct device_node *np,
 		return ERR_PTR(-ENOMEM);
 
 	cpufreq_cdev->policy = policy;
-
-	ret = allocate_idle_time(cpufreq_cdev);
-	if (ret) {
-		cdev = ERR_PTR(ret);
+	num_cpus = cpumask_weight(policy->related_cpus);
+	cpufreq_cdev->idle_time = kcalloc(num_cpus,
+					 sizeof(*cpufreq_cdev->idle_time),
+					 GFP_KERNEL);
+	if (!cpufreq_cdev->idle_time) {
+		cdev = ERR_PTR(-ENOMEM);
 		goto free_cdev;
 	}
 
@@ -620,7 +573,7 @@ remove_qos_req:
 remove_ida:
 	ida_simple_remove(&cpufreq_ida, cpufreq_cdev->id);
 free_idle_time:
-	free_idle_time(cpufreq_cdev);
+	kfree(cpufreq_cdev->idle_time);
 free_cdev:
 	kfree(cpufreq_cdev);
 	return cdev;
@@ -713,7 +666,7 @@ void cpufreq_cooling_unregister(struct thermal_cooling_device *cdev)
 	thermal_cooling_device_unregister(cdev);
 	freq_qos_remove_request(&cpufreq_cdev->qos_req);
 	ida_simple_remove(&cpufreq_ida, cpufreq_cdev->id);
-	free_idle_time(cpufreq_cdev);
+	kfree(cpufreq_cdev->idle_time);
 	kfree(cpufreq_cdev);
 }
 EXPORT_SYMBOL_GPL(cpufreq_cooling_unregister);

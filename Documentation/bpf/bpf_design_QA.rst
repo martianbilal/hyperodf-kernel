@@ -208,12 +208,6 @@ data structures and compile with kernel internal headers. Both of these
 kernel internals are subject to change and can break with newer kernels
 such that the program needs to be adapted accordingly.
 
-Q: Are tracepoints part of the stable ABI?
-------------------------------------------
-A: NO. Tracepoints are tied to internal implementation details hence they are
-subject to change and can break with newer kernels. BPF programs need to change
-accordingly when this happens.
-
 Q: How much stack space a BPF program uses?
 -------------------------------------------
 A: Currently all program types are limited to 512 bytes of stack
@@ -251,6 +245,17 @@ of the current task with bpf_probe_write_user(). Every time such
 program is loaded the kernel will print warning message, so
 this helper is only useful for experiments and prototypes.
 Tracing BPF programs are root only.
+
+Q: bpf_trace_printk() helper warning
+------------------------------------
+Q: When bpf_trace_printk() helper is used the kernel prints nasty
+warning message. Why is that?
+
+A: This is done to nudge program authors into better interfaces when
+programs need to pass data to user space. Like bpf_perf_event_output()
+can be used to efficiently stream data via perf ring buffer.
+BPF maps can be used for asynchronous data sharing between kernel
+and user space. bpf_trace_printk() should only be used for debugging.
 
 Q: New functionality via kernel modules?
 ----------------------------------------

@@ -242,6 +242,7 @@ struct raid_set {
 
 	struct mddev md;
 	struct raid_type *raid_type;
+	struct dm_target_callbacks callbacks;
 
 	sector_t array_sectors;
 	sector_t dev_sectors;
@@ -253,7 +254,7 @@ struct raid_set {
 		int mode;
 	} journal_dev;
 
-	struct raid_dev dev[];
+	struct raid_dev dev[0];
 };
 
 static void rs_config_backup(struct raid_set *rs, struct rs_layout *l)
@@ -700,7 +701,8 @@ static void rs_set_capacity(struct raid_set *rs)
 {
 	struct gendisk *gendisk = dm_disk(dm_table_get_md(rs->ti->table));
 
-	set_capacity_and_notify(gendisk, rs->md.array_sectors);
+	set_capacity(gendisk, rs->md.array_sectors);
+	revalidate_disk(gendisk);
 }
 
 /*
@@ -1703,6 +1705,13 @@ static void do_table_event(struct work_struct *ws)
 	dm_table_event(rs->ti->table);
 }
 
+static int raid_is_congested(struct dm_target_callbacks *cb, int bits)
+{
+	struct raid_set *rs = container_of(cb, struct raid_set, callbacks);
+
+	return mddev_congested(&rs->md, bits);
+}
+
 /*
  * Make sure a valid takover (level switch) is being requested on @rs
  *
@@ -1868,14 +1877,6 @@ static bool rs_takeover_requested(struct raid_set *rs)
 	return rs->md.new_level != rs->md.level;
 }
 
-/* True if layout is set to reshape. */
-static bool rs_is_layout_change(struct raid_set *rs, bool use_mddev)
-{
-	return (use_mddev ? rs->md.delta_disks : rs->delta_disks) ||
-	       rs->md.new_layout != rs->md.layout ||
-	       rs->md.new_chunk_sectors != rs->md.chunk_sectors;
-}
-
 /* True if @rs is requested to reshape by ctr */
 static bool rs_reshape_requested(struct raid_set *rs)
 {
@@ -1888,7 +1889,9 @@ static bool rs_reshape_requested(struct raid_set *rs)
 	if (rs_is_raid0(rs))
 		return false;
 
-	change = rs_is_layout_change(rs, false);
+	change = mddev->new_layout != mddev->layout ||
+		 mddev->new_chunk_sectors != mddev->chunk_sectors ||
+		 rs->delta_disks;
 
 	/* Historical case to support raid1 reshape without delta disks */
 	if (rs_is_raid1(rs)) {
@@ -2342,6 +2345,8 @@ static int super_init_validation(struct raid_set *rs, struct md_rdev *rdev)
 
 	if (new_devs == rs->raid_disks || !rebuilds) {
 		/* Replace a broken device */
+		if (new_devs == 1 && !rs->delta_disks)
+			;
 		if (new_devs == rs->raid_disks) {
 			DMINFO("Superblocks created for new raid set");
 			set_bit(MD_ARRAY_FIRST_USE, &mddev->flags);
@@ -2823,7 +2828,7 @@ static sector_t _get_reshape_sectors(struct raid_set *rs)
 }
 
 /*
- * Reshape:
+ *
  * - change raid layout
  * - change chunk size
  * - add disks
@@ -2930,20 +2935,6 @@ static int rs_setup_reshape(struct raid_set *rs)
 				rdev->sectors += reshape_sectors;
 
 	return r;
-}
-
-/*
- * If the md resync thread has updated superblock with max reshape position
- * at the end of a reshape but not (yet) reset the layout configuration
- * changes -> reset the latter.
- */
-static void rs_reset_inconclusive_reshape(struct raid_set *rs)
-{
-	if (!rs_is_reshaping(rs) && rs_is_layout_change(rs, true)) {
-		rs_set_cur(rs);
-		rs->md.delta_disks = 0;
-		rs->md.reshape_backwards = 0;
-	}
 }
 
 /*
@@ -3232,14 +3223,11 @@ size_check:
 	if (r)
 		goto bad;
 
-	/* Catch any inconclusive reshape superblock content. */
-	rs_reset_inconclusive_reshape(rs);
-
 	/* Start raid set read-only and assumed clean to change in raid_resume() */
 	rs->md.ro = 1;
 	rs->md.in_sync = 1;
 
-	/* Keep array frozen until resume. */
+	/* Keep array frozen */
 	set_bit(MD_RECOVERY_FROZEN, &rs->md.recovery);
 
 	/* Has to be held on running the array */
@@ -3253,11 +3241,15 @@ size_check:
 	}
 
 	r = md_start(&rs->md);
+
 	if (r) {
 		ti->error = "Failed to start raid array";
 		mddev_unlock(&rs->md);
 		goto bad_md_start;
 	}
+
+	rs->callbacks.congested_fn = raid_is_congested;
+	dm_table_add_target_callbacks(ti->table, &rs->callbacks);
 
 	/* If raid4/5/6 journal mode explicitly requested (only possible with journal dev) -> set it */
 	if (test_bit(__CTR_FLAG_JOURNAL_MODE, &rs->ctr_flags)) {
@@ -3318,6 +3310,7 @@ static void raid_dtr(struct dm_target *ti)
 {
 	struct raid_set *rs = ti->private;
 
+	list_del_init(&rs->callbacks.list);
 	md_stop(&rs->md);
 	raid_set_free(rs);
 }
@@ -3751,10 +3744,10 @@ static void raid_io_hints(struct dm_target *ti, struct queue_limits *limits)
 	blk_limits_io_opt(limits, chunk_size_bytes * mddev_data_stripes(rs));
 
 	/*
-	 * RAID0 and RAID10 personalities require bio splitting,
-	 * RAID1/4/5/6 don't and process large discard bios properly.
+	 * RAID1 and RAID10 personalities require bio splitting,
+	 * RAID0/4/5/6 don't and process large discard bios properly.
 	 */
-	if (rs_is_raid0(rs) || rs_is_raid10(rs)) {
+	if (rs_is_raid1(rs) || rs_is_raid10(rs)) {
 		limits->discard_granularity = chunk_size_bytes;
 		limits->max_discard_sectors = rs->md.chunk_sectors;
 	}

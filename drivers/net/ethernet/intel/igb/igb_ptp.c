@@ -860,35 +860,25 @@ static void igb_ptp_tx_hwtstamp(struct igb_adapter *adapter)
  * igb_ptp_rx_pktstamp - retrieve Rx per packet timestamp
  * @q_vector: Pointer to interrupt specific structure
  * @va: Pointer to address containing Rx buffer
- * @timestamp: Pointer where timestamp will be stored
+ * @skb: Buffer containing timestamp and packet
  *
  * This function is meant to retrieve a timestamp from the first buffer of an
  * incoming frame.  The value is stored in little endian format starting on
- * byte 8
- *
- * Returns: The timestamp header length or 0 if not available
+ * byte 8.
  **/
-int igb_ptp_rx_pktstamp(struct igb_q_vector *q_vector, void *va,
-			ktime_t *timestamp)
+void igb_ptp_rx_pktstamp(struct igb_q_vector *q_vector, void *va,
+			 struct sk_buff *skb)
 {
-	struct igb_adapter *adapter = q_vector->adapter;
-	struct skb_shared_hwtstamps ts;
 	__le64 *regval = (__le64 *)va;
+	struct igb_adapter *adapter = q_vector->adapter;
 	int adjust = 0;
-
-	if (!(adapter->ptp_flags & IGB_PTP_ENABLED))
-		return 0;
 
 	/* The timestamp is recorded in little endian format.
 	 * DWORD: 0        1        2        3
 	 * Field: Reserved Reserved SYSTIML  SYSTIMH
 	 */
-
-	/* check reserved dwords are zero, be/le doesn't matter for zero */
-	if (regval[0])
-		return 0;
-
-	igb_ptp_systim_to_hwtstamp(adapter, &ts, le64_to_cpu(regval[1]));
+	igb_ptp_systim_to_hwtstamp(adapter, skb_hwtstamps(skb),
+				   le64_to_cpu(regval[1]));
 
 	/* adjust timestamp for the RX latency based on link speed */
 	if (adapter->hw.mac.type == e1000_i210) {
@@ -904,10 +894,8 @@ int igb_ptp_rx_pktstamp(struct igb_q_vector *q_vector, void *va,
 			break;
 		}
 	}
-
-	*timestamp = ktime_sub_ns(ts.hwtstamp, adjust);
-
-	return IGB_TS_HDR_LEN;
+	skb_hwtstamps(skb)->hwtstamp =
+		ktime_sub_ns(skb_hwtstamps(skb)->hwtstamp, adjust);
 }
 
 /**
@@ -918,15 +906,13 @@ int igb_ptp_rx_pktstamp(struct igb_q_vector *q_vector, void *va,
  * This function is meant to retrieve a timestamp from the internal registers
  * of the adapter and store it in the skb.
  **/
-void igb_ptp_rx_rgtstamp(struct igb_q_vector *q_vector, struct sk_buff *skb)
+void igb_ptp_rx_rgtstamp(struct igb_q_vector *q_vector,
+			 struct sk_buff *skb)
 {
 	struct igb_adapter *adapter = q_vector->adapter;
 	struct e1000_hw *hw = &adapter->hw;
-	int adjust = 0;
 	u64 regval;
-
-	if (!(adapter->ptp_flags & IGB_PTP_ENABLED))
-		return;
+	int adjust = 0;
 
 	/* If this bit is set, then the RX registers contain the time stamp. No
 	 * other packet will be time stamped until we read these registers, so
@@ -971,8 +957,8 @@ void igb_ptp_rx_rgtstamp(struct igb_q_vector *q_vector, struct sk_buff *skb)
 
 /**
  * igb_ptp_get_ts_config - get hardware time stamping config
- * @netdev: netdev struct
- * @ifr: interface struct
+ * @netdev:
+ * @ifreq:
  *
  * Get the hwtstamp_config settings to return to the user. Rather than attempt
  * to deconstruct the settings from the registers, just return a shadow copy
@@ -1067,7 +1053,7 @@ static int igb_ptp_set_timestamp_mode(struct igb_adapter *adapter,
 			config->rx_filter = HWTSTAMP_FILTER_ALL;
 			break;
 		}
-		fallthrough;
+		/* fall through */
 	default:
 		config->rx_filter = HWTSTAMP_FILTER_NONE;
 		return -ERANGE;
@@ -1155,8 +1141,8 @@ static int igb_ptp_set_timestamp_mode(struct igb_adapter *adapter,
 
 /**
  * igb_ptp_set_ts_config - set hardware time stamping config
- * @netdev: netdev struct
- * @ifr: interface struct
+ * @netdev:
+ * @ifreq:
  *
  **/
 int igb_ptp_set_ts_config(struct net_device *netdev, struct ifreq *ifr)

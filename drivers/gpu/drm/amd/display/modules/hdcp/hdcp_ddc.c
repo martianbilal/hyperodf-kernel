@@ -30,8 +30,6 @@
 #define KSV_READ_SIZE 0xf	/* 0x6803b - 0x6802c */
 #define HDCP_MAX_AUX_TRANSACTION_SIZE 16
 
-#define DP_CP_IRQ (1 << 2)
-
 enum mod_hdcp_ddc_message_id {
 	MOD_HDCP_MESSAGE_ID_INVALID = -1,
 
@@ -67,7 +65,6 @@ enum mod_hdcp_ddc_message_id {
 	MOD_HDCP_MESSAGE_ID_READ_LC_SEND_L_PRIME,
 	MOD_HDCP_MESSAGE_ID_WRITE_SKE_SEND_EKS,
 	MOD_HDCP_MESSAGE_ID_READ_REPEATER_AUTH_SEND_RECEIVERID_LIST,
-	MOD_HDCP_MESSAGE_ID_READ_REPEATER_AUTH_SEND_RECEIVERID_LIST_PART2,
 	MOD_HDCP_MESSAGE_ID_WRITE_REPEATER_AUTH_SEND_ACK,
 	MOD_HDCP_MESSAGE_ID_WRITE_REPEATER_AUTH_STREAM_MANAGE,
 	MOD_HDCP_MESSAGE_ID_READ_REPEATER_AUTH_STREAM_READY,
@@ -104,7 +101,6 @@ static const uint8_t hdcp_i2c_offsets[] = {
 	[MOD_HDCP_MESSAGE_ID_READ_LC_SEND_L_PRIME] = 0x80,
 	[MOD_HDCP_MESSAGE_ID_WRITE_SKE_SEND_EKS] = 0x60,
 	[MOD_HDCP_MESSAGE_ID_READ_REPEATER_AUTH_SEND_RECEIVERID_LIST] = 0x80,
-	[MOD_HDCP_MESSAGE_ID_READ_REPEATER_AUTH_SEND_RECEIVERID_LIST_PART2] = 0x80,
 	[MOD_HDCP_MESSAGE_ID_WRITE_REPEATER_AUTH_SEND_ACK] = 0x60,
 	[MOD_HDCP_MESSAGE_ID_WRITE_REPEATER_AUTH_STREAM_MANAGE] = 0x60,
 	[MOD_HDCP_MESSAGE_ID_READ_REPEATER_AUTH_STREAM_READY] = 0x80,
@@ -139,7 +135,6 @@ static const uint32_t hdcp_dpcd_addrs[] = {
 	[MOD_HDCP_MESSAGE_ID_READ_LC_SEND_L_PRIME] = 0x692f8,
 	[MOD_HDCP_MESSAGE_ID_WRITE_SKE_SEND_EKS] = 0x69318,
 	[MOD_HDCP_MESSAGE_ID_READ_REPEATER_AUTH_SEND_RECEIVERID_LIST] = 0x69330,
-	[MOD_HDCP_MESSAGE_ID_READ_REPEATER_AUTH_SEND_RECEIVERID_LIST_PART2] = 0x69340,
 	[MOD_HDCP_MESSAGE_ID_WRITE_REPEATER_AUTH_SEND_ACK] = 0x693e0,
 	[MOD_HDCP_MESSAGE_ID_WRITE_REPEATER_AUTH_STREAM_MANAGE] = 0x693f0,
 	[MOD_HDCP_MESSAGE_ID_READ_REPEATER_AUTH_STREAM_READY] = 0x69473,
@@ -410,7 +405,7 @@ enum mod_hdcp_status mod_hdcp_read_ake_cert(struct mod_hdcp *hdcp)
 	enum mod_hdcp_status status;
 
 	if (is_dp_hdcp(hdcp)) {
-		hdcp->auth.msg.hdcp2.ake_cert[0] = HDCP_2_2_AKE_SEND_CERT;
+		hdcp->auth.msg.hdcp2.ake_cert[0] = 3;
 		status = read(hdcp, MOD_HDCP_MESSAGE_ID_READ_AKE_SEND_CERT,
 				hdcp->auth.msg.hdcp2.ake_cert+1,
 				sizeof(hdcp->auth.msg.hdcp2.ake_cert)-1);
@@ -428,7 +423,7 @@ enum mod_hdcp_status mod_hdcp_read_h_prime(struct mod_hdcp *hdcp)
 	enum mod_hdcp_status status;
 
 	if (is_dp_hdcp(hdcp)) {
-		hdcp->auth.msg.hdcp2.ake_h_prime[0] = HDCP_2_2_AKE_SEND_HPRIME;
+		hdcp->auth.msg.hdcp2.ake_h_prime[0] = 7;
 		status = read(hdcp, MOD_HDCP_MESSAGE_ID_READ_AKE_SEND_H_PRIME,
 				hdcp->auth.msg.hdcp2.ake_h_prime+1,
 				sizeof(hdcp->auth.msg.hdcp2.ake_h_prime)-1);
@@ -446,7 +441,7 @@ enum mod_hdcp_status mod_hdcp_read_pairing_info(struct mod_hdcp *hdcp)
 	enum mod_hdcp_status status;
 
 	if (is_dp_hdcp(hdcp)) {
-		hdcp->auth.msg.hdcp2.ake_pairing_info[0] = HDCP_2_2_AKE_SEND_PAIRING_INFO;
+		hdcp->auth.msg.hdcp2.ake_pairing_info[0] = 8;
 		status = read(hdcp, MOD_HDCP_MESSAGE_ID_READ_AKE_SEND_PAIRING_INFO,
 				hdcp->auth.msg.hdcp2.ake_pairing_info+1,
 				sizeof(hdcp->auth.msg.hdcp2.ake_pairing_info)-1);
@@ -464,7 +459,7 @@ enum mod_hdcp_status mod_hdcp_read_l_prime(struct mod_hdcp *hdcp)
 	enum mod_hdcp_status status;
 
 	if (is_dp_hdcp(hdcp)) {
-		hdcp->auth.msg.hdcp2.lc_l_prime[0] = HDCP_2_2_LC_SEND_LPRIME;
+		hdcp->auth.msg.hdcp2.lc_l_prime[0] = 10;
 		status = read(hdcp, MOD_HDCP_MESSAGE_ID_READ_LC_SEND_L_PRIME,
 				hdcp->auth.msg.hdcp2.lc_l_prime+1,
 				sizeof(hdcp->auth.msg.hdcp2.lc_l_prime)-1);
@@ -479,27 +474,14 @@ enum mod_hdcp_status mod_hdcp_read_l_prime(struct mod_hdcp *hdcp)
 
 enum mod_hdcp_status mod_hdcp_read_rx_id_list(struct mod_hdcp *hdcp)
 {
-	enum mod_hdcp_status status = MOD_HDCP_STATUS_SUCCESS;
+	enum mod_hdcp_status status;
 
 	if (is_dp_hdcp(hdcp)) {
-		uint32_t device_count = 0;
-		uint32_t rx_id_list_size = 0;
-		uint32_t bytes_read = 0;
-
-		hdcp->auth.msg.hdcp2.rx_id_list[0] = HDCP_2_2_REP_SEND_RECVID_LIST;
+		hdcp->auth.msg.hdcp2.rx_id_list[0] = 12;
 		status = read(hdcp, MOD_HDCP_MESSAGE_ID_READ_REPEATER_AUTH_SEND_RECEIVERID_LIST,
-						hdcp->auth.msg.hdcp2.rx_id_list+1,
-						HDCP_MAX_AUX_TRANSACTION_SIZE);
-		if (status == MOD_HDCP_STATUS_SUCCESS) {
-			bytes_read = HDCP_MAX_AUX_TRANSACTION_SIZE;
-			device_count = HDCP_2_2_DEV_COUNT_LO(hdcp->auth.msg.hdcp2.rx_id_list[2]) +
-					(HDCP_2_2_DEV_COUNT_HI(hdcp->auth.msg.hdcp2.rx_id_list[1]) << 4);
-			rx_id_list_size = MIN((21 + 5 * device_count),
-					(sizeof(hdcp->auth.msg.hdcp2.rx_id_list) - 1));
-			status = read(hdcp, MOD_HDCP_MESSAGE_ID_READ_REPEATER_AUTH_SEND_RECEIVERID_LIST_PART2,
-					hdcp->auth.msg.hdcp2.rx_id_list + 1 + bytes_read,
-					(rx_id_list_size - 1) / HDCP_MAX_AUX_TRANSACTION_SIZE * HDCP_MAX_AUX_TRANSACTION_SIZE);
-		}
+				hdcp->auth.msg.hdcp2.rx_id_list+1,
+				sizeof(hdcp->auth.msg.hdcp2.rx_id_list)-1);
+
 	} else {
 		status = read(hdcp, MOD_HDCP_MESSAGE_ID_READ_REPEATER_AUTH_SEND_RECEIVERID_LIST,
 				hdcp->auth.msg.hdcp2.rx_id_list,
@@ -513,7 +495,7 @@ enum mod_hdcp_status mod_hdcp_read_stream_ready(struct mod_hdcp *hdcp)
 	enum mod_hdcp_status status;
 
 	if (is_dp_hdcp(hdcp)) {
-		hdcp->auth.msg.hdcp2.repeater_auth_stream_ready[0] = HDCP_2_2_REP_STREAM_READY;
+		hdcp->auth.msg.hdcp2.repeater_auth_stream_ready[0] = 17;
 		status = read(hdcp, MOD_HDCP_MESSAGE_ID_READ_REPEATER_AUTH_STREAM_READY,
 				hdcp->auth.msg.hdcp2.repeater_auth_stream_ready+1,
 				sizeof(hdcp->auth.msg.hdcp2.repeater_auth_stream_ready)-1);
@@ -646,19 +628,4 @@ enum mod_hdcp_status mod_hdcp_write_content_type(struct mod_hdcp *hdcp)
 	else
 		status = MOD_HDCP_STATUS_INVALID_OPERATION;
 	return status;
-}
-
-enum mod_hdcp_status mod_hdcp_clear_cp_irq_status(struct mod_hdcp *hdcp)
-{
-	uint8_t clear_cp_irq_bit = DP_CP_IRQ;
-	uint32_t size = 1;
-
-	if (is_dp_hdcp(hdcp)) {
-		uint32_t cp_irq_addrs = (hdcp->connection.link.dp.rev >= 0x14)
-				? DP_DEVICE_SERVICE_IRQ_VECTOR_ESI0:DP_DEVICE_SERVICE_IRQ_VECTOR;
-		return hdcp->config.ddc.funcs.write_dpcd(hdcp->config.ddc.handle, cp_irq_addrs,
-				&clear_cp_irq_bit, size) ? MOD_HDCP_STATUS_SUCCESS : MOD_HDCP_STATUS_DDC_FAILURE;
-	}
-
-	return MOD_HDCP_STATUS_INVALID_OPERATION;
 }

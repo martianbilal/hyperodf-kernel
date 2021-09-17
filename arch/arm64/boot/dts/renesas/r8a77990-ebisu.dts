@@ -16,9 +16,6 @@
 	aliases {
 		serial0 = &scif2;
 		ethernet0 = &avb;
-		mmc0 = &sdhi3;
-		mmc1 = &sdhi0;
-		mmc2 = &sdhi1;
 	};
 
 	chosen {
@@ -363,6 +360,8 @@
 		adi,input-depth = <8>;
 		adi,input-colorspace = "rgb";
 		adi,input-clock = "1x";
+		adi,input-style = <1>;
+		adi,input-justification = "evenly";
 
 		ports {
 			#address-cells = <1>;
@@ -523,8 +522,10 @@
 
 &pfc {
 	avb_pins: avb {
-		groups = "avb_link", "avb_mii";
-		function = "avb";
+		mux {
+			groups = "avb_link", "avb_mii";
+			function = "avb";
+		};
 	};
 
 	canfd0_pins: canfd0 {
@@ -715,10 +716,7 @@
 	mmc-hs200-1_8v;
 	mmc-hs400-1_8v;
 	bus-width = <8>;
-	no-sd;
-	no-sdio;
 	non-removable;
-	full-pwr-cycle-in-suspend;
 	status = "okay";
 };
 

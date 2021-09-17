@@ -94,8 +94,6 @@ struct pt_regs {
 #include <asm/paravirt_types.h>
 #endif
 
-#include <asm/proto.h>
-
 struct cpuinfo_x86;
 struct task_struct;
 
@@ -125,7 +123,7 @@ static inline void regs_set_return_value(struct pt_regs *regs, unsigned long rc)
  * On x86_64, vm86 mode is mercifully nonexistent, and we don't need
  * the extra check.
  */
-static __always_inline int user_mode(struct pt_regs *regs)
+static inline int user_mode(struct pt_regs *regs)
 {
 #ifdef CONFIG_X86_32
 	return ((regs->cs & SEGMENT_RPL_MASK) | (regs->flags & X86_VM_MASK)) >= USER_RPL;
@@ -177,19 +175,6 @@ static inline bool any_64bit_mode(struct pt_regs *regs)
 #ifdef CONFIG_X86_64
 #define current_user_stack_pointer()	current_pt_regs()->sp
 #define compat_user_stack_pointer()	current_pt_regs()->sp
-
-static inline bool ip_within_syscall_gap(struct pt_regs *regs)
-{
-	bool ret = (regs->ip >= (unsigned long)entry_SYSCALL_64 &&
-		    regs->ip <  (unsigned long)entry_SYSCALL_64_safe_stack);
-
-#ifdef CONFIG_IA32_EMULATION
-	ret = ret || (regs->ip >= (unsigned long)entry_SYSCALL_compat &&
-		      regs->ip <  (unsigned long)entry_SYSCALL_compat_safe_stack);
-#endif
-
-	return ret;
-}
 #endif
 
 static inline unsigned long kernel_stack_pointer(struct pt_regs *regs)
@@ -222,11 +207,6 @@ static inline void user_stack_pointer_set(struct pt_regs *regs,
 		unsigned long val)
 {
 	regs->sp = val;
-}
-
-static __always_inline bool regs_irqs_disabled(struct pt_regs *regs)
-{
-	return !(regs->flags & X86_EFLAGS_IF);
 }
 
 /* Query offset/name of register from its name/offset */
@@ -298,7 +278,7 @@ static inline unsigned long *regs_get_kernel_stack_nth_addr(struct pt_regs *regs
 }
 
 /* To avoid include hell, we can't include uaccess.h */
-extern long copy_from_kernel_nofault(void *dst, const void *src, size_t size);
+extern long probe_kernel_read(void *dst, const void *src, size_t size);
 
 /**
  * regs_get_kernel_stack_nth() - get Nth entry of the stack
@@ -318,7 +298,7 @@ static inline unsigned long regs_get_kernel_stack_nth(struct pt_regs *regs,
 
 	addr = regs_get_kernel_stack_nth_addr(regs, n);
 	if (addr) {
-		ret = copy_from_kernel_nofault(&val, addr, sizeof(val));
+		ret = probe_kernel_read(&val, addr, sizeof(val));
 		if (!ret)
 			return val;
 	}
@@ -342,8 +322,8 @@ static inline unsigned long regs_get_kernel_argument(struct pt_regs *regs,
 	static const unsigned int argument_offs[] = {
 #ifdef __i386__
 		offsetof(struct pt_regs, ax),
-		offsetof(struct pt_regs, dx),
 		offsetof(struct pt_regs, cx),
+		offsetof(struct pt_regs, dx),
 #define NR_REG_ARGUMENTS 3
 #else
 		offsetof(struct pt_regs, di),

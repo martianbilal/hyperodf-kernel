@@ -272,7 +272,7 @@ void optc1_program_timing(
 			vupdate_offset,
 			vupdate_width);
 
-	optc->funcs->set_vtg_params(optc, dc_crtc_timing, true);
+	optc->funcs->set_vtg_params(optc, dc_crtc_timing);
 
 	/* TODO
 	 * patched_crtc_timing.flags.HORZ_COUNT_BY_TWO == 1
@@ -288,31 +288,12 @@ void optc1_program_timing(
 	if (optc1_is_two_pixels_per_containter(&patched_crtc_timing) || optc1->opp_count == 2)
 		h_div = H_TIMING_DIV_BY2;
 
-	if (REG(OPTC_DATA_FORMAT_CONTROL)) {
-		uint32_t data_fmt = 0;
-
-		if (patched_crtc_timing.pixel_encoding == PIXEL_ENCODING_YCBCR422)
-			data_fmt = 1;
-		else if (patched_crtc_timing.pixel_encoding == PIXEL_ENCODING_YCBCR420)
-			data_fmt = 2;
-
-		REG_UPDATE(OPTC_DATA_FORMAT_CONTROL, OPTC_DATA_FORMAT, data_fmt);
-	}
-
-	if (optc1->tg_mask->OTG_H_TIMING_DIV_MODE != 0) {
-		if (optc1->opp_count == 4)
-			h_div = H_TIMING_DIV_BY4;
-
-		REG_UPDATE(OTG_H_TIMING_CNTL,
-		OTG_H_TIMING_DIV_MODE, h_div);
-	} else {
-		REG_UPDATE(OTG_H_TIMING_CNTL,
+	REG_UPDATE(OTG_H_TIMING_CNTL,
 		OTG_H_TIMING_DIV_BY2, h_div);
-	}
 }
 
 void optc1_set_vtg_params(struct timing_generator *optc,
-		const struct dc_crtc_timing *dc_crtc_timing, bool program_fp2)
+		const struct dc_crtc_timing *dc_crtc_timing)
 {
 	struct dc_crtc_timing patched_crtc_timing;
 	uint32_t asic_blank_end;
@@ -348,12 +329,9 @@ void optc1_set_vtg_params(struct timing_generator *optc,
 		}
 	}
 
-	if (program_fp2)
-		REG_UPDATE_2(CONTROL,
-				VTG0_FP2, v_fp2,
-				VTG0_VCOUNT_INIT, v_init);
-	else
-		REG_UPDATE(CONTROL, VTG0_VCOUNT_INIT, v_init);
+	REG_UPDATE_2(CONTROL,
+			VTG0_FP2, v_fp2,
+			VTG0_VCOUNT_INIT, v_init);
 }
 
 void optc1_set_blank_data_double_buffer(struct timing_generator *optc, bool enable)
@@ -364,23 +342,6 @@ void optc1_set_blank_data_double_buffer(struct timing_generator *optc, bool enab
 
 	REG_UPDATE(OTG_DOUBLE_BUFFER_CONTROL,
 			OTG_BLANK_DATA_DOUBLE_BUFFER_EN, blank_data_double_buffer_enable);
-}
-
-/**
- * optc1_set_timing_double_buffer() - DRR double buffering control
- *
- * Sets double buffer point for V_TOTAL, H_TOTAL, VTOTAL_MIN,
- * VTOTAL_MAX, VTOTAL_MIN_SEL and VTOTAL_MAX_SEL registers.
- *
- * Options: any time,  start of frame, dp start of frame (range timing)
- */
-void optc1_set_timing_double_buffer(struct timing_generator *optc, bool enable)
-{
-	struct optc *optc1 = DCN10TG_FROM_TG(optc);
-	uint32_t mode = enable ? 2 : 0;
-
-	REG_UPDATE(OTG_DOUBLE_BUFFER_CONTROL,
-		   OTG_RANGE_TIMING_DBUF_UPDATE_MODE, mode);
 }
 
 /**
@@ -657,16 +618,6 @@ void optc1_unlock(struct timing_generator *optc)
 
 	REG_SET(OTG_MASTER_UPDATE_LOCK, 0,
 			OTG_MASTER_UPDATE_LOCK, 0);
-}
-
-bool optc1_is_locked(struct timing_generator *optc)
-{
-	struct optc *optc1 = DCN10TG_FROM_TG(optc);
-	uint32_t locked;
-
-	REG_GET(OTG_MASTER_UPDATE_LOCK, UPDATE_LOCK_STATUS, &locked);
-
-	return (locked == 1);
 }
 
 void optc1_get_position(struct timing_generator *optc,
@@ -1244,7 +1195,7 @@ static void optc1_enable_stereo(struct timing_generator *optc,
 			REG_UPDATE_3(OTG_STEREO_CONTROL,
 				OTG_STEREO_EN, stereo_en,
 				OTG_STEREO_SYNC_OUTPUT_LINE_NUM, 0,
-				OTG_STEREO_SYNC_OUTPUT_POLARITY, flags->RIGHT_EYE_POLARITY == 0 ? 0 : 1);
+				OTG_STEREO_SYNC_OUTPUT_POLARITY, 0);
 
 		if (flags->PROGRAM_POLARITY)
 			REG_UPDATE(OTG_STEREO_CONTROL,
@@ -1404,7 +1355,6 @@ void optc1_clear_optc_underflow(struct timing_generator *optc)
 void optc1_tg_init(struct timing_generator *optc)
 {
 	optc1_set_blank_data_double_buffer(optc, true);
-	optc1_set_timing_double_buffer(optc, true);
 	optc1_clear_optc_underflow(optc);
 }
 
@@ -1523,7 +1473,6 @@ static const struct timing_generator_funcs dcn10_tg_funcs = {
 		.enable_crtc_reset = optc1_enable_crtc_reset,
 		.disable_reset_trigger = optc1_disable_reset_trigger,
 		.lock = optc1_lock,
-		.is_locked = optc1_is_locked,
 		.unlock = optc1_unlock,
 		.enable_optc_clock = optc1_enable_optc_clock,
 		.set_drr = optc1_set_drr,
@@ -1554,7 +1503,7 @@ void dcn10_timing_generator_init(struct optc *optc1)
 	optc1->min_h_blank = 32;
 	optc1->min_v_blank = 3;
 	optc1->min_v_blank_interlace = 5;
-	optc1->min_h_sync_width = 4;
+	optc1->min_h_sync_width = 8;
 	optc1->min_v_sync_width = 1;
 }
 

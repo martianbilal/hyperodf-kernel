@@ -6,15 +6,10 @@
 #include <linux/fs_pin.h>
 
 struct mnt_namespace {
+	atomic_t		count;
 	struct ns_common	ns;
 	struct mount *	root;
-	/*
-	 * Traversal and modification of .list is protected by either
-	 * - taking namespace_sem for write, OR
-	 * - taking namespace_sem for read AND taking .ns_lock.
-	 */
 	struct list_head	list;
-	spinlock_t		ns_lock;
 	struct user_namespace	*user_ns;
 	struct ucounts		*ucounts;
 	u64			seq;	/* Sequence number to prevent loops */
@@ -119,16 +114,28 @@ static inline void detach_mounts(struct dentry *dentry)
 
 static inline void get_mnt_ns(struct mnt_namespace *ns)
 {
-	refcount_inc(&ns->ns.count);
+	atomic_inc(&ns->count);
 }
 
 extern seqlock_t mount_lock;
+
+static inline void lock_mount_hash(void)
+{
+	write_seqlock(&mount_lock);
+}
+
+static inline void unlock_mount_hash(void)
+{
+	write_sequnlock(&mount_lock);
+}
 
 struct proc_mounts {
 	struct mnt_namespace *ns;
 	struct path root;
 	int (*show)(struct seq_file *, struct vfsmount *);
-	struct mount cursor;
+	void *cached_mount;
+	u64 cached_event;
+	loff_t cached_index;
 };
 
 extern const struct seq_operations mounts_op;
@@ -146,5 +153,3 @@ static inline bool is_anon_ns(struct mnt_namespace *ns)
 {
 	return ns->seq == 0;
 }
-
-extern void mnt_cursor_del(struct mnt_namespace *ns, struct mount *cursor);

@@ -33,16 +33,15 @@
 struct drm_gpu_scheduler;
 struct drm_sched_rq;
 
-/* These are often used as an (initial) index
- * to an array, and as such should start at 0.
- */
 enum drm_sched_priority {
 	DRM_SCHED_PRIORITY_MIN,
+	DRM_SCHED_PRIORITY_LOW = DRM_SCHED_PRIORITY_MIN,
 	DRM_SCHED_PRIORITY_NORMAL,
-	DRM_SCHED_PRIORITY_HIGH,
+	DRM_SCHED_PRIORITY_HIGH_SW,
+	DRM_SCHED_PRIORITY_HIGH_HW,
 	DRM_SCHED_PRIORITY_KERNEL,
-
-	DRM_SCHED_PRIORITY_COUNT,
+	DRM_SCHED_PRIORITY_MAX,
+	DRM_SCHED_PRIORITY_INVALID = -1,
 	DRM_SCHED_PRIORITY_UNSET = -2
 };
 
@@ -57,7 +56,6 @@ enum drm_sched_priority {
  *              Jobs from this entity can be scheduled on any scheduler
  *              on this list.
  * @num_sched_list: number of drm_gpu_schedulers in the sched_list.
- * @priority: priority of the entity
  * @rq_lock: lock to modify the runqueue to which this entity belongs.
  * @job_queue: the list of jobs of this entity.
  * @fence_seq: a linearly increasing seqno incremented with each
@@ -171,10 +169,10 @@ struct drm_sched_fence *to_drm_sched_fence(struct dma_fence *f);
  * struct drm_sched_job - A job to be run by an entity.
  *
  * @queue_node: used to append this struct to the queue of jobs in an entity.
- * @list: a job participates in a "pending" and "done" lists.
  * @sched: the scheduler instance on which this job is scheduled.
  * @s_fence: contains the fences for the scheduling of job.
  * @finish_cb: the callback for the finished fence.
+ * @node: used to append this struct to the @drm_gpu_scheduler.ring_mirror_list.
  * @id: a unique id assigned to each job scheduled on the scheduler.
  * @karma: increment on every hang caused by this job. If this exceeds the hang
  *         limit of the scheduler then the job is marked guilty and will not
@@ -189,21 +187,21 @@ struct drm_sched_fence *to_drm_sched_fence(struct dma_fence *f);
  */
 struct drm_sched_job {
 	struct spsc_node		queue_node;
-	struct list_head		list;
 	struct drm_gpu_scheduler	*sched;
 	struct drm_sched_fence		*s_fence;
 	struct dma_fence_cb		finish_cb;
+	struct list_head		node;
 	uint64_t			id;
 	atomic_t			karma;
 	enum drm_sched_priority		s_priority;
-	struct drm_sched_entity         *entity;
+	struct drm_sched_entity  *entity;
 	struct dma_fence_cb		cb;
 };
 
 static inline bool drm_sched_invalidate_job(struct drm_sched_job *s_job,
 					    int threshold)
 {
-	return s_job && atomic_inc_return(&s_job->karma) > threshold;
+	return (s_job && atomic_inc_return(&s_job->karma) > threshold);
 }
 
 /**
@@ -260,8 +258,8 @@ struct drm_sched_backend_ops {
  * @work_tdr: schedules a delayed call to @drm_sched_job_timedout after the
  *            timeout interval is over.
  * @thread: the kthread on which the scheduler which run.
- * @pending_list: the list of jobs which are currently in the job queue.
- * @job_list_lock: lock to protect the pending_list.
+ * @ring_mirror_list: the list of jobs which are currently in the job queue.
+ * @job_list_lock: lock to protect the ring_mirror_list.
  * @hang_limit: once the hangs by a job crosses this limit then it is marked
  *              guilty and it will be considered for scheduling further.
  * @score: score to help loadbalancer pick a idle sched
@@ -275,14 +273,14 @@ struct drm_gpu_scheduler {
 	uint32_t			hw_submission_limit;
 	long				timeout;
 	const char			*name;
-	struct drm_sched_rq		sched_rq[DRM_SCHED_PRIORITY_COUNT];
+	struct drm_sched_rq		sched_rq[DRM_SCHED_PRIORITY_MAX];
 	wait_queue_head_t		wake_up_worker;
 	wait_queue_head_t		job_scheduled;
 	atomic_t			hw_rq_count;
 	atomic64_t			job_id_count;
 	struct delayed_work		work_tdr;
 	struct task_struct		*thread;
-	struct list_head		pending_list;
+	struct list_head		ring_mirror_list;
 	spinlock_t			job_list_lock;
 	int				hang_limit;
 	atomic_t                        score;
@@ -299,10 +297,6 @@ void drm_sched_fini(struct drm_gpu_scheduler *sched);
 int drm_sched_job_init(struct drm_sched_job *job,
 		       struct drm_sched_entity *entity,
 		       void *owner);
-void drm_sched_entity_modify_sched(struct drm_sched_entity *entity,
-				    struct drm_gpu_scheduler **sched_list,
-                                   unsigned int num_sched_list);
-
 void drm_sched_job_cleanup(struct drm_sched_job *job);
 void drm_sched_wakeup(struct drm_gpu_scheduler *sched);
 void drm_sched_stop(struct drm_gpu_scheduler *sched, struct drm_sched_job *bad);
@@ -343,8 +337,5 @@ void drm_sched_fence_finished(struct drm_sched_fence *fence);
 unsigned long drm_sched_suspend_timeout(struct drm_gpu_scheduler *sched);
 void drm_sched_resume_timeout(struct drm_gpu_scheduler *sched,
 		                unsigned long remaining);
-struct drm_gpu_scheduler *
-drm_sched_pick_best(struct drm_gpu_scheduler **sched_list,
-		     unsigned int num_sched_list);
 
 #endif

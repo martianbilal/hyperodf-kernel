@@ -335,7 +335,7 @@ struct sdma_desc {
  * @sdma:		pointer to the SDMA engine for this channel
  * @channel:		the channel number, matches dmaengine chan_id + 1
  * @direction:		transfer type. Needed for setting SDMA script
- * @slave_config:	Slave configuration
+ * @slave_config	Slave configuration
  * @peripheral_type:	Peripheral type. Needed for setting SDMA script
  * @event_id0:		aka dma request line
  * @event_id1:		for channels that use 2 events
@@ -354,10 +354,8 @@ struct sdma_desc {
  * @shp_addr:		value for gReg[6]
  * @per_addr:		value for gReg[2]
  * @status:		status of dma channel
- * @context_loaded:	ensure context is only loaded once
  * @data:		specific sdma interface structure
  * @bd_pool:		dma_pool for bd
- * @terminate_worker:	used to call back into terminate work function
  */
 struct sdma_channel {
 	struct virt_dma_chan		vc;
@@ -426,6 +424,7 @@ struct sdma_driver_data {
 
 struct sdma_engine {
 	struct device			*dev;
+	struct device_dma_parameters	dma_parms;
 	struct sdma_channel		channel[MAX_DMA_CHANNELS];
 	struct sdma_channel_control	*channel_control;
 	void __iomem			*regs;
@@ -565,6 +564,37 @@ static struct sdma_driver_data sdma_imx8mq = {
 	.script_addrs = &sdma_script_imx7d,
 	.check_ratio = 1,
 };
+
+static const struct platform_device_id sdma_devtypes[] = {
+	{
+		.name = "imx25-sdma",
+		.driver_data = (unsigned long)&sdma_imx25,
+	}, {
+		.name = "imx31-sdma",
+		.driver_data = (unsigned long)&sdma_imx31,
+	}, {
+		.name = "imx35-sdma",
+		.driver_data = (unsigned long)&sdma_imx35,
+	}, {
+		.name = "imx51-sdma",
+		.driver_data = (unsigned long)&sdma_imx51,
+	}, {
+		.name = "imx53-sdma",
+		.driver_data = (unsigned long)&sdma_imx53,
+	}, {
+		.name = "imx6q-sdma",
+		.driver_data = (unsigned long)&sdma_imx6q,
+	}, {
+		.name = "imx7d-sdma",
+		.driver_data = (unsigned long)&sdma_imx7d,
+	}, {
+		.name = "imx8mq-sdma",
+		.driver_data = (unsigned long)&sdma_imx8mq,
+	}, {
+		/* sentinel */
+	}
+};
+MODULE_DEVICE_TABLE(platform, sdma_devtypes);
 
 static const struct of_device_id sdma_dt_ids[] = {
 	{ .compatible = "fsl,imx6q-sdma", .data = &sdma_imx6q, },
@@ -1301,7 +1331,8 @@ static void sdma_free_chan_resources(struct dma_chan *chan)
 
 	sdma_channel_synchronize(chan);
 
-	sdma_event_disable(sdmac, sdmac->event_id0);
+	if (sdmac->event_id0 >= 0)
+		sdma_event_disable(sdmac, sdmac->event_id0);
 	if (sdmac->event_id1)
 		sdma_event_disable(sdmac, sdmac->event_id1);
 
@@ -1601,9 +1632,11 @@ static int sdma_config(struct dma_chan *chan,
 	memcpy(&sdmac->slave_config, dmaengine_cfg, sizeof(*dmaengine_cfg));
 
 	/* Set ENBLn earlier to make sure dma request triggered after that */
-	if (sdmac->event_id0 >= sdmac->sdma->drvdata->num_events)
-		return -EINVAL;
-	sdma_event_enable(sdmac, sdmac->event_id0);
+	if (sdmac->event_id0 >= 0) {
+		if (sdmac->event_id0 >= sdmac->sdma->drvdata->num_events)
+			return -EINVAL;
+		sdma_event_enable(sdmac, sdmac->event_id0);
+	}
 
 	if (sdmac->event_id1) {
 		if (sdmac->event_id1 >= sdmac->sdma->drvdata->num_events)
@@ -1952,6 +1985,8 @@ static struct dma_chan *sdma_xlate(struct of_phandle_args *dma_spec,
 
 static int sdma_probe(struct platform_device *pdev)
 {
+	const struct of_device_id *of_id =
+			of_match_device(sdma_dt_ids, &pdev->dev);
 	struct device_node *np = pdev->dev.of_node;
 	struct device_node *spba_bus;
 	const char *fw_name;
@@ -1959,9 +1994,21 @@ static int sdma_probe(struct platform_device *pdev)
 	int irq;
 	struct resource *iores;
 	struct resource spba_res;
+	struct sdma_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	int i;
 	struct sdma_engine *sdma;
 	s32 *saddr_arr;
+	const struct sdma_driver_data *drvdata = NULL;
+
+	if (of_id)
+		drvdata = of_id->data;
+	else if (pdev->id_entry)
+		drvdata = (void *)pdev->id_entry->driver_data;
+
+	if (!drvdata) {
+		dev_err(&pdev->dev, "unable to find driver data\n");
+		return -EINVAL;
+	}
 
 	ret = dma_coerce_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
 	if (ret)
@@ -1974,7 +2021,7 @@ static int sdma_probe(struct platform_device *pdev)
 	spin_lock_init(&sdma->channel_0_lock);
 
 	sdma->dev = &pdev->dev;
-	sdma->drvdata = of_device_get_match_data(sdma->dev);
+	sdma->drvdata = drvdata;
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
@@ -2016,7 +2063,7 @@ static int sdma_probe(struct platform_device *pdev)
 
 	/* initially no scripts available */
 	saddr_arr = (s32 *)sdma->script_addrs;
-	for (i = 0; i < sizeof(*sdma->script_addrs) / sizeof(s32); i++)
+	for (i = 0; i < SDMA_SCRIPT_ADDRS_ARRAY_SIZE_V1; i++)
 		saddr_arr[i] = -EINVAL;
 
 	dma_cap_set(DMA_SLAVE, sdma->dma_device.cap_mask);
@@ -2053,6 +2100,8 @@ static int sdma_probe(struct platform_device *pdev)
 
 	if (sdma->drvdata->script_addrs)
 		sdma_add_scripts(sdma, sdma->drvdata->script_addrs);
+	if (pdata && pdata->script_addrs)
+		sdma_add_scripts(sdma, pdata->script_addrs);
 
 	sdma->dma_device.dev = &pdev->dev;
 
@@ -2070,6 +2119,7 @@ static int sdma_probe(struct platform_device *pdev)
 	sdma->dma_device.residue_granularity = DMA_RESIDUE_GRANULARITY_SEGMENT;
 	sdma->dma_device.device_prep_dma_memcpy = sdma_prep_memcpy;
 	sdma->dma_device.device_issue_pending = sdma_issue_pending;
+	sdma->dma_device.dev->dma_parms = &sdma->dma_parms;
 	sdma->dma_device.copy_align = 2;
 	dma_set_max_seg_size(sdma->dma_device.dev, SDMA_BD_MAX_CNT);
 
@@ -2098,18 +2148,30 @@ static int sdma_probe(struct platform_device *pdev)
 	}
 
 	/*
-	 * Because that device tree does not encode ROM script address,
-	 * the RAM script in firmware is mandatory for device tree
-	 * probe, otherwise it fails.
+	 * Kick off firmware loading as the very last step:
+	 * attempt to load firmware only if we're not on the error path, because
+	 * the firmware callback requires a fully functional and allocated sdma
+	 * instance.
 	 */
-	ret = of_property_read_string(np, "fsl,sdma-ram-script-name",
-				      &fw_name);
-	if (ret) {
-		dev_warn(&pdev->dev, "failed to get firmware name\n");
-	} else {
-		ret = sdma_get_firmware(sdma, fw_name);
+	if (pdata) {
+		ret = sdma_get_firmware(sdma, pdata->fw_name);
 		if (ret)
-			dev_warn(&pdev->dev, "failed to get firmware from device tree\n");
+			dev_warn(&pdev->dev, "failed to get firmware from platform data\n");
+	} else {
+		/*
+		 * Because that device tree does not encode ROM script address,
+		 * the RAM script in firmware is mandatory for device tree
+		 * probe, otherwise it fails.
+		 */
+		ret = of_property_read_string(np, "fsl,sdma-ram-script-name",
+					      &fw_name);
+		if (ret) {
+			dev_warn(&pdev->dev, "failed to get firmware name\n");
+		} else {
+			ret = sdma_get_firmware(sdma, fw_name);
+			if (ret)
+				dev_warn(&pdev->dev, "failed to get firmware from device tree\n");
+		}
 	}
 
 	return 0;
@@ -2152,6 +2214,7 @@ static struct platform_driver sdma_driver = {
 		.name	= "imx-sdma",
 		.of_match_table = sdma_dt_ids,
 	},
+	.id_table	= sdma_devtypes,
 	.remove		= sdma_remove,
 	.probe		= sdma_probe,
 };

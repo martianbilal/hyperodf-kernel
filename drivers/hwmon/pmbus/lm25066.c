@@ -211,10 +211,7 @@ struct lm25066_data {
 
 #define to_lm25066_data(x)  container_of(x, struct lm25066_data, info)
 
-static const struct i2c_device_id lm25066_id[];
-
-static int lm25066_read_word_data(struct i2c_client *client, int page,
-				  int phase, int reg)
+static int lm25066_read_word_data(struct i2c_client *client, int page, int reg)
 {
 	const struct pmbus_driver_info *info = pmbus_get_driver_info(client);
 	const struct lm25066_data *data = to_lm25066_data(info);
@@ -222,7 +219,7 @@ static int lm25066_read_word_data(struct i2c_client *client, int page,
 
 	switch (reg) {
 	case PMBUS_VIRT_READ_VMON:
-		ret = pmbus_read_word_data(client, 0, 0xff, LM25066_READ_VAUX);
+		ret = pmbus_read_word_data(client, 0, LM25066_READ_VAUX);
 		if (ret < 0)
 			break;
 		/* Adjust returned value to match VIN coefficients */
@@ -247,40 +244,33 @@ static int lm25066_read_word_data(struct i2c_client *client, int page,
 		}
 		break;
 	case PMBUS_READ_IIN:
-		ret = pmbus_read_word_data(client, 0, 0xff,
-					   LM25066_MFR_READ_IIN);
+		ret = pmbus_read_word_data(client, 0, LM25066_MFR_READ_IIN);
 		break;
 	case PMBUS_READ_PIN:
-		ret = pmbus_read_word_data(client, 0, 0xff,
-					   LM25066_MFR_READ_PIN);
+		ret = pmbus_read_word_data(client, 0, LM25066_MFR_READ_PIN);
 		break;
 	case PMBUS_IIN_OC_WARN_LIMIT:
-		ret = pmbus_read_word_data(client, 0, 0xff,
+		ret = pmbus_read_word_data(client, 0,
 					   LM25066_MFR_IIN_OC_WARN_LIMIT);
 		break;
 	case PMBUS_PIN_OP_WARN_LIMIT:
-		ret = pmbus_read_word_data(client, 0, 0xff,
+		ret = pmbus_read_word_data(client, 0,
 					   LM25066_MFR_PIN_OP_WARN_LIMIT);
 		break;
 	case PMBUS_VIRT_READ_VIN_AVG:
-		ret = pmbus_read_word_data(client, 0, 0xff,
-					   LM25066_READ_AVG_VIN);
+		ret = pmbus_read_word_data(client, 0, LM25066_READ_AVG_VIN);
 		break;
 	case PMBUS_VIRT_READ_VOUT_AVG:
-		ret = pmbus_read_word_data(client, 0, 0xff,
-					   LM25066_READ_AVG_VOUT);
+		ret = pmbus_read_word_data(client, 0, LM25066_READ_AVG_VOUT);
 		break;
 	case PMBUS_VIRT_READ_IIN_AVG:
-		ret = pmbus_read_word_data(client, 0, 0xff,
-					   LM25066_READ_AVG_IIN);
+		ret = pmbus_read_word_data(client, 0, LM25066_READ_AVG_IIN);
 		break;
 	case PMBUS_VIRT_READ_PIN_AVG:
-		ret = pmbus_read_word_data(client, 0, 0xff,
-					   LM25066_READ_AVG_PIN);
+		ret = pmbus_read_word_data(client, 0, LM25066_READ_AVG_PIN);
 		break;
 	case PMBUS_VIRT_READ_PIN_MAX:
-		ret = pmbus_read_word_data(client, 0, 0xff,
-					   LM25066_READ_PIN_PEAK);
+		ret = pmbus_read_word_data(client, 0, LM25066_READ_PIN_PEAK);
 		break;
 	case PMBUS_VIRT_RESET_PIN_HISTORY:
 		ret = 0;
@@ -298,14 +288,13 @@ static int lm25066_read_word_data(struct i2c_client *client, int page,
 	return ret;
 }
 
-static int lm25056_read_word_data(struct i2c_client *client, int page,
-				  int phase, int reg)
+static int lm25056_read_word_data(struct i2c_client *client, int page, int reg)
 {
 	int ret;
 
 	switch (reg) {
 	case PMBUS_VIRT_VMON_UV_WARN_LIMIT:
-		ret = pmbus_read_word_data(client, 0, 0xff,
+		ret = pmbus_read_word_data(client, 0,
 					   LM25056_VAUX_UV_WARN_LIMIT);
 		if (ret < 0)
 			break;
@@ -313,7 +302,7 @@ static int lm25056_read_word_data(struct i2c_client *client, int page,
 		ret = DIV_ROUND_CLOSEST(ret * 293, 6140);
 		break;
 	case PMBUS_VIRT_VMON_OV_WARN_LIMIT:
-		ret = pmbus_read_word_data(client, 0, 0xff,
+		ret = pmbus_read_word_data(client, 0,
 					   LM25056_VAUX_OV_WARN_LIMIT);
 		if (ret < 0)
 			break;
@@ -321,7 +310,7 @@ static int lm25056_read_word_data(struct i2c_client *client, int page,
 		ret = DIV_ROUND_CLOSEST(ret * 293, 6140);
 		break;
 	default:
-		ret = lm25066_read_word_data(client, page, phase, reg);
+		ret = lm25066_read_word_data(client, page, reg);
 		break;
 	}
 	return ret;
@@ -371,18 +360,21 @@ static int lm25066_write_word_data(struct i2c_client *client, int page, int reg,
 	case PMBUS_VIN_OV_WARN_LIMIT:
 		word = ((s16)word < 0) ? 0 : clamp_val(word, 0, data->rlimit);
 		ret = pmbus_write_word_data(client, 0, reg, word);
+		pmbus_clear_cache(client);
 		break;
 	case PMBUS_IIN_OC_WARN_LIMIT:
 		word = ((s16)word < 0) ? 0 : clamp_val(word, 0, data->rlimit);
 		ret = pmbus_write_word_data(client, 0,
 					    LM25066_MFR_IIN_OC_WARN_LIMIT,
 					    word);
+		pmbus_clear_cache(client);
 		break;
 	case PMBUS_PIN_OP_WARN_LIMIT:
 		word = ((s16)word < 0) ? 0 : clamp_val(word, 0, data->rlimit);
 		ret = pmbus_write_word_data(client, 0,
 					    LM25066_MFR_PIN_OP_WARN_LIMIT,
 					    word);
+		pmbus_clear_cache(client);
 		break;
 	case PMBUS_VIRT_VMON_UV_WARN_LIMIT:
 		/* Adjust from VIN coefficients (for LM25056) */
@@ -390,6 +382,7 @@ static int lm25066_write_word_data(struct i2c_client *client, int page, int reg,
 		word = ((s16)word < 0) ? 0 : clamp_val(word, 0, data->rlimit);
 		ret = pmbus_write_word_data(client, 0,
 					    LM25056_VAUX_UV_WARN_LIMIT, word);
+		pmbus_clear_cache(client);
 		break;
 	case PMBUS_VIRT_VMON_OV_WARN_LIMIT:
 		/* Adjust from VIN coefficients (for LM25056) */
@@ -397,6 +390,7 @@ static int lm25066_write_word_data(struct i2c_client *client, int page, int reg,
 		word = ((s16)word < 0) ? 0 : clamp_val(word, 0, data->rlimit);
 		ret = pmbus_write_word_data(client, 0,
 					    LM25056_VAUX_OV_WARN_LIMIT, word);
+		pmbus_clear_cache(client);
 		break;
 	case PMBUS_VIRT_RESET_PIN_HISTORY:
 		ret = pmbus_write_byte(client, 0, LM25066_CLEAR_PIN_PEAK);
@@ -413,7 +407,8 @@ static int lm25066_write_word_data(struct i2c_client *client, int page, int reg,
 	return ret;
 }
 
-static int lm25066_probe(struct i2c_client *client)
+static int lm25066_probe(struct i2c_client *client,
+			  const struct i2c_device_id *id)
 {
 	int config;
 	struct lm25066_data *data;
@@ -433,7 +428,7 @@ static int lm25066_probe(struct i2c_client *client)
 	if (config < 0)
 		return config;
 
-	data->id = i2c_match_id(lm25066_id, client)->driver_data;
+	data->id = id->driver_data;
 	info = &data->info;
 
 	info->pages = 1;
@@ -483,7 +478,7 @@ static int lm25066_probe(struct i2c_client *client)
 		info->b[PSC_POWER] = coeff[PSC_POWER].b;
 	}
 
-	return pmbus_do_probe(client, info);
+	return pmbus_do_probe(client, id, info);
 }
 
 static const struct i2c_device_id lm25066_id[] = {
@@ -502,7 +497,8 @@ static struct i2c_driver lm25066_driver = {
 	.driver = {
 		   .name = "lm25066",
 		   },
-	.probe_new = lm25066_probe,
+	.probe = lm25066_probe,
+	.remove = pmbus_do_remove,
 	.id_table = lm25066_id,
 };
 

@@ -226,20 +226,21 @@ void wg_packet_handshake_receive_worker(struct work_struct *work)
 static void keep_key_fresh(struct wg_peer *peer)
 {
 	struct noise_keypair *keypair;
-	bool send;
+	bool send = false;
 
 	if (peer->sent_lastminute_handshake)
 		return;
 
 	rcu_read_lock_bh();
 	keypair = rcu_dereference_bh(peer->keypairs.current_keypair);
-	send = keypair && READ_ONCE(keypair->sending.is_valid) &&
-	       keypair->i_am_the_initiator &&
-	       wg_birthdate_has_expired(keypair->sending.birthdate,
-			REJECT_AFTER_TIME - KEEPALIVE_TIMEOUT - REKEY_TIMEOUT);
+	if (likely(keypair && READ_ONCE(keypair->sending.is_valid)) &&
+	    keypair->i_am_the_initiator &&
+	    unlikely(wg_birthdate_has_expired(keypair->sending.birthdate,
+			REJECT_AFTER_TIME - KEEPALIVE_TIMEOUT - REKEY_TIMEOUT)))
+		send = true;
 	rcu_read_unlock_bh();
 
-	if (unlikely(send)) {
+	if (send) {
 		peer->sent_lastminute_handshake = true;
 		wg_packet_send_queued_handshake_initiation(peer, false);
 	}
@@ -387,7 +388,7 @@ static void wg_packet_consume_data_done(struct wg_peer *peer,
 	 */
 	skb->ip_summed = CHECKSUM_UNNECESSARY;
 	skb->csum_level = ~0; /* All levels */
-	skb->protocol = ip_tunnel_parse_protocol(skb);
+	skb->protocol = wg_examine_packet_protocol(skb);
 	if (skb->protocol == htons(ETH_P_IP)) {
 		len = ntohs(ip_hdr(skb)->tot_len);
 		if (unlikely(len < sizeof(struct iphdr)))
@@ -414,8 +415,14 @@ static void wg_packet_consume_data_done(struct wg_peer *peer,
 	if (unlikely(routed_peer != peer))
 		goto dishonest_packet_peer;
 
-	napi_gro_receive(&peer->napi, skb);
-	update_rx_stats(peer, message_data_len(len_before_trim));
+	if (unlikely(napi_gro_receive(&peer->napi, skb) == GRO_DROP)) {
+		++dev->stats.rx_dropped;
+		net_dbg_ratelimited("%s: Failed to give packet to userspace from peer %llu (%pISpfsc)\n",
+				    dev->name, peer->internal_id,
+				    &peer->endpoint.addr);
+	} else {
+		update_rx_stats(peer, message_data_len(len_before_trim));
+	}
 	return;
 
 dishonest_packet_peer:
@@ -444,6 +451,7 @@ packet_processed:
 int wg_packet_rx_poll(struct napi_struct *napi, int budget)
 {
 	struct wg_peer *peer = container_of(napi, struct wg_peer, napi);
+	struct crypt_queue *queue = &peer->rx_queue;
 	struct noise_keypair *keypair;
 	struct endpoint endpoint;
 	enum packet_state state;
@@ -454,10 +462,11 @@ int wg_packet_rx_poll(struct napi_struct *napi, int budget)
 	if (unlikely(budget <= 0))
 		return 0;
 
-	while ((skb = wg_prev_queue_peek(&peer->rx_queue)) != NULL &&
+	while ((skb = __ptr_ring_peek(&queue->ring)) != NULL &&
 	       (state = atomic_read_acquire(&PACKET_CB(skb)->state)) !=
 		       PACKET_STATE_UNCRYPTED) {
-		wg_prev_queue_drop_peeked(&peer->rx_queue);
+		__ptr_ring_discard_one(&queue->ring);
+		peer = PACKET_PEER(skb);
 		keypair = PACKET_CB(skb)->keypair;
 		free = true;
 
@@ -506,7 +515,7 @@ void wg_packet_decrypt_worker(struct work_struct *work)
 		enum packet_state state =
 			likely(decrypt_packet(skb, PACKET_CB(skb)->keypair)) ?
 				PACKET_STATE_CRYPTED : PACKET_STATE_DEAD;
-		wg_queue_enqueue_per_peer_rx(skb, state);
+		wg_queue_enqueue_per_peer_napi(skb, state);
 		if (need_resched())
 			cond_resched();
 	}
@@ -529,10 +538,12 @@ static void wg_packet_consume_data(struct wg_device *wg, struct sk_buff *skb)
 	if (unlikely(READ_ONCE(peer->is_dead)))
 		goto err;
 
-	ret = wg_queue_enqueue_per_device_and_peer(&wg->decrypt_queue, &peer->rx_queue, skb,
-						   wg->packet_crypt_wq, &wg->decrypt_queue.last_cpu);
+	ret = wg_queue_enqueue_per_device_and_peer(&wg->decrypt_queue,
+						   &peer->rx_queue, skb,
+						   wg->packet_crypt_wq,
+						   &wg->decrypt_queue.last_cpu);
 	if (unlikely(ret == -EPIPE))
-		wg_queue_enqueue_per_peer_rx(skb, PACKET_STATE_DEAD);
+		wg_queue_enqueue_per_peer_napi(skb, PACKET_STATE_DEAD);
 	if (likely(!ret || ret == -EPIPE)) {
 		rcu_read_unlock_bh();
 		return;

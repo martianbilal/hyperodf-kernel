@@ -24,7 +24,6 @@
 #include "kfd_events.h"
 #include "soc15_int.h"
 #include "kfd_device_queue_manager.h"
-#include "kfd_smi_events.h"
 
 static bool event_interrupt_isr_v9(struct kfd_dev *dev,
 					const uint32_t *ih_ring_entry,
@@ -38,30 +37,11 @@ static bool event_interrupt_isr_v9(struct kfd_dev *dev,
 	vmid = SOC15_VMID_FROM_IH_ENTRY(ih_ring_entry);
 	if (vmid < dev->vm_info.first_vmid_kfd ||
 	    vmid > dev->vm_info.last_vmid_kfd)
-		return false;
+		return 0;
 
 	source_id = SOC15_SOURCE_ID_FROM_IH_ENTRY(ih_ring_entry);
 	client_id = SOC15_CLIENT_ID_FROM_IH_ENTRY(ih_ring_entry);
 	pasid = SOC15_PASID_FROM_IH_ENTRY(ih_ring_entry);
-
-	/* Only handle clients we care about */
-	if (client_id != SOC15_IH_CLIENTID_GRBM_CP &&
-	    client_id != SOC15_IH_CLIENTID_SDMA0 &&
-	    client_id != SOC15_IH_CLIENTID_SDMA1 &&
-	    client_id != SOC15_IH_CLIENTID_SDMA2 &&
-	    client_id != SOC15_IH_CLIENTID_SDMA3 &&
-	    client_id != SOC15_IH_CLIENTID_SDMA4 &&
-	    client_id != SOC15_IH_CLIENTID_SDMA5 &&
-	    client_id != SOC15_IH_CLIENTID_SDMA6 &&
-	    client_id != SOC15_IH_CLIENTID_SDMA7 &&
-	    client_id != SOC15_IH_CLIENTID_VMC &&
-	    client_id != SOC15_IH_CLIENTID_VMC1 &&
-	    client_id != SOC15_IH_CLIENTID_UTCL2 &&
-	    client_id != SOC15_IH_CLIENTID_SE0SH &&
-	    client_id != SOC15_IH_CLIENTID_SE1SH &&
-	    client_id != SOC15_IH_CLIENTID_SE2SH &&
-	    client_id != SOC15_IH_CLIENTID_SE3SH)
-		return false;
 
 	/* This is a known issue for gfx9. Under non HWS, pasid is not set
 	 * in the interrupt payload, so we need to find out the pasid on our
@@ -89,7 +69,7 @@ static bool event_interrupt_isr_v9(struct kfd_dev *dev,
 
 	/* If there is no valid PASID, it's likely a bug */
 	if (WARN_ONCE(pasid == 0, "Bug: No PASID in KFD interrupt"))
-		return false;
+		return 0;
 
 	/* Interrupt types we care about: various signals and faults.
 	 * They will be forwarded to a work queue (see below).
@@ -115,30 +95,17 @@ static void event_interrupt_wq_v9(struct kfd_dev *dev,
 	vmid = SOC15_VMID_FROM_IH_ENTRY(ih_ring_entry);
 	context_id = SOC15_CONTEXT_ID0_FROM_IH_ENTRY(ih_ring_entry);
 
-	if (client_id == SOC15_IH_CLIENTID_GRBM_CP ||
-	    client_id == SOC15_IH_CLIENTID_SE0SH ||
-	    client_id == SOC15_IH_CLIENTID_SE1SH ||
-	    client_id == SOC15_IH_CLIENTID_SE2SH ||
-	    client_id == SOC15_IH_CLIENTID_SE3SH) {
-		if (source_id == SOC15_INTSRC_CP_END_OF_PIPE)
-			kfd_signal_event_interrupt(pasid, context_id, 32);
-		else if (source_id == SOC15_INTSRC_SQ_INTERRUPT_MSG)
-			kfd_signal_event_interrupt(pasid, context_id & 0xffffff, 24);
-		else if (source_id == SOC15_INTSRC_CP_BAD_OPCODE)
-			kfd_signal_hw_exception_event(pasid);
-	} else if (client_id == SOC15_IH_CLIENTID_SDMA0 ||
-		   client_id == SOC15_IH_CLIENTID_SDMA1 ||
-		   client_id == SOC15_IH_CLIENTID_SDMA2 ||
-		   client_id == SOC15_IH_CLIENTID_SDMA3 ||
-		   client_id == SOC15_IH_CLIENTID_SDMA4 ||
-		   client_id == SOC15_IH_CLIENTID_SDMA5 ||
-		   client_id == SOC15_IH_CLIENTID_SDMA6 ||
-		   client_id == SOC15_IH_CLIENTID_SDMA7) {
-		if (source_id == SOC15_INTSRC_SDMA_TRAP)
-			kfd_signal_event_interrupt(pasid, context_id & 0xfffffff, 28);
-	} else if (client_id == SOC15_IH_CLIENTID_VMC ||
-		   client_id == SOC15_IH_CLIENTID_VMC1 ||
-		   client_id == SOC15_IH_CLIENTID_UTCL2) {
+	if (source_id == SOC15_INTSRC_CP_END_OF_PIPE)
+		kfd_signal_event_interrupt(pasid, context_id, 32);
+	else if (source_id == SOC15_INTSRC_SDMA_TRAP)
+		kfd_signal_event_interrupt(pasid, context_id & 0xfffffff, 28);
+	else if (source_id == SOC15_INTSRC_SQ_INTERRUPT_MSG)
+		kfd_signal_event_interrupt(pasid, context_id & 0xffffff, 24);
+	else if (source_id == SOC15_INTSRC_CP_BAD_OPCODE)
+		kfd_signal_hw_exception_event(pasid);
+	else if (client_id == SOC15_IH_CLIENTID_VMC ||
+		client_id == SOC15_IH_CLIENTID_VMC1 ||
+		 client_id == SOC15_IH_CLIENTID_UTCL2) {
 		struct kfd_vm_fault_info info = {0};
 		uint16_t ring_id = SOC15_RING_ID_FROM_IH_ENTRY(ih_ring_entry);
 
@@ -150,7 +117,6 @@ static void event_interrupt_wq_v9(struct kfd_dev *dev,
 		info.prot_read  = ring_id & 0x10;
 		info.prot_write = ring_id & 0x20;
 
-		kfd_smi_event_update_vmfault(dev, pasid);
 		kfd_process_vm_fault(dev->dqm, pasid);
 		kfd_signal_vm_fault_event(dev, pasid, &info);
 	}

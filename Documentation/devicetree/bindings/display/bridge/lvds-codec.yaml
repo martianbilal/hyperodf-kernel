@@ -32,30 +32,32 @@ properties:
   compatible:
     oneOf:
       - items:
-          - enum:
-              - ti,ds90c185   # For the TI DS90C185 FPD-Link Serializer
-              - ti,ds90c187   # For the TI DS90C187 FPD-Link Serializer
-              - ti,sn75lvds83 # For the TI SN75LVDS83 FlatLink transmitter
-          - const: lvds-encoder # Generic LVDS encoder compatible fallback
+        - enum:
+          - ti,ds90c185       # For the TI DS90C185 FPD-Link Serializer
+          - ti,ds90c187       # For the TI DS90C187 FPD-Link Serializer
+          - ti,sn75lvds83     # For the TI SN75LVDS83 FlatLink transmitter
+        - const: lvds-encoder # Generic LVDS encoder compatible fallback
       - items:
-          - enum:
-              - ti,ds90cf384a # For the DS90CF384A FPD-Link LVDS Receiver
-          - const: lvds-decoder # Generic LVDS decoders compatible fallback
+        - enum:
+          - ti,ds90cf384a     # For the DS90CF384A FPD-Link LVDS Receiver
+        - const: lvds-decoder # Generic LVDS decoders compatible fallback
       - enum:
-          - thine,thc63lvdm83d # For the THC63LVDM83D LVDS serializer
+        - thine,thc63lvdm83d  # For the THC63LVDM83D LVDS serializer
 
   ports:
-    $ref: /schemas/graph.yaml#/properties/ports
-
+    type: object
+    description: |
+      This device has two video ports. Their connections are modeled using the
+      OF graph bindings specified in Documentation/devicetree/bindings/graph.txt
     properties:
       port@0:
-        $ref: /schemas/graph.yaml#/properties/port
+        type: object
         description: |
           For LVDS encoders, port 0 is the parallel input
           For LVDS decoders, port 0 is the LVDS input
 
       port@1:
-        $ref: /schemas/graph.yaml#/properties/port
+        type: object
         description: |
           For LVDS encoders, port 1 is the LVDS output
           For LVDS decoders, port 1 is the parallel output
@@ -69,14 +71,9 @@ properties:
       The GPIO used to control the power down line of this device.
     maxItems: 1
 
-  power-supply: true
-
 required:
   - compatible
   - ports
-
-additionalProperties: false
-
 
 examples:
   - |

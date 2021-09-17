@@ -19,10 +19,12 @@
 #include <asm/setup.h>
 #include <asm/segment.h>
 #include <asm/page.h>
+#include <asm/pgalloc.h>
 #include <asm/io.h>
-#include <asm/tlbflush.h>
 
 #undef DEBUG
+
+#define PTRTREESIZE	(256*1024)
 
 /*
  * For 040/060 we can use the virtual memory area like other architectures,
@@ -48,7 +50,7 @@ static inline void free_io_area(void *addr)
 
 #else
 
-#define IO_SIZE		PMD_SIZE
+#define IO_SIZE		(256*1024)
 
 static struct vm_struct *iolist;
 
@@ -79,13 +81,14 @@ static void __free_io_area(void *addr, unsigned long size)
 
 #if CONFIG_PGTABLE_LEVELS == 3
 		if (CPU_IS_020_OR_030) {
-			int pmd_type = pmd_val(*pmd_dir) & _DESCTYPE_MASK;
+			int pmd_off = (virtaddr/PTRTREESIZE) & 15;
+			int pmd_type = pmd_dir->pmd[pmd_off] & _DESCTYPE_MASK;
 
 			if (pmd_type == _PAGE_PRESENT) {
-				pmd_clear(pmd_dir);
-				virtaddr += PMD_SIZE;
-				size -= PMD_SIZE;
-
+				pmd_dir->pmd[pmd_off] = 0;
+				virtaddr += PTRTREESIZE;
+				size -= PTRTREESIZE;
+				continue;
 			} else if (pmd_type == 0)
 				continue;
 		}
@@ -246,7 +249,7 @@ void __iomem *__ioremap(unsigned long physaddr, unsigned long size, int cachefla
 
 	while ((long)size > 0) {
 #ifdef DEBUG
-		if (!(virtaddr & (PMD_SIZE-1)))
+		if (!(virtaddr & (PTRTREESIZE-1)))
 			printk ("\npa=%#lx va=%#lx ", physaddr, virtaddr);
 #endif
 		pgd_dir = pgd_offset_k(virtaddr);
@@ -260,10 +263,10 @@ void __iomem *__ioremap(unsigned long physaddr, unsigned long size, int cachefla
 
 #if CONFIG_PGTABLE_LEVELS == 3
 		if (CPU_IS_020_OR_030) {
-			pmd_val(*pmd_dir) = physaddr;
-			physaddr += PMD_SIZE;
-			virtaddr += PMD_SIZE;
-			size -= PMD_SIZE;
+			pmd_dir->pmd[(virtaddr/PTRTREESIZE) & 15] = physaddr;
+			physaddr += PTRTREESIZE;
+			virtaddr += PTRTREESIZE;
+			size -= PTRTREESIZE;
 		} else
 #endif
 		{
@@ -364,12 +367,13 @@ void kernel_set_cachemode(void *addr, unsigned long size, int cmode)
 
 #if CONFIG_PGTABLE_LEVELS == 3
 		if (CPU_IS_020_OR_030) {
-			unsigned long pmd = pmd_val(*pmd_dir);
+			int pmd_off = (virtaddr/PTRTREESIZE) & 15;
 
-			if ((pmd & _DESCTYPE_MASK) == _PAGE_PRESENT) {
-				*pmd_dir = __pmd((pmd & _CACHEMASK040) | cmode);
-				virtaddr += PMD_SIZE;
-				size -= PMD_SIZE;
+			if ((pmd_dir->pmd[pmd_off] & _DESCTYPE_MASK) == _PAGE_PRESENT) {
+				pmd_dir->pmd[pmd_off] = (pmd_dir->pmd[pmd_off] &
+							 _CACHEMASK040) | cmode;
+				virtaddr += PTRTREESIZE;
+				size -= PTRTREESIZE;
 				continue;
 			}
 		}

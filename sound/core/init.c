@@ -13,9 +13,7 @@
 #include <linux/time.h>
 #include <linux/ctype.h>
 #include <linux/pm.h>
-#include <linux/debugfs.h>
 #include <linux/completion.h>
-#include <linux/interrupt.h>
 
 #include <sound/core.h>
 #include <sound/control.h>
@@ -151,6 +149,8 @@ static void release_card_device(struct device *dev)
  *  @extra_size: allocate this extra size after the main soundcard structure
  *  @card_ret: the pointer to store the created card instance
  *
+ *  Creates and initializes a soundcard structure.
+ *
  *  The function allocates snd_card instance via kzalloc with the given
  *  space for the driver to use freely.  The allocated struct is stored
  *  in the given card_ret pointer.
@@ -163,9 +163,6 @@ int snd_card_new(struct device *parent, int idx, const char *xid,
 {
 	struct snd_card *card;
 	int err;
-#ifdef CONFIG_SND_DEBUG
-	char name[8];
-#endif
 
 	if (snd_BUG_ON(!card_ret))
 		return -EINVAL;
@@ -179,7 +176,7 @@ int snd_card_new(struct device *parent, int idx, const char *xid,
 	if (extra_size > 0)
 		card->private_data = (char *)card + sizeof(struct snd_card);
 	if (xid)
-		strscpy(card->id, xid, sizeof(card->id));
+		strlcpy(card->id, xid, sizeof(card->id));
 	err = 0;
 	mutex_lock(&snd_card_mutex);
 	if (idx < 0) /* first check the matching module-name slot */
@@ -206,10 +203,7 @@ int snd_card_new(struct device *parent, int idx, const char *xid,
 	mutex_unlock(&snd_card_mutex);
 	card->dev = parent;
 	card->number = idx;
-#ifdef MODULE
-	WARN_ON(!module);
 	card->module = module;
-#endif
 	INIT_LIST_HEAD(&card->devices);
 	init_rwsem(&card->controls_rwsem);
 	rwlock_init(&card->ctl_files_rwlock);
@@ -249,12 +243,6 @@ int snd_card_new(struct device *parent, int idx, const char *xid,
 		dev_err(parent, "unable to create card info\n");
 		goto __error_ctl;
 	}
-
-#ifdef CONFIG_SND_DEBUG
-	sprintf(name, "card%d", idx);
-	card->debugfs_root = debugfs_create_dir(name, sound_debugfs_root);
-#endif
-
 	*card_ret = card;
 	return 0;
 
@@ -398,8 +386,10 @@ int snd_card_disconnect(struct snd_card *card)
 		return 0;
 	}
 	card->shutdown = 1;
+	spin_unlock(&card->files_lock);
 
 	/* replace file->f_op with special dummy operations */
+	spin_lock(&card->files_lock);
 	list_for_each_entry(mfile, &card->files_list, list) {
 		/* it's critical part, use endless loop */
 		/* we have no room to fail */
@@ -424,9 +414,6 @@ int snd_card_disconnect(struct snd_card *card)
 
 	/* notify all devices that we are disconnected */
 	snd_device_disconnect_all(card);
-
-	if (card->sync_irq > 0)
-		synchronize_irq(card->sync_irq);
 
 	snd_info_card_disconnect(card);
 	if (card->registered) {
@@ -489,10 +476,6 @@ static int snd_card_do_free(struct snd_card *card)
 		dev_warn(card->dev, "unable to free card info\n");
 		/* Not fatal error */
 	}
-#ifdef CONFIG_SND_DEBUG
-	debugfs_remove(card->debugfs_root);
-	card->debugfs_root = NULL;
-#endif
 	if (card->release_completion)
 		complete(card->release_completion);
 	kfree(card);
@@ -533,16 +516,16 @@ EXPORT_SYMBOL(snd_card_free_when_closed);
  */
 int snd_card_free(struct snd_card *card)
 {
-	DECLARE_COMPLETION_ONSTACK(released);
+	struct completion released;
 	int ret;
 
+	init_completion(&released);
 	card->release_completion = &released;
 	ret = snd_card_free_when_closed(card);
 	if (ret)
 		return ret;
 	/* wait, until all devices are ready for the free operation */
 	wait_for_completion(&released);
-
 	return 0;
 }
 EXPORT_SYMBOL(snd_card_free);
@@ -640,7 +623,7 @@ static void snd_card_set_id_no_lock(struct snd_card *card, const char *src,
 	/* last resort... */
 	dev_err(card->dev, "unable to set card id (%s)\n", id);
 	if (card->proc_root->name)
-		strscpy(card->id, card->proc_root->name, sizeof(card->id));
+		strlcpy(card->id, card->proc_root->name, sizeof(card->id));
 }
 
 /**

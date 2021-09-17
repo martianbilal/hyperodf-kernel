@@ -22,11 +22,30 @@ enum {
 
 static int bcm84881_wait_init(struct phy_device *phydev)
 {
-	int val;
+	unsigned int tries = 20;
+	int ret, val;
 
-	return phy_read_mmd_poll_timeout(phydev, MDIO_MMD_PMAPMD, MDIO_CTRL1,
-					 val, !(val & MDIO_CTRL1_RESET),
-					 100000, 2000000, false);
+	do {
+		val = phy_read_mmd(phydev, MDIO_MMD_PMAPMD, MDIO_CTRL1);
+		if (val < 0) {
+			ret = val;
+			break;
+		}
+		if (!(val & MDIO_CTRL1_RESET)) {
+			ret = 0;
+			break;
+		}
+		if (!--tries) {
+			ret = -ETIMEDOUT;
+			break;
+		}
+		msleep(100);
+	} while (1);
+
+	if (ret)
+		phydev_err(phydev, "%s failed: %d\n", __func__, ret);
+
+	return ret;
 }
 
 static int bcm84881_config_init(struct phy_device *phydev)

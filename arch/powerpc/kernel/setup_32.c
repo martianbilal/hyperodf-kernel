@@ -19,11 +19,11 @@
 #include <linux/memblock.h>
 #include <linux/export.h>
 #include <linux/nvram.h>
-#include <linux/pgtable.h>
 
 #include <asm/io.h>
 #include <asm/prom.h>
 #include <asm/processor.h>
+#include <asm/pgtable.h>
 #include <asm/setup.h>
 #include <asm/smp.h>
 #include <asm/elf.h>
@@ -58,6 +58,7 @@ EXPORT_SYMBOL_GPL(boot_cpuid_phys);
 int smp_hw_index[NR_CPUS];
 EXPORT_SYMBOL(smp_hw_index);
 
+unsigned long ISA_DMA_THRESHOLD;
 unsigned int DMA_MODE_READ;
 unsigned int DMA_MODE_WRITE;
 
@@ -74,20 +75,20 @@ EXPORT_SYMBOL(DMA_MODE_WRITE);
  */
 notrace void __init machine_init(u64 dt_ptr)
 {
-	struct ppc_inst *addr = (struct ppc_inst *)patch_site_addr(&patch__memset_nocache);
-	struct ppc_inst insn;
+	unsigned int *addr = (unsigned int *)patch_site_addr(&patch__memset_nocache);
+	unsigned long insn;
 
 	/* Configure static keys first, now that we're relocated. */
 	setup_feature_keys();
 
-	early_ioremap_init();
+	early_ioremap_setup();
 
 	/* Enable early debugging if any specified (see udbg.h) */
 	udbg_early_init();
 
-	patch_instruction_site(&patch__memcpy_nocache, ppc_inst(PPC_INST_NOP));
+	patch_instruction_site(&patch__memcpy_nocache, PPC_INST_NOP);
 
-	create_cond_branch(&insn, addr, branch_target(addr), 0x820000);
+	insn = create_cond_branch(addr, branch_target(addr), 0x820000);
 	patch_instruction(addr, insn);	/* replace b by bne cr0 */
 
 	/* Do some early initialization based on the flat device tree */
@@ -164,7 +165,7 @@ void __init irqstack_early_init(void)
 }
 
 #ifdef CONFIG_VMAP_STACK
-void *emergency_ctx[NR_CPUS] __ro_after_init = {[0] = &init_stack};
+void *emergency_ctx[NR_CPUS] __ro_after_init;
 
 void __init emergency_stack_init(void)
 {
@@ -222,4 +223,7 @@ __init void initialize_cache_info(void)
 	 */
 	dcache_bsize = cur_cpu_spec->dcache_bsize;
 	icache_bsize = cur_cpu_spec->icache_bsize;
+	ucache_bsize = 0;
+	if (IS_ENABLED(CONFIG_PPC_BOOK3S_601) || IS_ENABLED(CONFIG_E200))
+		ucache_bsize = icache_bsize = dcache_bsize;
 }

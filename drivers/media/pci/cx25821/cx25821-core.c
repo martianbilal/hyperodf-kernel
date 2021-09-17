@@ -976,10 +976,8 @@ int cx25821_riscmem_alloc(struct pci_dev *pci,
 	__le32 *cpu;
 	dma_addr_t dma = 0;
 
-	if (risc->cpu && risc->size < size) {
+	if (NULL != risc->cpu && risc->size < size)
 		pci_free_consistent(pci, risc->size, risc->cpu, risc->dma);
-		risc->cpu = NULL;
-	}
 	if (NULL == risc->cpu) {
 		cpu = pci_zalloc_consistent(pci, size, &dma);
 		if (NULL == cpu)
@@ -1200,6 +1198,7 @@ EXPORT_SYMBOL(cx25821_risc_databuffer_audio);
 
 void cx25821_free_buffer(struct cx25821_dev *dev, struct cx25821_buffer *buf)
 {
+	BUG_ON(in_interrupt());
 	if (WARN_ON(buf->risc.size == 0))
 		return;
 	pci_free_consistent(dev->pci,
@@ -1375,6 +1374,9 @@ static struct pci_driver cx25821_pci_driver = {
 	.id_table = cx25821_pci_tbl,
 	.probe = cx25821_initdev,
 	.remove = cx25821_finidev,
+	/* TODO */
+	.suspend = NULL,
+	.resume = NULL,
 };
 
 static int __init cx25821_init(void)

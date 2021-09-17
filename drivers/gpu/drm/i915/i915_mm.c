@@ -25,6 +25,7 @@
 #include <linux/mm.h>
 #include <linux/io-mapping.h>
 
+#include <asm/pgtable.h>
 
 #include "i915_drv.h"
 
@@ -62,7 +63,7 @@ static int remap_sg(pte_t *pte, unsigned long addr, void *data)
 {
 	struct remap_pfn *r = data;
 
-	if (GEM_WARN_ON(!r->sgt.sgp))
+	if (GEM_WARN_ON(!r->sgt.pfn))
 		return -EINVAL;
 
 	/* Special PTE are not associated with any struct page */

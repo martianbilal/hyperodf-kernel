@@ -376,7 +376,7 @@ static int ast_vhub_epn_queue(struct usb_ep* u_ep, struct usb_request *u_req,
 	if (ep->epn.desc_mode ||
 	    ((((unsigned long)u_req->buf & 7) == 0) &&
 	     (ep->epn.is_in || !(u_req->length & (u_ep->maxpacket - 1))))) {
-		rc = usb_gadget_map_request_by_dev(&vhub->pdev->dev, u_req,
+		rc = usb_gadget_map_request(&ep->dev->gadget, u_req,
 					    ep->epn.is_in);
 		if (rc) {
 			dev_warn(&vhub->pdev->dev,
@@ -420,10 +420,7 @@ static void ast_vhub_stop_active_req(struct ast_vhub_ep *ep,
 	u32 state, reg, loops;
 
 	/* Stop DMA activity */
-	if (ep->epn.desc_mode)
-		writel(VHUB_EP_DMA_CTRL_RESET, ep->epn.regs + AST_VHUB_EP_DMA_CTLSTAT);
-	else
-		writel(0, ep->epn.regs + AST_VHUB_EP_DMA_CTLSTAT);
+	writel(0, ep->epn.regs + AST_VHUB_EP_DMA_CTLSTAT);
 
 	/* Wait for it to complete */
 	for (loops = 0; loops < 1000; loops++) {
@@ -803,10 +800,10 @@ struct ast_vhub_ep *ast_vhub_alloc_epn(struct ast_vhub_dev *d, u8 addr)
 
 	/* Find a free one (no device) */
 	spin_lock_irqsave(&vhub->lock, flags);
-	for (i = 0; i < vhub->max_epns; i++)
+	for (i = 0; i < AST_VHUB_NUM_GEN_EPs; i++)
 		if (vhub->epns[i].dev == NULL)
 			break;
-	if (i >= vhub->max_epns) {
+	if (i >= AST_VHUB_NUM_GEN_EPs) {
 		spin_unlock_irqrestore(&vhub->lock, flags);
 		return NULL;
 	}

@@ -8,8 +8,6 @@ config X86_INTEL_PSTATE
 	depends on X86
 	select ACPI_PROCESSOR if ACPI
 	select ACPI_CPPC_LIB if X86_64 && ACPI && SCHED_MC_PRIO
-	select CPU_FREQ_GOV_PERFORMANCE
-	select CPU_FREQ_GOV_SCHEDUTIL if SMP
 	help
 	  This driver provides a P state for Intel core processors.
 	  The driver implements an internal governor and will become
@@ -27,7 +25,7 @@ config X86_PCC_CPUFREQ
 	  This driver adds support for the PCC interface.
 
 	  For details, take a look at:
-	  <file:Documentation/admin-guide/pm/cpufreq_drivers.rst>.
+	  <file:Documentation/cpu-freq/pcc-cpufreq.txt>.
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called pcc-cpufreq.
@@ -62,10 +60,20 @@ config X86_ACPI_CPUFREQ_CPB
 	  By enabling this option the acpi_cpufreq driver provides the old
 	  entry in addition to the new boost ones, for compatibility reasons.
 
+config X86_SFI_CPUFREQ
+	tristate "SFI Performance-States driver"
+	depends on X86_INTEL_MID && SFI
+	help
+	  This adds a CPUFreq driver for some Silvermont based Intel Atom
+	  architectures like Z34xx and Z35xx which enumerate processor
+	  performance states through SFI.
+
+	  If in doubt, say N.
+
 config ELAN_CPUFREQ
 	tristate "AMD Elan SC400 and SC410"
 	depends on MELAN
-	help
+	---help---
 	  This adds the CPUFreq driver for AMD Elan SC400 and SC410
 	  processors.
 
@@ -80,7 +88,7 @@ config ELAN_CPUFREQ
 config SC520_CPUFREQ
 	tristate "AMD Elan SC520"
 	depends on MELAN
-	help
+	---help---
 	  This adds the CPUFreq driver for AMD Elan SC520 processor.
 
 	  For details, take a look at <file:Documentation/cpu-freq/>.

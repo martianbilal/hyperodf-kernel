@@ -779,22 +779,21 @@ void iscsit_free_cmd(struct iscsi_cmd *cmd, bool shutdown)
 }
 EXPORT_SYMBOL(iscsit_free_cmd);
 
-bool iscsit_check_session_usage_count(struct iscsi_session *sess,
-				      bool can_sleep)
+int iscsit_check_session_usage_count(struct iscsi_session *sess)
 {
 	spin_lock_bh(&sess->session_usage_lock);
 	if (sess->session_usage_count != 0) {
 		sess->session_waiting_on_uc = 1;
 		spin_unlock_bh(&sess->session_usage_lock);
-		if (!can_sleep)
-			return true;
+		if (in_interrupt())
+			return 2;
 
 		wait_for_completion(&sess->session_waiting_on_uc_comp);
-		return false;
+		return 1;
 	}
 	spin_unlock_bh(&sess->session_usage_lock);
 
-	return false;
+	return 0;
 }
 
 void iscsit_dec_session_usage_count(struct iscsi_session *sess)
@@ -1229,20 +1228,18 @@ void iscsit_print_session_params(struct iscsi_session *sess)
 	iscsi_dump_sess_ops(sess->sess_ops);
 }
 
-int rx_data(
+static int iscsit_do_rx_data(
 	struct iscsi_conn *conn,
-	struct kvec *iov,
-	int iov_count,
-	int data)
+	struct iscsi_data_count *count)
 {
-	int rx_loop = 0, total_rx = 0;
+	int data = count->data_length, rx_loop = 0, total_rx = 0;
 	struct msghdr msg;
 
 	if (!conn || !conn->sock || !conn->conn_ops)
 		return -1;
 
 	memset(&msg, 0, sizeof(struct msghdr));
-	iov_iter_kvec(&msg.msg_iter, READ, iov, iov_count, data);
+	iov_iter_kvec(&msg.msg_iter, READ, count->iov, count->iov_count, data);
 
 	while (msg_data_left(&msg)) {
 		rx_loop = sock_recvmsg(conn->sock, &msg, MSG_WAITALL);
@@ -1257,6 +1254,26 @@ int rx_data(
 	}
 
 	return total_rx;
+}
+
+int rx_data(
+	struct iscsi_conn *conn,
+	struct kvec *iov,
+	int iov_count,
+	int data)
+{
+	struct iscsi_data_count c;
+
+	if (!conn || !conn->sock || !conn->conn_ops)
+		return -1;
+
+	memset(&c, 0, sizeof(struct iscsi_data_count));
+	c.iov = iov;
+	c.iov_count = iov_count;
+	c.data_length = data;
+	c.type = ISCSI_RX_DATA;
+
+	return iscsit_do_rx_data(conn, &c);
 }
 
 int tx_data(

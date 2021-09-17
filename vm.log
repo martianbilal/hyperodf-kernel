@@ -1,1 +1,0 @@
-qemu-system-x86_64: -drive file=/home/ding/debian.img,format=raw: Could not open '/home/ding/debian.img': No such file or directory

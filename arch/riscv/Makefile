@@ -12,8 +12,6 @@ OBJCOPYFLAGS    := -O binary
 LDFLAGS_vmlinux :=
 ifeq ($(CONFIG_DYNAMIC_FTRACE),y)
 	LDFLAGS_vmlinux := --no-relax
-	KBUILD_CPPFLAGS += -DCC_USING_PATCHABLE_FUNCTION_ENTRY
-	CC_FLAGS_FTRACE := -fpatchable-function-entry=8
 endif
 
 ifeq ($(CONFIG_64BIT)$(CONFIG_CMODEL_MEDLOW),yy)
@@ -38,15 +36,6 @@ else
 	KBUILD_LDFLAGS += -melf32lriscv
 endif
 
-ifeq ($(CONFIG_LD_IS_LLD),y)
-	KBUILD_CFLAGS += -mno-relax
-	KBUILD_AFLAGS += -mno-relax
-ifneq ($(LLVM_IAS),1)
-	KBUILD_CFLAGS += -Wa,-mno-relax
-	KBUILD_AFLAGS += -Wa,-mno-relax
-endif
-endif
-
 # ISA string setting
 riscv-march-$(CONFIG_ARCH_RV32I)	:= rv32ima
 riscv-march-$(CONFIG_ARCH_RV64I)	:= rv64ima
@@ -64,6 +53,9 @@ endif
 ifeq ($(CONFIG_CMODEL_MEDANY),y)
 	KBUILD_CFLAGS += -mcmodel=medany
 endif
+ifeq ($(CONFIG_MODULE_SECTIONS),y)
+	KBUILD_LDS_MODULE += $(srctree)/arch/riscv/kernel/module.lds
+endif
 ifeq ($(CONFIG_PERF_EVENTS),y)
         KBUILD_CFLAGS += -fno-omit-frame-pointer
 endif
@@ -75,16 +67,6 @@ KBUILD_CFLAGS_MODULE += $(call cc-option,-mno-relax)
 # RISC-V ISA, they're emulated by machine mode traps on all extant
 # architectures.  It's faster to have GCC emit only aligned accesses.
 KBUILD_CFLAGS += $(call cc-option,-mstrict-align)
-
-ifeq ($(CONFIG_STACKPROTECTOR_PER_TASK),y)
-prepare: stack_protector_prepare
-stack_protector_prepare: prepare0
-	$(eval KBUILD_CFLAGS += -mstack-protector-guard=tls		  \
-				-mstack-protector-guard-reg=tp		  \
-				-mstack-protector-guard-offset=$(shell	  \
-			awk '{if ($$2 == "TSK_STACK_CANARY") print $$3;}' \
-					include/generated/asm-offsets.h))
-endif
 
 # arch specific predefines for sparse
 CHECKFLAGS += -D__riscv -D__riscv_xlen=$(BITS)
@@ -98,18 +80,17 @@ head-y := arch/riscv/kernel/head.o
 core-y += arch/riscv/
 
 libs-y += arch/riscv/lib/
-libs-$(CONFIG_EFI_STUB) += $(objtree)/drivers/firmware/efi/libstub/lib.a
 
 PHONY += vdso_install
 vdso_install:
 	$(Q)$(MAKE) $(build)=arch/riscv/kernel/vdso $@
 
-ifeq ($(CONFIG_RISCV_M_MODE)$(CONFIG_SOC_CANAAN),yy)
-KBUILD_IMAGE := $(boot)/loader.bin
+ifeq ($(CONFIG_RISCV_M_MODE),y)
+KBUILD_IMAGE := $(boot)/loader
 else
 KBUILD_IMAGE := $(boot)/Image.gz
 endif
-BOOT_TARGETS := Image Image.gz loader loader.bin
+BOOT_TARGETS := Image Image.gz loader
 
 all:	$(notdir $(KBUILD_IMAGE))
 
@@ -117,11 +98,5 @@ $(BOOT_TARGETS): vmlinux
 	$(Q)$(MAKE) $(build)=$(boot) $(boot)/$@
 	@$(kecho) '  Kernel: $(boot)/$@ is ready'
 
-Image.%: Image
-	$(Q)$(MAKE) $(build)=$(boot) $(boot)/$@
-
 zinstall install:
 	$(Q)$(MAKE) $(build)=$(boot) $@
-
-archclean:
-	$(Q)$(MAKE) $(clean)=$(boot)

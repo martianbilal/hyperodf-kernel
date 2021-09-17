@@ -299,10 +299,11 @@ static int ccdc_lsc_busy(struct isp_ccdc_device *ccdc)
 			     ISPCCDC_LSC_BUSY;
 }
 
-/*
- * __ccdc_lsc_configure - Apply a new configuration to the LSC engine
+/* __ccdc_lsc_configure - Apply a new configuration to the LSC engine
  * @ccdc: Pointer to ISP CCDC device
  * @req: New configuration request
+ *
+ * context: in_interrupt()
  */
 static int __ccdc_lsc_configure(struct isp_ccdc_device *ccdc,
 				struct ispccdc_lsc_config_req *req)
@@ -1310,10 +1311,6 @@ unlock:
 static void __ccdc_enable(struct isp_ccdc_device *ccdc, int enable)
 {
 	struct isp_device *isp = to_isp_device(ccdc);
-
-	/* Avoid restarting the CCDC when streaming is stopping. */
-	if (enable && ccdc->stopping & CCDC_STOP_REQUEST)
-		return;
 
 	isp_reg_clr_set(isp, OMAP3_ISP_IOMEM_CCDC, ISPCCDC_PCR,
 			ISPCCDC_PCR_EN, enable ? ISPCCDC_PCR_EN : 0);

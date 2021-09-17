@@ -14,18 +14,22 @@
 #include <linux/kvm_host.h>
 #include <linux/rculist.h>
 
+#include <asm/kvm_host.h>
 #include <asm/kvm_page_track.h>
 
-#include "mmu_internal.h"
+#include "mmu.h"
 
-void kvm_page_track_free_memslot(struct kvm_memory_slot *slot)
+void kvm_page_track_free_memslot(struct kvm_memory_slot *free,
+				 struct kvm_memory_slot *dont)
 {
 	int i;
 
-	for (i = 0; i < KVM_PAGE_TRACK_MAX; i++) {
-		kvfree(slot->arch.gfn_track[i]);
-		slot->arch.gfn_track[i] = NULL;
-	}
+	for (i = 0; i < KVM_PAGE_TRACK_MAX; i++)
+		if (!dont || free->arch.gfn_track[i] !=
+		      dont->arch.gfn_track[i]) {
+			kvfree(free->arch.gfn_track[i]);
+			free->arch.gfn_track[i] = NULL;
+		}
 }
 
 int kvm_page_track_create_memslot(struct kvm_memory_slot *slot,
@@ -44,7 +48,7 @@ int kvm_page_track_create_memslot(struct kvm_memory_slot *slot,
 	return 0;
 
 track_free:
-	kvm_page_track_free_memslot(slot);
+	kvm_page_track_free_memslot(slot, NULL);
 	return -ENOMEM;
 }
 
@@ -61,7 +65,7 @@ static void update_gfn_track(struct kvm_memory_slot *slot, gfn_t gfn,
 {
 	int index, val;
 
-	index = gfn_to_index(gfn, slot->base_gfn, PG_LEVEL_4K);
+	index = gfn_to_index(gfn, slot->base_gfn, PT_PAGE_TABLE_LEVEL);
 
 	val = slot->arch.gfn_track[mode][index];
 
@@ -151,7 +155,7 @@ bool kvm_page_track_is_active(struct kvm_vcpu *vcpu, gfn_t gfn,
 	if (!slot)
 		return false;
 
-	index = gfn_to_index(gfn, slot->base_gfn, PG_LEVEL_4K);
+	index = gfn_to_index(gfn, slot->base_gfn, PT_PAGE_TABLE_LEVEL);
 	return !!READ_ONCE(slot->arch.gfn_track[mode][index]);
 }
 
@@ -184,9 +188,9 @@ kvm_page_track_register_notifier(struct kvm *kvm,
 
 	head = &kvm->arch.track_notifier_head;
 
-	write_lock(&kvm->mmu_lock);
+	spin_lock(&kvm->mmu_lock);
 	hlist_add_head_rcu(&n->node, &head->track_notifier_list);
-	write_unlock(&kvm->mmu_lock);
+	spin_unlock(&kvm->mmu_lock);
 }
 EXPORT_SYMBOL_GPL(kvm_page_track_register_notifier);
 
@@ -202,9 +206,9 @@ kvm_page_track_unregister_notifier(struct kvm *kvm,
 
 	head = &kvm->arch.track_notifier_head;
 
-	write_lock(&kvm->mmu_lock);
+	spin_lock(&kvm->mmu_lock);
 	hlist_del_rcu(&n->node);
-	write_unlock(&kvm->mmu_lock);
+	spin_unlock(&kvm->mmu_lock);
 	synchronize_srcu(&head->track_srcu);
 }
 EXPORT_SYMBOL_GPL(kvm_page_track_unregister_notifier);
@@ -229,8 +233,7 @@ void kvm_page_track_write(struct kvm_vcpu *vcpu, gpa_t gpa, const u8 *new,
 		return;
 
 	idx = srcu_read_lock(&head->track_srcu);
-	hlist_for_each_entry_srcu(n, &head->track_notifier_list, node,
-				srcu_read_lock_held(&head->track_srcu))
+	hlist_for_each_entry_rcu(n, &head->track_notifier_list, node)
 		if (n->track_write)
 			n->track_write(vcpu, gpa, new, bytes, n);
 	srcu_read_unlock(&head->track_srcu, idx);
@@ -255,8 +258,7 @@ void kvm_page_track_flush_slot(struct kvm *kvm, struct kvm_memory_slot *slot)
 		return;
 
 	idx = srcu_read_lock(&head->track_srcu);
-	hlist_for_each_entry_srcu(n, &head->track_notifier_list, node,
-				srcu_read_lock_held(&head->track_srcu))
+	hlist_for_each_entry_rcu(n, &head->track_notifier_list, node)
 		if (n->track_flush_slot)
 			n->track_flush_slot(kvm, slot, n);
 	srcu_read_unlock(&head->track_srcu, idx);

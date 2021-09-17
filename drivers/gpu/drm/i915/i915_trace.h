@@ -339,68 +339,6 @@ TRACE_EVENT(intel_disable_plane,
 		      __entry->frame, __entry->scanline)
 );
 
-/* fbc */
-
-TRACE_EVENT(intel_fbc_activate,
-	    TP_PROTO(struct intel_crtc *crtc),
-	    TP_ARGS(crtc),
-
-	    TP_STRUCT__entry(
-			     __field(enum pipe, pipe)
-			     __field(u32, frame)
-			     __field(u32, scanline)
-			     ),
-
-	    TP_fast_assign(
-			   __entry->pipe = crtc->pipe;
-			   __entry->frame = intel_crtc_get_vblank_counter(crtc);
-			   __entry->scanline = intel_get_crtc_scanline(crtc);
-			   ),
-
-	    TP_printk("pipe %c, frame=%u, scanline=%u",
-		      pipe_name(__entry->pipe), __entry->frame, __entry->scanline)
-);
-
-TRACE_EVENT(intel_fbc_deactivate,
-	    TP_PROTO(struct intel_crtc *crtc),
-	    TP_ARGS(crtc),
-
-	    TP_STRUCT__entry(
-			     __field(enum pipe, pipe)
-			     __field(u32, frame)
-			     __field(u32, scanline)
-			     ),
-
-	    TP_fast_assign(
-			   __entry->pipe = crtc->pipe;
-			   __entry->frame = intel_crtc_get_vblank_counter(crtc);
-			   __entry->scanline = intel_get_crtc_scanline(crtc);
-			   ),
-
-	    TP_printk("pipe %c, frame=%u, scanline=%u",
-		      pipe_name(__entry->pipe), __entry->frame, __entry->scanline)
-);
-
-TRACE_EVENT(intel_fbc_nuke,
-	    TP_PROTO(struct intel_crtc *crtc),
-	    TP_ARGS(crtc),
-
-	    TP_STRUCT__entry(
-			     __field(enum pipe, pipe)
-			     __field(u32, frame)
-			     __field(u32, scanline)
-			     ),
-
-	    TP_fast_assign(
-			   __entry->pipe = crtc->pipe;
-			   __entry->frame = intel_crtc_get_vblank_counter(crtc);
-			   __entry->scanline = intel_get_crtc_scanline(crtc);
-			   ),
-
-	    TP_printk("pipe %c, frame=%u, scanline=%u",
-		      pipe_name(__entry->pipe), __entry->frame, __entry->scanline)
-);
-
 /* pipe updates */
 
 TRACE_EVENT(intel_pipe_update_start,
@@ -735,7 +673,7 @@ TRACE_EVENT(i915_request_queue,
 			     ),
 
 	    TP_fast_assign(
-			   __entry->dev = rq->engine->i915->drm.primary->index;
+			   __entry->dev = rq->i915->drm.primary->index;
 			   __entry->class = rq->engine->uabi_class;
 			   __entry->instance = rq->engine->uabi_instance;
 			   __entry->ctx = rq->fence.context;
@@ -761,7 +699,7 @@ DECLARE_EVENT_CLASS(i915_request,
 			     ),
 
 	    TP_fast_assign(
-			   __entry->dev = rq->engine->i915->drm.primary->index;
+			   __entry->dev = rq->i915->drm.primary->index;
 			   __entry->class = rq->engine->uabi_class;
 			   __entry->instance = rq->engine->uabi_instance;
 			   __entry->ctx = rq->fence.context;
@@ -800,11 +738,11 @@ TRACE_EVENT(i915_request_in,
 			     __field(u16, instance)
 			     __field(u32, seqno)
 			     __field(u32, port)
-			     __field(s32, prio)
+			     __field(u32, prio)
 			    ),
 
 	    TP_fast_assign(
-			   __entry->dev = rq->engine->i915->drm.primary->index;
+			   __entry->dev = rq->i915->drm.primary->index;
 			   __entry->class = rq->engine->uabi_class;
 			   __entry->instance = rq->engine->uabi_instance;
 			   __entry->ctx = rq->fence.context;
@@ -813,7 +751,7 @@ TRACE_EVENT(i915_request_in,
 			   __entry->port = port;
 			   ),
 
-	    TP_printk("dev=%u, engine=%u:%u, ctx=%llu, seqno=%u, prio=%d, port=%u",
+	    TP_printk("dev=%u, engine=%u:%u, ctx=%llu, seqno=%u, prio=%u, port=%u",
 		      __entry->dev, __entry->class, __entry->instance,
 		      __entry->ctx, __entry->seqno,
 		      __entry->prio, __entry->port)
@@ -833,7 +771,7 @@ TRACE_EVENT(i915_request_out,
 			    ),
 
 	    TP_fast_assign(
-			   __entry->dev = rq->engine->i915->drm.primary->index;
+			   __entry->dev = rq->i915->drm.primary->index;
 			   __entry->class = rq->engine->uabi_class;
 			   __entry->instance = rq->engine->uabi_instance;
 			   __entry->ctx = rq->fence.context;
@@ -895,7 +833,7 @@ TRACE_EVENT(i915_request_wait_begin,
 	     * less desirable.
 	     */
 	    TP_fast_assign(
-			   __entry->dev = rq->engine->i915->drm.primary->index;
+			   __entry->dev = rq->i915->drm.primary->index;
 			   __entry->class = rq->engine->uabi_class;
 			   __entry->instance = rq->engine->uabi_instance;
 			   __entry->ctx = rq->fence.context;

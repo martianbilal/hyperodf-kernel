@@ -56,6 +56,12 @@ static inline bool nfs_lookup_is_soft_revalidate(const struct dentry *dentry)
 #define NFS_UNSPEC_RETRANS	(UINT_MAX)
 #define NFS_UNSPEC_TIMEO	(UINT_MAX)
 
+/*
+ * Maximum number of pages that readdir can use for creating
+ * a vmapped array of pages.
+ */
+#define NFS_MAX_READDIR_PAGES 8
+
 struct nfs_client_initdata {
 	unsigned long init_flags;
 	const char *hostname;			/* Hostname of the server */
@@ -136,29 +142,9 @@ struct nfs_fs_context {
 	} clone_data;
 };
 
-#define nfs_errorf(fc, fmt, ...) ((fc)->log.log ?		\
-	errorf(fc, fmt, ## __VA_ARGS__) :			\
-	({ dprintk(fmt "\n", ## __VA_ARGS__); }))
-
-#define nfs_ferrorf(fc, fac, fmt, ...) ((fc)->log.log ?		\
-	errorf(fc, fmt, ## __VA_ARGS__) :			\
-	({ dfprintk(fac, fmt "\n", ## __VA_ARGS__); }))
-
-#define nfs_invalf(fc, fmt, ...) ((fc)->log.log ?		\
-	invalf(fc, fmt, ## __VA_ARGS__) :			\
-	({ dprintk(fmt "\n", ## __VA_ARGS__);  -EINVAL; }))
-
-#define nfs_finvalf(fc, fac, fmt, ...) ((fc)->log.log ?		\
-	invalf(fc, fmt, ## __VA_ARGS__) :			\
-	({ dfprintk(fac, fmt "\n", ## __VA_ARGS__);  -EINVAL; }))
-
-#define nfs_warnf(fc, fmt, ...) ((fc)->log.log ?		\
-	warnf(fc, fmt, ## __VA_ARGS__) :			\
-	({ dprintk(fmt "\n", ## __VA_ARGS__); }))
-
-#define nfs_fwarnf(fc, fac, fmt, ...) ((fc)->log.log ?		\
-	warnf(fc, fmt, ## __VA_ARGS__) :			\
-	({ dfprintk(fac, fmt "\n", ## __VA_ARGS__); }))
+#define nfs_errorf(fc, fmt, ...) errorf(fc, fmt, ## __VA_ARGS__)
+#define nfs_invalf(fc, fmt, ...) invalf(fc, fmt, ## __VA_ARGS__)
+#define nfs_warnf(fc, fmt, ...) warnf(fc, fmt, ## __VA_ARGS__)
 
 static inline struct nfs_fs_context *nfs_fc2context(const struct fs_context *fc)
 {
@@ -288,6 +274,12 @@ void nfs_free_request(struct nfs_page *req);
 struct nfs_pgio_mirror *
 nfs_pgio_current_mirror(struct nfs_pageio_descriptor *desc);
 
+static inline bool nfs_pgio_has_mirroring(struct nfs_pageio_descriptor *desc)
+{
+	WARN_ON_ONCE(desc->pg_mirror_count < 1);
+	return desc->pg_mirror_count > 1;
+}
+
 static inline bool nfs_match_open_context(const struct nfs_open_context *ctx1,
 		const struct nfs_open_context *ctx2)
 {
@@ -378,18 +370,14 @@ extern unsigned long nfs_access_cache_count(struct shrinker *shrink,
 extern unsigned long nfs_access_cache_scan(struct shrinker *shrink,
 					   struct shrink_control *sc);
 struct dentry *nfs_lookup(struct inode *, struct dentry *, unsigned int);
-int nfs_create(struct user_namespace *, struct inode *, struct dentry *,
-	       umode_t, bool);
-int nfs_mkdir(struct user_namespace *, struct inode *, struct dentry *,
-	      umode_t);
+int nfs_create(struct inode *, struct dentry *, umode_t, bool);
+int nfs_mkdir(struct inode *, struct dentry *, umode_t);
 int nfs_rmdir(struct inode *, struct dentry *);
 int nfs_unlink(struct inode *, struct dentry *);
-int nfs_symlink(struct user_namespace *, struct inode *, struct dentry *,
-		const char *);
+int nfs_symlink(struct inode *, struct dentry *, const char *);
 int nfs_link(struct dentry *, struct inode *, struct dentry *);
-int nfs_mknod(struct user_namespace *, struct inode *, struct dentry *, umode_t,
-	      dev_t);
-int nfs_rename(struct user_namespace *, struct inode *, struct dentry *,
+int nfs_mknod(struct inode *, struct dentry *, umode_t, dev_t);
+int nfs_rename(struct inode *, struct dentry *,
 	       struct inode *, struct dentry *, unsigned int);
 
 /* file.c */
@@ -411,8 +399,7 @@ extern int nfs_write_inode(struct inode *, struct writeback_control *);
 extern int nfs_drop_inode(struct inode *);
 extern void nfs_clear_inode(struct inode *);
 extern void nfs_evict_inode(struct inode *);
-extern void nfs_zap_acl_cache(struct inode *inode);
-extern void nfs_set_cache_invalid(struct inode *inode, unsigned long flags);
+void nfs_zap_acl_cache(struct inode *inode);
 extern bool nfs_check_cache_invalid(struct inode *, unsigned long);
 extern int nfs_wait_bit_killable(struct wait_bit_key *key, int mode);
 extern int nfs_wait_atomic_killable(atomic_t *p, unsigned int mode);
@@ -430,9 +417,7 @@ extern int __init register_nfs_fs(void);
 extern void __exit unregister_nfs_fs(void);
 extern bool nfs_sb_active(struct super_block *sb);
 extern void nfs_sb_deactive(struct super_block *sb);
-extern int nfs_client_for_each_server(struct nfs_client *clp,
-				      int (*fn)(struct nfs_server *, void *),
-				      void *data);
+
 /* io.c */
 extern void nfs_start_io_read(struct inode *inode);
 extern void nfs_end_io_read(struct inode *inode);
@@ -530,25 +515,13 @@ int nfs_filemap_write_and_wait_range(struct address_space *mapping,
 		loff_t lstart, loff_t lend);
 
 #ifdef CONFIG_NFS_V4_1
-static inline void
-pnfs_bucket_clear_pnfs_ds_commit_verifiers(struct pnfs_commit_bucket *buckets,
-		unsigned int nbuckets)
-{
-	unsigned int i;
-
-	for (i = 0; i < nbuckets; i++)
-		buckets[i].direct_verf.committed = NFS_INVALID_STABLE_HOW;
-}
 static inline
 void nfs_clear_pnfs_ds_commit_verifiers(struct pnfs_ds_commit_info *cinfo)
 {
-	struct pnfs_commit_array *array;
+	int i;
 
-	rcu_read_lock();
-	list_for_each_entry_rcu(array, &cinfo->commits, cinfo_list)
-		pnfs_bucket_clear_pnfs_ds_commit_verifiers(array->buckets,
-				array->nbuckets);
-	rcu_read_unlock();
+	for (i = 0; i < cinfo->nbuckets; i++)
+		cinfo->buckets[i].direct_verf.committed = NFS_INVALID_STABLE_HOW;
 }
 #else
 static inline
@@ -567,14 +540,6 @@ nfs_write_verifier_cmp(const struct nfs_write_verifier *v1,
 		const struct nfs_write_verifier *v2)
 {
 	return memcmp(v1->data, v2->data, sizeof(v1->data));
-}
-
-static inline bool
-nfs_write_match_verf(const struct nfs_writeverf *verf,
-		struct nfs_page *req)
-{
-	return verf->committed > NFS_UNSTABLE &&
-		!nfs_write_verifier_cmp(&req->wb_verf, &verf->verifier);
 }
 
 /* unlink.c */
@@ -604,14 +569,12 @@ extern void nfs4_test_session_trunk(struct rpc_clnt *clnt,
 
 static inline struct inode *nfs_igrab_and_active(struct inode *inode)
 {
-	struct super_block *sb = inode->i_sb;
-
-	if (sb && nfs_sb_active(sb)) {
-		if (igrab(inode))
-			return inode;
-		nfs_sb_deactive(sb);
+	inode = igrab(inode);
+	if (inode != NULL && !nfs_sb_active(inode->i_sb)) {
+		iput(inode);
+		inode = NULL;
 	}
-	return NULL;
+	return inode;
 }
 
 static inline void nfs_iput_and_deactive(struct inode *inode)
@@ -689,8 +652,7 @@ void nfs_super_set_maxbytes(struct super_block *sb, __u64 maxfilesize)
 }
 
 /*
- * Record the page as unstable (an extra writeback period) and mark its
- * inode as dirty.
+ * Record the page as unstable and mark its inode as dirty.
  */
 static inline
 void nfs_mark_page_unstable(struct page *page, struct nfs_commit_info *cinfo)
@@ -698,11 +660,8 @@ void nfs_mark_page_unstable(struct page *page, struct nfs_commit_info *cinfo)
 	if (!cinfo->dreq) {
 		struct inode *inode = page_file_mapping(page)->host;
 
-		/* This page is really still in write-back - just that the
-		 * writeback is happening on the server now.
-		 */
-		inc_node_page_state(page, NR_WRITEBACK);
-		inc_wb_stat(&inode_to_bdi(inode)->wb, WB_WRITEBACK);
+		inc_node_page_state(page, NR_UNSTABLE_NFS);
+		inc_wb_stat(&inode_to_bdi(inode)->wb, WB_RECLAIMABLE);
 		__mark_inode_dirty(inode, I_DIRTY_DATASYNC);
 	}
 }

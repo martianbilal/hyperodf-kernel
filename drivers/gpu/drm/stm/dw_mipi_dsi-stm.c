@@ -377,9 +377,7 @@ static int dw_mipi_dsi_stm_probe(struct platform_device *pdev)
 	dsi->pllref_clk = devm_clk_get(dev, "ref");
 	if (IS_ERR(dsi->pllref_clk)) {
 		ret = PTR_ERR(dsi->pllref_clk);
-		if (ret != -EPROBE_DEFER)
-			DRM_ERROR("Unable to get pll reference clock: %d\n",
-				  ret);
+		DRM_ERROR("Unable to get pll reference clock: %d\n", ret);
 		goto err_clk_get;
 	}
 

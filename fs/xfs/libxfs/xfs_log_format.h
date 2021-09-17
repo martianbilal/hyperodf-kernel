@@ -368,13 +368,10 @@ static inline int xfs_ilog_fdata(int w)
  * directly mirrors the xfs_dinode structure as it must contain all the same
  * information.
  */
-typedef uint64_t xfs_ictimestamp_t;
-
-/* Legacy timestamp encoding format. */
-struct xfs_legacy_ictimestamp {
+typedef struct xfs_ictimestamp {
 	int32_t		t_sec;		/* timestamp seconds */
 	int32_t		t_nsec;		/* timestamp nanoseconds */
-};
+} xfs_ictimestamp_t;
 
 /*
  * Define the format of the inode core that is logged. This structure must be
@@ -427,10 +424,12 @@ struct xfs_log_dinode {
 	/* structure must be padded to 64 bit alignment */
 };
 
-#define xfs_log_dinode_size(mp)						\
-	(xfs_sb_version_has_v3inode(&(mp)->m_sb) ?			\
-		sizeof(struct xfs_log_dinode) :				\
-		offsetof(struct xfs_log_dinode, di_next_unlinked))
+static inline uint xfs_log_dinode_size(int version)
+{
+	if (version == 3)
+		return sizeof(struct xfs_log_dinode);
+	return offsetof(struct xfs_log_dinode, di_next_unlinked);
+}
 
 /*
  * Buffer Log Format definitions

@@ -7,7 +7,6 @@
 #include <linux/btf.h>
 #include <linux/filter.h>
 #include <net/tcp.h>
-#include <net/bpf_sk_storage.h>
 
 static u32 optional_ops[] = {
 	offsetof(struct tcp_congestion_ops, init),
@@ -95,7 +94,6 @@ static bool bpf_tcp_ca_is_valid_access(int off, int size,
 }
 
 static int bpf_tcp_ca_btf_struct_access(struct bpf_verifier_log *log,
-					const struct btf *btf,
 					const struct btf_type *t, int off,
 					int size, enum bpf_access_type atype,
 					u32 *next_btf_id)
@@ -103,7 +101,7 @@ static int bpf_tcp_ca_btf_struct_access(struct bpf_verifier_log *log,
 	size_t end;
 
 	if (atype == BPF_READ)
-		return btf_struct_access(log, btf, t, off, size, atype, next_btf_id);
+		return btf_struct_access(log, t, off, size, atype, next_btf_id);
 
 	if (t != tcp_sock_type) {
 		bpf_log(log, "only read is supported\n");
@@ -158,8 +156,8 @@ static const struct bpf_func_proto bpf_tcp_send_ack_proto = {
 	/* In case we want to report error later */
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_BTF_ID,
-	.arg1_btf_id	= &tcp_sock_id,
 	.arg2_type	= ARG_ANYTHING,
+	.btf_id		= &tcp_sock_id,
 };
 
 static const struct bpf_func_proto *
@@ -169,10 +167,6 @@ bpf_tcp_ca_get_func_proto(enum bpf_func_id func_id,
 	switch (func_id) {
 	case BPF_FUNC_tcp_send_ack:
 		return &bpf_tcp_send_ack_proto;
-	case BPF_FUNC_sk_storage_get:
-		return &bpf_sk_storage_get_proto;
-	case BPF_FUNC_sk_storage_delete:
-		return &bpf_sk_storage_delete_proto;
 	default:
 		return bpf_base_func_proto(func_id);
 	}

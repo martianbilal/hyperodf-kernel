@@ -28,6 +28,7 @@ int amdgpu_umc_ras_late_init(struct amdgpu_device *adev)
 	int r;
 	struct ras_fs_if fs_info = {
 		.sysfs_name = "umc_err_count",
+		.debugfs_name = "umc_err_inject",
 	};
 	struct ras_ih_if ih_info = {
 		.cb = amdgpu_umc_process_ras_data_cb,
@@ -110,8 +111,7 @@ int amdgpu_umc_process_ras_data_cb(struct amdgpu_device *adev,
 		 * even NOMEM error is encountered
 		 */
 		if(!err_data->err_addr)
-			dev_warn(adev->dev, "Failed to alloc memory for "
-					"umc error address record!\n");
+			DRM_WARN("Failed to alloc memory for umc error address record!\n");
 
 		/* umc query_ras_error_address is also responsible for clearing
 		 * error status
@@ -121,16 +121,10 @@ int amdgpu_umc_process_ras_data_cb(struct amdgpu_device *adev,
 
 	/* only uncorrectable error needs gpu reset */
 	if (err_data->ue_count) {
-		dev_info(adev->dev, "%ld uncorrectable hardware errors "
-				"detected in UMC block\n",
-				err_data->ue_count);
-
-		if ((amdgpu_bad_page_threshold != 0) &&
-			err_data->err_addr_cnt) {
-			amdgpu_ras_add_bad_pages(adev, err_data->err_addr,
-						err_data->err_addr_cnt);
-			amdgpu_ras_save_bad_pages(adev);
-		}
+		if (err_data->err_addr_cnt &&
+		    amdgpu_ras_add_bad_pages(adev, err_data->err_addr,
+						err_data->err_addr_cnt))
+			DRM_WARN("Failed to add ras bad page!\n");
 
 		amdgpu_ras_reset_gpu(adev);
 	}

@@ -134,7 +134,7 @@ try_next_entry:
 		d_type = vboxsf_get_d_type(info->info.attr.mode);
 
 		/*
-		 * On 32-bit systems pos is 64-bit signed, while ino is 32-bit
+		 * On 32 bit systems pos is 64 signed, while ino is 32 bit
 		 * unsigned so fake_ino may overflow, check for this.
 		 */
 		if ((ino_t)(ctx->pos + 1) != (u64)(ctx->pos + 1)) {
@@ -288,15 +288,13 @@ static int vboxsf_dir_create(struct inode *parent, struct dentry *dentry,
 	return 0;
 }
 
-static int vboxsf_dir_mkfile(struct user_namespace *mnt_userns,
-			     struct inode *parent, struct dentry *dentry,
+static int vboxsf_dir_mkfile(struct inode *parent, struct dentry *dentry,
 			     umode_t mode, bool excl)
 {
 	return vboxsf_dir_create(parent, dentry, mode, 0);
 }
 
-static int vboxsf_dir_mkdir(struct user_namespace *mnt_userns,
-			    struct inode *parent, struct dentry *dentry,
+static int vboxsf_dir_mkdir(struct inode *parent, struct dentry *dentry,
 			    umode_t mode)
 {
 	return vboxsf_dir_create(parent, dentry, mode, 1);
@@ -334,8 +332,7 @@ static int vboxsf_dir_unlink(struct inode *parent, struct dentry *dentry)
 	return 0;
 }
 
-static int vboxsf_dir_rename(struct user_namespace *mnt_userns,
-			     struct inode *old_parent,
+static int vboxsf_dir_rename(struct inode *old_parent,
 			     struct dentry *old_dentry,
 			     struct inode *new_parent,
 			     struct dentry *new_dentry,
@@ -377,8 +374,7 @@ err_put_old_path:
 	return err;
 }
 
-static int vboxsf_dir_symlink(struct user_namespace *mnt_userns,
-			      struct inode *parent, struct dentry *dentry,
+static int vboxsf_dir_symlink(struct inode *parent, struct dentry *dentry,
 			      const char *symname)
 {
 	struct vboxsf_inode *sf_parent_i = VBOXSF_I(parent);

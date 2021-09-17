@@ -17,7 +17,7 @@
 
 /**
  * struct clk_pfdv2 - IMX PFD clock
- * @hw:		clock source
+ * @clk_hw:	clock source
  * @reg:	PFD register address
  * @gate_bit:	Gate bit offset
  * @vld_bit:	Valid bit offset
@@ -98,45 +98,26 @@ static unsigned long clk_pfdv2_recalc_rate(struct clk_hw *hw,
 	return tmp;
 }
 
-static int clk_pfdv2_determine_rate(struct clk_hw *hw,
-				    struct clk_rate_request *req)
+static long clk_pfdv2_round_rate(struct clk_hw *hw, unsigned long rate,
+				 unsigned long *prate)
 {
-	unsigned long parent_rates[] = {
-					480000000,
-					528000000,
-					req->best_parent_rate
-				       };
-	unsigned long best_rate = -1UL, rate = req->rate;
-	unsigned long best_parent_rate = req->best_parent_rate;
-	u64 tmp;
+	u64 tmp = *prate;
 	u8 frac;
-	int i;
 
-	for (i = 0; i < ARRAY_SIZE(parent_rates); i++) {
-		tmp = parent_rates[i];
-		tmp = tmp * 18 + rate / 2;
-		do_div(tmp, rate);
-		frac = tmp;
+	tmp = tmp * 18 + rate / 2;
+	do_div(tmp, rate);
+	frac = tmp;
 
-		if (frac < 12)
-			frac = 12;
-		else if (frac > 35)
-			frac = 35;
+	if (frac < 12)
+		frac = 12;
+	else if (frac > 35)
+		frac = 35;
 
-		tmp = parent_rates[i];
-		tmp *= 18;
-		do_div(tmp, frac);
+	tmp = *prate;
+	tmp *= 18;
+	do_div(tmp, frac);
 
-		if (abs(tmp - req->rate) < abs(best_rate - req->rate)) {
-			best_rate = tmp;
-			best_parent_rate = parent_rates[i];
-		}
-	}
-
-	req->best_parent_rate = best_parent_rate;
-	req->rate = best_rate;
-
-	return 0;
+	return tmp;
 }
 
 static int clk_pfdv2_is_enabled(struct clk_hw *hw)
@@ -157,12 +138,6 @@ static int clk_pfdv2_set_rate(struct clk_hw *hw, unsigned long rate,
 	u64 tmp = parent_rate;
 	u32 val;
 	u8 frac;
-
-	if (!rate)
-		return -EINVAL;
-
-	/* PFD can NOT change rate without gating */
-	WARN_ON(clk_pfdv2_is_enabled(hw));
 
 	tmp = tmp * 18 + rate / 2;
 	do_div(tmp, rate);
@@ -186,7 +161,7 @@ static const struct clk_ops clk_pfdv2_ops = {
 	.enable		= clk_pfdv2_enable,
 	.disable	= clk_pfdv2_disable,
 	.recalc_rate	= clk_pfdv2_recalc_rate,
-	.determine_rate	= clk_pfdv2_determine_rate,
+	.round_rate	= clk_pfdv2_round_rate,
 	.set_rate	= clk_pfdv2_set_rate,
 	.is_enabled     = clk_pfdv2_is_enabled,
 };
@@ -214,7 +189,7 @@ struct clk_hw *imx_clk_hw_pfdv2(const char *name, const char *parent_name,
 	init.ops = &clk_pfdv2_ops;
 	init.parent_names = &parent_name;
 	init.num_parents = 1;
-	init.flags = CLK_SET_RATE_GATE | CLK_SET_RATE_PARENT;
+	init.flags = CLK_SET_RATE_GATE;
 
 	pfd->hw.init = &init;
 

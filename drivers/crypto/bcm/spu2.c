@@ -964,6 +964,7 @@ u32 spu2_create_request(u8 *spu_hdr,
 	unsigned int cipher_offset = aead_parms->assoc_size +
 			aead_parms->aad_pad_len + aead_parms->iv_len;
 
+#ifdef DEBUG
 	/* total size of the data following OMD (without STAT word padding) */
 	unsigned int real_db_size = spu_real_db_size(aead_parms->assoc_size,
 						 aead_parms->iv_len,
@@ -972,6 +973,7 @@ u32 spu2_create_request(u8 *spu_hdr,
 						 aead_parms->aad_pad_len,
 						 aead_parms->data_pad_len,
 						 hash_parms->pad_len);
+#endif
 	unsigned int assoc_size = aead_parms->assoc_size;
 
 	if (req_opts->is_aead &&
@@ -1168,16 +1170,21 @@ u16 spu2_cipher_req_init(u8 *spu_hdr, struct spu_cipher_parms *cipher_parms)
  * @spu_req_hdr_len: Length in bytes of the SPU request header
  * @isInbound:       0 encrypt, 1 decrypt
  * @cipher_parms:    Parameters describing cipher operation to be performed
+ * @update_key:      If true, rewrite the cipher key in SCTX
  * @data_size:       Length of the data in the BD field
  *
  * Assumes much of the header was already filled in at setkey() time in
  * spu_cipher_req_init().
- * spu_cipher_req_init() fills in the encryption key.
+ * spu_cipher_req_init() fills in the encryption key. For RC4, when submitting a
+ * request for a non-first chunk, we use the 260-byte SUPDT field from the
+ * previous response as the key. update_key is true for this case. Unused in all
+ * other cases.
  */
 void spu2_cipher_req_finish(u8 *spu_hdr,
 			    u16 spu_req_hdr_len,
 			    unsigned int is_inbound,
 			    struct spu_cipher_parms *cipher_parms,
+			    bool update_key,
 			    unsigned int data_size)
 {
 	struct SPU2_FMD *fmd;
@@ -1189,6 +1196,11 @@ void spu2_cipher_req_finish(u8 *spu_hdr,
 	flow_log(" in: %u\n", is_inbound);
 	flow_log(" cipher alg: %u, cipher_type: %u\n", cipher_parms->alg,
 		 cipher_parms->type);
+	if (update_key) {
+		flow_log(" cipher key len: %u\n", cipher_parms->key_len);
+		flow_dump("  key: ", cipher_parms->key_buf,
+			  cipher_parms->key_len);
+	}
 	flow_log(" iv len: %d\n", cipher_parms->iv_len);
 	flow_dump("    iv: ", cipher_parms->iv_buf, cipher_parms->iv_len);
 	flow_log(" data_size: %u\n", data_size);
@@ -1261,9 +1273,9 @@ void spu2_request_pad(u8 *pad_start, u32 gcm_padding, u32 hash_pad_len,
 
 		/* add the size at the end as required per alg */
 		if (auth_alg == HASH_ALG_MD5)
-			*(__le64 *)ptr = cpu_to_le64(total_sent * 8ull);
+			*(u64 *)ptr = cpu_to_le64((u64)total_sent * 8);
 		else		/* SHA1, SHA2-224, SHA2-256 */
-			*(__be64 *)ptr = cpu_to_be64(total_sent * 8ull);
+			*(u64 *)ptr = cpu_to_be64((u64)total_sent * 8);
 		ptr += sizeof(u64);
 	}
 

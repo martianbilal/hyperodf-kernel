@@ -5,15 +5,11 @@
 
 #include "i915_drv.h"
 #include "intel_guc_ct.h"
-#include "gt/intel_gt.h"
 
-#define CT_ERROR(_ct, _fmt, ...) \
-	DRM_DEV_ERROR(ct_to_dev(_ct), "CT: " _fmt, ##__VA_ARGS__)
 #ifdef CONFIG_DRM_I915_DEBUG_GUC
-#define CT_DEBUG(_ct, _fmt, ...) \
-	DRM_DEV_DEBUG_DRIVER(ct_to_dev(_ct), "CT: " _fmt, ##__VA_ARGS__)
+#define CT_DEBUG_DRIVER(...)	DRM_DEBUG_DRIVER(__VA_ARGS__)
 #else
-#define CT_DEBUG(...)	do { } while (0)
+#define CT_DEBUG_DRIVER(...)	do { } while (0)
 #endif
 
 struct ct_request {
@@ -52,21 +48,6 @@ static inline struct intel_guc *ct_to_guc(struct intel_guc_ct *ct)
 	return container_of(ct, struct intel_guc, ct);
 }
 
-static inline struct intel_gt *ct_to_gt(struct intel_guc_ct *ct)
-{
-	return guc_to_gt(ct_to_guc(ct));
-}
-
-static inline struct drm_i915_private *ct_to_i915(struct intel_guc_ct *ct)
-{
-	return ct_to_gt(ct)->i915;
-}
-
-static inline struct device *ct_to_dev(struct intel_guc_ct *ct)
-{
-	return ct_to_i915(ct)->drm.dev;
-}
-
 static inline const char *guc_ct_buffer_type_to_str(u32 type)
 {
 	switch (type) {
@@ -82,6 +63,7 @@ static inline const char *guc_ct_buffer_type_to_str(u32 type)
 static void guc_ct_buffer_desc_init(struct guc_ct_buffer_desc *desc,
 				    u32 cmds_addr, u32 size)
 {
+	CT_DEBUG_DRIVER("CT: init addr=%#x size=%u\n", cmds_addr, size);
 	memset(desc, 0, sizeof(*desc));
 	desc->addr = cmds_addr;
 	desc->size = size;
@@ -90,6 +72,8 @@ static void guc_ct_buffer_desc_init(struct guc_ct_buffer_desc *desc,
 
 static void guc_ct_buffer_desc_reset(struct guc_ct_buffer_desc *desc)
 {
+	CT_DEBUG_DRIVER("CT: desc %p reset head=%u tail=%u\n",
+			desc, desc->head, desc->tail);
 	desc->head = 0;
 	desc->tail = 0;
 	desc->is_in_error = 0;
@@ -105,40 +89,31 @@ static int guc_action_register_ct_buffer(struct intel_guc *guc,
 		sizeof(struct guc_ct_buffer_desc),
 		type
 	};
+	int err;
 
 	/* Can't use generic send(), CT registration must go over MMIO */
-	return intel_guc_send_mmio(guc, action, ARRAY_SIZE(action), NULL, 0);
-}
-
-static int ct_register_buffer(struct intel_guc_ct *ct, u32 desc_addr, u32 type)
-{
-	int err = guc_action_register_ct_buffer(ct_to_guc(ct), desc_addr, type);
-
-	if (unlikely(err))
-		CT_ERROR(ct, "Failed to register %s buffer (err=%d)\n",
-			 guc_ct_buffer_type_to_str(type), err);
+	err = intel_guc_send_mmio(guc, action, ARRAY_SIZE(action), NULL, 0);
+	if (err)
+		DRM_ERROR("CT: register %s buffer failed; err=%d\n",
+			  guc_ct_buffer_type_to_str(type), err);
 	return err;
 }
 
-static int guc_action_deregister_ct_buffer(struct intel_guc *guc, u32 type)
+static int guc_action_deregister_ct_buffer(struct intel_guc *guc,
+					   u32 type)
 {
 	u32 action[] = {
 		INTEL_GUC_ACTION_DEREGISTER_COMMAND_TRANSPORT_BUFFER,
 		CTB_OWNER_HOST,
 		type
 	};
+	int err;
 
 	/* Can't use generic send(), CT deregistration must go over MMIO */
-	return intel_guc_send_mmio(guc, action, ARRAY_SIZE(action), NULL, 0);
-}
-
-static int ct_deregister_buffer(struct intel_guc_ct *ct, u32 type)
-{
-	int err = guc_action_deregister_ct_buffer(ct_to_guc(ct), type);
-
-	if (unlikely(err))
-		CT_ERROR(ct, "Failed to deregister %s buffer (err=%d)\n",
-			 guc_ct_buffer_type_to_str(type), err);
+	err = intel_guc_send_mmio(guc, action, ARRAY_SIZE(action), NULL, 0);
+	if (err)
+		DRM_ERROR("CT: deregister %s buffer failed; err=%d\n",
+			  guc_ct_buffer_type_to_str(type), err);
 	return err;
 }
 
@@ -182,12 +157,13 @@ int intel_guc_ct_init(struct intel_guc_ct *ct)
 	 */
 
 	err = intel_guc_allocate_and_map_vma(guc, PAGE_SIZE, &ct->vma, &blob);
-	if (unlikely(err)) {
-		CT_ERROR(ct, "Failed to allocate CT channel (err=%d)\n", err);
+	if (err) {
+		DRM_ERROR("CT: channel allocation failed; err=%d\n", err);
 		return err;
 	}
 
-	CT_DEBUG(ct, "vma base=%#x\n", intel_guc_ggtt_offset(guc, ct->vma));
+	CT_DEBUG_DRIVER("CT: vma base=%#x\n",
+			intel_guc_ggtt_offset(guc, ct->vma));
 
 	/* store pointers to desc and cmds */
 	for (i = 0; i < ARRAY_SIZE(ct->ctbs); i++) {
@@ -210,7 +186,6 @@ void intel_guc_ct_fini(struct intel_guc_ct *ct)
 	GEM_BUG_ON(ct->enabled);
 
 	i915_vma_unpin_and_release(&ct->vma, I915_VMA_RELEASE_MAP);
-	memset(ct, 0, sizeof(*ct));
 }
 
 /**
@@ -222,7 +197,7 @@ void intel_guc_ct_fini(struct intel_guc_ct *ct)
 int intel_guc_ct_enable(struct intel_guc_ct *ct)
 {
 	struct intel_guc *guc = ct_to_guc(ct);
-	u32 base, cmds, size;
+	u32 base;
 	int err;
 	int i;
 
@@ -237,23 +212,23 @@ int intel_guc_ct_enable(struct intel_guc_ct *ct)
 	 */
 	for (i = 0; i < ARRAY_SIZE(ct->ctbs); i++) {
 		GEM_BUG_ON((i != CTB_SEND) && (i != CTB_RECV));
-		cmds = base + PAGE_SIZE / 4 * i + PAGE_SIZE / 2;
-		size = PAGE_SIZE / 4;
-		CT_DEBUG(ct, "%d: addr=%#x size=%u\n", i, cmds, size);
-		guc_ct_buffer_desc_init(ct->ctbs[i].desc, cmds, size);
+		guc_ct_buffer_desc_init(ct->ctbs[i].desc,
+					base + PAGE_SIZE/4 * i + PAGE_SIZE/2,
+					PAGE_SIZE/4);
 	}
 
-	/*
-	 * Register both CT buffers starting with RECV buffer.
-	 * Descriptors are in first half of the blob.
+	/* register buffers, starting wirh RECV buffer
+	 * descriptors are in first half of the blob
 	 */
-	err = ct_register_buffer(ct, base + PAGE_SIZE / 4 * CTB_RECV,
-				 INTEL_GUC_CT_BUFFER_TYPE_RECV);
+	err = guc_action_register_ct_buffer(guc,
+					    base + PAGE_SIZE/4 * CTB_RECV,
+					    INTEL_GUC_CT_BUFFER_TYPE_RECV);
 	if (unlikely(err))
 		goto err_out;
 
-	err = ct_register_buffer(ct, base + PAGE_SIZE / 4 * CTB_SEND,
-				 INTEL_GUC_CT_BUFFER_TYPE_SEND);
+	err = guc_action_register_ct_buffer(guc,
+					    base + PAGE_SIZE/4 * CTB_SEND,
+					    INTEL_GUC_CT_BUFFER_TYPE_SEND);
 	if (unlikely(err))
 		goto err_deregister;
 
@@ -262,9 +237,10 @@ int intel_guc_ct_enable(struct intel_guc_ct *ct)
 	return 0;
 
 err_deregister:
-	ct_deregister_buffer(ct, INTEL_GUC_CT_BUFFER_TYPE_RECV);
+	guc_action_deregister_ct_buffer(guc,
+					INTEL_GUC_CT_BUFFER_TYPE_RECV);
 err_out:
-	CT_ERROR(ct, "Failed to open open CT channel (err=%d)\n", err);
+	DRM_ERROR("CT: can't open channel; err=%d\n", err);
 	return err;
 }
 
@@ -280,16 +256,18 @@ void intel_guc_ct_disable(struct intel_guc_ct *ct)
 
 	ct->enabled = false;
 
-	if (intel_guc_is_fw_running(guc)) {
-		ct_deregister_buffer(ct, INTEL_GUC_CT_BUFFER_TYPE_SEND);
-		ct_deregister_buffer(ct, INTEL_GUC_CT_BUFFER_TYPE_RECV);
+	if (intel_guc_is_running(guc)) {
+		guc_action_deregister_ct_buffer(guc,
+						INTEL_GUC_CT_BUFFER_TYPE_SEND);
+		guc_action_deregister_ct_buffer(guc,
+						INTEL_GUC_CT_BUFFER_TYPE_RECV);
 	}
 }
 
 static u32 ct_get_next_fence(struct intel_guc_ct *ct)
 {
 	/* For now it's trivial */
-	return ++ct->requests.last_fence;
+	return ++ct->requests.next_fence;
 }
 
 /**
@@ -310,33 +288,25 @@ static u32 ct_get_next_fence(struct intel_guc_ct *ct)
  *                   ^-----------------len-------------------^
  */
 
-static int ct_write(struct intel_guc_ct *ct,
-		    const u32 *action,
-		    u32 len /* in dwords */,
-		    u32 fence,
-		    bool want_response)
+static int ctb_write(struct intel_guc_ct_buffer *ctb,
+		     const u32 *action,
+		     u32 len /* in dwords */,
+		     u32 fence,
+		     bool want_response)
 {
-	struct intel_guc_ct_buffer *ctb = &ct->ctbs[CTB_SEND];
 	struct guc_ct_buffer_desc *desc = ctb->desc;
-	u32 head = desc->head;
-	u32 tail = desc->tail;
-	u32 size = desc->size;
-	u32 used;
+	u32 head = desc->head / 4;	/* in dwords */
+	u32 tail = desc->tail / 4;	/* in dwords */
+	u32 size = desc->size / 4;	/* in dwords */
+	u32 used;			/* in dwords */
 	u32 header;
 	u32 *cmds = ctb->cmds;
 	unsigned int i;
 
-	if (unlikely(desc->is_in_error))
-		return -EPIPE;
-
-	if (unlikely(!IS_ALIGNED(head | tail | size, 4) ||
-		     (tail | head) >= size))
-		goto corrupted;
-
-	/* later calculations will be done in dwords */
-	head /= 4;
-	tail /= 4;
-	size /= 4;
+	GEM_BUG_ON(desc->size % 4);
+	GEM_BUG_ON(desc->head % 4);
+	GEM_BUG_ON(desc->tail % 4);
+	GEM_BUG_ON(tail >= size);
 
 	/*
 	 * tail == head condition indicates empty. GuC FW does not support
@@ -362,8 +332,9 @@ static int ct_write(struct intel_guc_ct *ct,
 		 (want_response ? GUC_CT_MSG_SEND_STATUS : 0) |
 		 (action[0] << GUC_CT_MSG_ACTION_SHIFT);
 
-	CT_DEBUG(ct, "writing %*ph %*ph %*ph\n",
-		 4, &header, 4, &fence, 4 * (len - 1), &action[1]);
+	CT_DEBUG_DRIVER("CT: writing %*ph %*ph %*ph\n",
+			4, &header, 4, &fence,
+			4 * (len - 1), &action[1]);
 
 	cmds[tail] = header;
 	tail = (tail + 1) % size;
@@ -375,17 +346,12 @@ static int ct_write(struct intel_guc_ct *ct,
 		cmds[tail] = action[i];
 		tail = (tail + 1) % size;
 	}
-	GEM_BUG_ON(tail > size);
 
 	/* now update desc tail (back in bytes) */
 	desc->tail = tail * 4;
-	return 0;
+	GEM_BUG_ON(desc->tail > desc->size);
 
-corrupted:
-	CT_ERROR(ct, "Corrupted descriptor addr=%#x head=%u tail=%u size=%u\n",
-		 desc->addr, desc->head, desc->tail, desc->size);
-	desc->is_in_error = 1;
-	return -EPIPE;
+	return 0;
 }
 
 /**
@@ -503,7 +469,7 @@ static int ct_send(struct intel_guc_ct *ct,
 	list_add_tail(&request.link, &ct->requests.pending);
 	spin_unlock_irqrestore(&ct->requests.lock, flags);
 
-	err = ct_write(ct, action, len, fence, !!response_buf);
+	err = ctb_write(ctb, action, len, fence, !!response_buf);
 	if (unlikely(err))
 		goto unlink;
 
@@ -560,11 +526,11 @@ int intel_guc_ct_send(struct intel_guc_ct *ct, const u32 *action, u32 len,
 
 	ret = ct_send(ct, action, len, response_buf, response_buf_size, &status);
 	if (unlikely(ret < 0)) {
-		CT_ERROR(ct, "Sending action %#x failed (err=%d status=%#X)\n",
-			 action[0], ret, status);
+		DRM_ERROR("CT: send action %#X failed; err=%d status=%#X\n",
+			  action[0], ret, status);
 	} else if (unlikely(ret)) {
-		CT_DEBUG(ct, "send action %#x returned %d (%#x)\n",
-			 action[0], ret, ret);
+		CT_DEBUG_DRIVER("CT: send action %#x returned %d (%#x)\n",
+				action[0], ret, ret);
 	}
 
 	mutex_unlock(&guc->send_mutex);
@@ -586,29 +552,22 @@ static inline bool ct_header_is_response(u32 header)
 	return !!(header & GUC_CT_MSG_IS_RESPONSE);
 }
 
-static int ct_read(struct intel_guc_ct *ct, u32 *data)
+static int ctb_read(struct intel_guc_ct_buffer *ctb, u32 *data)
 {
-	struct intel_guc_ct_buffer *ctb = &ct->ctbs[CTB_RECV];
 	struct guc_ct_buffer_desc *desc = ctb->desc;
-	u32 head = desc->head;
-	u32 tail = desc->tail;
-	u32 size = desc->size;
+	u32 head = desc->head / 4;	/* in dwords */
+	u32 tail = desc->tail / 4;	/* in dwords */
+	u32 size = desc->size / 4;	/* in dwords */
 	u32 *cmds = ctb->cmds;
-	s32 available;
+	s32 available;			/* in dwords */
 	unsigned int len;
 	unsigned int i;
 
-	if (unlikely(desc->is_in_error))
-		return -EPIPE;
-
-	if (unlikely(!IS_ALIGNED(head | tail | size, 4) ||
-		     (tail | head) >= size))
-		goto corrupted;
-
-	/* later calculations will be done in dwords */
-	head /= 4;
-	tail /= 4;
-	size /= 4;
+	GEM_BUG_ON(desc->size % 4);
+	GEM_BUG_ON(desc->head % 4);
+	GEM_BUG_ON(desc->tail % 4);
+	GEM_BUG_ON(tail >= size);
+	GEM_BUG_ON(head >= size);
 
 	/* tail == head condition indicates empty */
 	available = tail - head;
@@ -618,7 +577,7 @@ static int ct_read(struct intel_guc_ct *ct, u32 *data)
 	/* beware of buffer wrap case */
 	if (unlikely(available < 0))
 		available += size;
-	CT_DEBUG(ct, "available %d (%u:%u)\n", available, head, tail);
+	CT_DEBUG_DRIVER("CT: available %d (%u:%u)\n", available, head, tail);
 	GEM_BUG_ON(available < 0);
 
 	data[0] = cmds[head];
@@ -627,29 +586,23 @@ static int ct_read(struct intel_guc_ct *ct, u32 *data)
 	/* message len with header */
 	len = ct_header_get_len(data[0]) + 1;
 	if (unlikely(len > (u32)available)) {
-		CT_ERROR(ct, "Incomplete message %*ph %*ph %*ph\n",
-			 4, data,
-			 4 * (head + available - 1 > size ?
-			      size - head : available - 1), &cmds[head],
-			 4 * (head + available - 1 > size ?
-			      available - 1 - size + head : 0), &cmds[0]);
-		goto corrupted;
+		DRM_ERROR("CT: incomplete message %*ph %*ph %*ph\n",
+			  4, data,
+			  4 * (head + available - 1 > size ?
+			       size - head : available - 1), &cmds[head],
+			  4 * (head + available - 1 > size ?
+			       available - 1 - size + head : 0), &cmds[0]);
+		return -EPROTO;
 	}
 
 	for (i = 1; i < len; i++) {
 		data[i] = cmds[head];
 		head = (head + 1) % size;
 	}
-	CT_DEBUG(ct, "received %*ph\n", 4 * len, data);
+	CT_DEBUG_DRIVER("CT: received %*ph\n", 4 * len, data);
 
 	desc->head = head * 4;
 	return 0;
-
-corrupted:
-	CT_ERROR(ct, "Corrupted descriptor addr=%#x head=%u tail=%u size=%u\n",
-		 desc->addr, desc->head, desc->tail, desc->size);
-	desc->is_in_error = 1;
-	return -EPIPE;
 }
 
 /**
@@ -674,7 +627,7 @@ static int ct_handle_response(struct intel_guc_ct *ct, const u32 *msg)
 {
 	u32 header = msg[0];
 	u32 len = ct_header_get_len(header);
-	u32 msgsize = (len + 1) * sizeof(u32); /* msg size in bytes w/header */
+	u32 msglen = len + 1; /* total message length including header */
 	u32 fence;
 	u32 status;
 	u32 datalen;
@@ -686,7 +639,7 @@ static int ct_handle_response(struct intel_guc_ct *ct, const u32 *msg)
 
 	/* Response payload shall at least include fence and status */
 	if (unlikely(len < 2)) {
-		CT_ERROR(ct, "Corrupted response %*ph\n", msgsize, msg);
+		DRM_ERROR("CT: corrupted response %*ph\n", 4 * msglen, msg);
 		return -EPROTO;
 	}
 
@@ -696,22 +649,22 @@ static int ct_handle_response(struct intel_guc_ct *ct, const u32 *msg)
 
 	/* Format of the status follows RESPONSE message */
 	if (unlikely(!INTEL_GUC_MSG_IS_RESPONSE(status))) {
-		CT_ERROR(ct, "Corrupted response %*ph\n", msgsize, msg);
+		DRM_ERROR("CT: corrupted response %*ph\n", 4 * msglen, msg);
 		return -EPROTO;
 	}
 
-	CT_DEBUG(ct, "response fence %u status %#x\n", fence, status);
+	CT_DEBUG_DRIVER("CT: response fence %u status %#x\n", fence, status);
 
 	spin_lock(&ct->requests.lock);
 	list_for_each_entry(req, &ct->requests.pending, link) {
 		if (unlikely(fence != req->fence)) {
-			CT_DEBUG(ct, "request %u awaits response\n",
-				 req->fence);
+			CT_DEBUG_DRIVER("CT: request %u awaits response\n",
+					req->fence);
 			continue;
 		}
 		if (unlikely(datalen > req->response_len)) {
-			CT_ERROR(ct, "Response for %u is too long %*ph\n",
-				 req->fence, msgsize, msg);
+			DRM_ERROR("CT: response %u too long %*ph\n",
+				  req->fence, 4 * msglen, msg);
 			datalen = 0;
 		}
 		if (datalen)
@@ -724,7 +677,7 @@ static int ct_handle_response(struct intel_guc_ct *ct, const u32 *msg)
 	spin_unlock(&ct->requests.lock);
 
 	if (!found)
-		CT_ERROR(ct, "Unsolicited response %*ph\n", msgsize, msg);
+		DRM_ERROR("CT: unsolicited response %*ph\n", 4 * msglen, msg);
 	return 0;
 }
 
@@ -734,7 +687,7 @@ static void ct_process_request(struct intel_guc_ct *ct,
 	struct intel_guc *guc = ct_to_guc(ct);
 	int ret;
 
-	CT_DEBUG(ct, "request %x %*ph\n", action, 4 * len, payload);
+	CT_DEBUG_DRIVER("CT: request %x %*ph\n", action, 4 * len, payload);
 
 	switch (action) {
 	case INTEL_GUC_ACTION_DEFAULT:
@@ -745,8 +698,8 @@ static void ct_process_request(struct intel_guc_ct *ct,
 
 	default:
 fail_unexpected:
-		CT_ERROR(ct, "Unexpected request %x %*ph\n",
-			 action, 4 * len, payload);
+		DRM_ERROR("CT: unexpected request %x %*ph\n",
+			  action, 4 * len, payload);
 		break;
 	}
 }
@@ -814,18 +767,18 @@ static int ct_handle_request(struct intel_guc_ct *ct, const u32 *msg)
 {
 	u32 header = msg[0];
 	u32 len = ct_header_get_len(header);
-	u32 msgsize = (len + 1) * sizeof(u32); /* msg size in bytes w/header */
+	u32 msglen = len + 1; /* total message length including header */
 	struct ct_incoming_request *request;
 	unsigned long flags;
 
 	GEM_BUG_ON(ct_header_is_response(header));
 
-	request = kmalloc(sizeof(*request) + msgsize, GFP_ATOMIC);
+	request = kmalloc(sizeof(*request) + 4 * msglen, GFP_ATOMIC);
 	if (unlikely(!request)) {
-		CT_ERROR(ct, "Dropping request %*ph\n", msgsize, msg);
+		DRM_ERROR("CT: dropping request %*ph\n", 4 * msglen, msg);
 		return 0; /* XXX: -ENOMEM ? */
 	}
-	memcpy(request->msg, msg, msgsize);
+	memcpy(request->msg, msg, 4 * msglen);
 
 	spin_lock_irqsave(&ct->requests.lock, flags);
 	list_add_tail(&request->link, &ct->requests.incoming);
@@ -841,6 +794,7 @@ static int ct_handle_request(struct intel_guc_ct *ct, const u32 *msg)
  */
 void intel_guc_ct_event_handler(struct intel_guc_ct *ct)
 {
+	struct intel_guc_ct_buffer *ctb = &ct->ctbs[CTB_RECV];
 	u32 msg[GUC_CT_MSG_LEN_MASK + 1]; /* one extra dw for the header */
 	int err = 0;
 
@@ -850,7 +804,7 @@ void intel_guc_ct_event_handler(struct intel_guc_ct *ct)
 	}
 
 	do {
-		err = ct_read(ct, msg);
+		err = ctb_read(ctb, msg);
 		if (err)
 			break;
 
@@ -859,4 +813,10 @@ void intel_guc_ct_event_handler(struct intel_guc_ct *ct)
 		else
 			err = ct_handle_request(ct, msg);
 	} while (!err);
+
+	if (GEM_WARN_ON(err == -EPROTO)) {
+		DRM_ERROR("CT: corrupted message detected!\n");
+		ctb->desc->is_in_error = 1;
+	}
 }
+

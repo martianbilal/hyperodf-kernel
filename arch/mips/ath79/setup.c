@@ -15,7 +15,7 @@
 #include <linux/memblock.h>
 #include <linux/err.h>
 #include <linux/clk.h>
-#include <linux/of_clk.h>
+#include <linux/clk-provider.h>
 #include <linux/of_fdt.h>
 #include <linux/irqchip.h>
 
@@ -23,6 +23,7 @@
 #include <asm/idle.h>
 #include <asm/time.h>		/* for mips_hpt_frequency */
 #include <asm/reboot.h>		/* for _machine_{restart,halt} */
+#include <asm/mips_machine.h>
 #include <asm/prom.h>
 #include <asm/fw/fw.h>
 
@@ -152,7 +153,8 @@ static void __init ath79_detect_sys_type(void)
 	case REV_ID_MAJOR_QCA9533_V2:
 		ver = 2;
 		ath79_soc_rev = 2;
-		fallthrough;
+		/* fall through */
+
 	case REV_ID_MAJOR_QCA9533:
 		ath79_soc = ATH79_SOC_QCA9533;
 		chip = "9533";
@@ -213,17 +215,16 @@ unsigned int get_c0_compare_int(void)
 
 void __init plat_mem_setup(void)
 {
-	void *dtb;
+	unsigned long fdt_start;
 
 	set_io_port_base(KSEG1);
 
 	/* Get the position of the FDT passed by the bootloader */
-	dtb = (void *)fw_getenvl("fdt_start");
-	if (dtb == NULL)
-		dtb = get_fdt();
-
-	if (dtb)
-		__dt_setup_arch((void *)KSEG0ADDR(dtb));
+	fdt_start = fw_getenvl("fdt_start");
+	if (fdt_start)
+		__dt_setup_arch((void *)KSEG0ADDR(fdt_start));
+	else if (fw_passed_dtb)
+		__dt_setup_arch((void *)KSEG0ADDR(fw_passed_dtb));
 
 	ath79_reset_base = ioremap(AR71XX_RESET_BASE,
 					   AR71XX_RESET_SIZE);

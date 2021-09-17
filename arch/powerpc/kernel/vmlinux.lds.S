@@ -15,6 +15,7 @@
 #include <asm/thread_info.h>
 
 #define STRICT_ALIGN_SIZE	(1 << CONFIG_DATA_SHIFT)
+#define ETEXT_ALIGN_SIZE	(1 << CONFIG_ETEXT_SHIFT)
 
 ENTRY(_stext)
 
@@ -85,11 +86,10 @@ SECTIONS
 		ALIGN_FUNCTION();
 #endif
 		/* careful! __ftr_alt_* sections need to be close to .text */
-		*(.text.hot .text.hot.* TEXT_MAIN .text.fixup .text.unlikely .text.unlikely.* .fixup __ftr_alt_* .ref.text);
+		*(.text.hot TEXT_MAIN .text.fixup .text.unlikely .fixup __ftr_alt_* .ref.text);
 #ifdef CONFIG_PPC64
 		*(.tramp.ftrace.text);
 #endif
-		NOINSTR_TEXT
 		SCHED_TEXT
 		CPUIDLE_TEXT
 		LOCK_TEXT
@@ -116,7 +116,7 @@ SECTIONS
 
 	} :text
 
-	. = ALIGN(PAGE_SIZE);
+	. = ALIGN(ETEXT_ALIGN_SIZE);
 	_etext = .;
 	PROVIDE32 (etext = .);
 
@@ -129,27 +129,6 @@ SECTIONS
 		__start___stf_entry_barrier_fixup = .;
 		*(__stf_entry_barrier_fixup)
 		__stop___stf_entry_barrier_fixup = .;
-	}
-
-	. = ALIGN(8);
-	__uaccess_flush_fixup : AT(ADDR(__uaccess_flush_fixup) - LOAD_OFFSET) {
-		__start___uaccess_flush_fixup = .;
-		*(__uaccess_flush_fixup)
-		__stop___uaccess_flush_fixup = .;
-	}
-
-	. = ALIGN(8);
-	__entry_flush_fixup : AT(ADDR(__entry_flush_fixup) - LOAD_OFFSET) {
-		__start___entry_flush_fixup = .;
-		*(__entry_flush_fixup)
-		__stop___entry_flush_fixup = .;
-	}
-
-	. = ALIGN(8);
-	__scv_entry_flush_fixup : AT(ADDR(__scv_entry_flush_fixup) - LOAD_OFFSET) {
-		__start___scv_entry_flush_fixup = .;
-		*(__scv_entry_flush_fixup)
-		__stop___scv_entry_flush_fixup = .;
 	}
 
 	. = ALIGN(8);
@@ -194,12 +173,6 @@ SECTIONS
 	.init.text : AT(ADDR(.init.text) - LOAD_OFFSET) {
 		_sinittext = .;
 		INIT_TEXT
-
-		/*
-		 *.init.text might be RO so we must ensure this section ends on
-		 * a page boundary.
-		 */
-		. = ALIGN(PAGE_SIZE);
 		_einittext = .;
 #ifdef CONFIG_PPC64
 		*(.tramp.ftrace.init);
@@ -213,9 +186,21 @@ SECTIONS
 		EXIT_TEXT
 	}
 
-	. = ALIGN(PAGE_SIZE);
+	.init.data : AT(ADDR(.init.data) - LOAD_OFFSET) {
+		INIT_DATA
+	}
 
-	INIT_DATA_SECTION(16)
+	.init.setup : AT(ADDR(.init.setup) - LOAD_OFFSET) {
+		INIT_SETUP(16)
+	}
+
+	.initcall.init : AT(ADDR(.initcall.init) - LOAD_OFFSET) {
+		INIT_CALLS
+	}
+
+	.con_initcall.init : AT(ADDR(.con_initcall.init) - LOAD_OFFSET) {
+		CON_INITCALL
+	}
 
 	. = ALIGN(8);
 	__ftr_fixup : AT(ADDR(__ftr_fixup) - LOAD_OFFSET) {
@@ -243,6 +228,9 @@ SECTIONS
 		__stop___fw_ftr_fixup = .;
 	}
 #endif
+	.init.ramfs : AT(ADDR(.init.ramfs) - LOAD_OFFSET) {
+		INIT_RAM_FS
+	}
 
 	PERCPU_SECTION(L1_CACHE_BYTES)
 
@@ -268,7 +256,6 @@ SECTIONS
 		*(.dynamic)
 	}
 	.hash : AT(ADDR(.hash) - LOAD_OFFSET) { *(.hash) }
-	.gnu.hash : AT(ADDR(.gnu.hash) - LOAD_OFFSET) { *(.gnu.hash) }
 	.interp : AT(ADDR(.interp) - LOAD_OFFSET) { *(.interp) }
 	.rela.dyn : AT(ADDR(.rela.dyn) - LOAD_OFFSET)
 	{
@@ -311,10 +298,6 @@ SECTIONS
 #else
 	.data : AT(ADDR(.data) - LOAD_OFFSET) {
 		DATA_DATA
-#ifdef CONFIG_UBSAN
-		*(.data..Lubsan_data*)
-		*(.data..Lubsan_type*)
-#endif
 		*(.data.rel*)
 		*(.toc1)
 		*(.branch_lt)
@@ -376,8 +359,8 @@ SECTIONS
 	PROVIDE32 (end = .);
 
 	STABS_DEBUG
+
 	DWARF_DEBUG
-	ELF_DETAILS
 
 	DISCARDS
 	/DISCARD/ : {

@@ -20,10 +20,6 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <linux/kconfig.h>
-
-#if IS_REACHABLE(CONFIG_AMD_IOMMU_V2)
-
 #include <linux/printk.h>
 #include <linux/device.h>
 #include <linux/slab.h>
@@ -45,7 +41,7 @@ int kfd_iommu_check_device(struct kfd_dev *kfd)
 	struct amd_iommu_device_info iommu_info;
 	int err;
 
-	if (!kfd->use_iommu_v2)
+	if (!kfd->device_info->needs_iommu_device)
 		return -ENODEV;
 
 	iommu_info.flags = 0;
@@ -67,7 +63,7 @@ int kfd_iommu_device_init(struct kfd_dev *kfd)
 	unsigned int pasid_limit;
 	int err;
 
-	if (!kfd->use_iommu_v2)
+	if (!kfd->device_info->needs_iommu_device)
 		return 0;
 
 	iommu_info.flags = 0;
@@ -113,7 +109,7 @@ int kfd_iommu_bind_process_to_device(struct kfd_process_device *pdd)
 	struct kfd_process *p = pdd->process;
 	int err;
 
-	if (!dev->use_iommu_v2 || pdd->bound == PDD_BOUND)
+	if (!dev->device_info->needs_iommu_device || pdd->bound == PDD_BOUND)
 		return 0;
 
 	if (unlikely(pdd->bound == PDD_BOUND_SUSPENDED)) {
@@ -143,7 +139,7 @@ void kfd_iommu_unbind_process(struct kfd_process *p)
 }
 
 /* Callback for process shutdown invoked by the IOMMU driver */
-static void iommu_pasid_shutdown_callback(struct pci_dev *pdev, u32 pasid)
+static void iommu_pasid_shutdown_callback(struct pci_dev *pdev, int pasid)
 {
 	struct kfd_dev *dev = kfd_device_by_pci_dev(pdev);
 	struct kfd_process *p;
@@ -189,14 +185,14 @@ static void iommu_pasid_shutdown_callback(struct pci_dev *pdev, u32 pasid)
 }
 
 /* This function called by IOMMU driver on PPR failure */
-static int iommu_invalid_ppr_cb(struct pci_dev *pdev, u32 pasid,
-				unsigned long address, u16 flags)
+static int iommu_invalid_ppr_cb(struct pci_dev *pdev, int pasid,
+		unsigned long address, u16 flags)
 {
 	struct kfd_dev *dev;
 
 	dev_warn_ratelimited(kfd_device,
 			"Invalid PPR device %x:%x.%x pasid 0x%x address 0x%lX flags 0x%X",
-			pdev->bus->number,
+			PCI_BUS_NUM(pdev->devfn),
 			PCI_SLOT(pdev->devfn),
 			PCI_FUNC(pdev->devfn),
 			pasid,
@@ -288,7 +284,7 @@ static void kfd_unbind_processes_from_device(struct kfd_dev *kfd)
  */
 void kfd_iommu_suspend(struct kfd_dev *kfd)
 {
-	if (!kfd->use_iommu_v2)
+	if (!kfd->device_info->needs_iommu_device)
 		return;
 
 	kfd_unbind_processes_from_device(kfd);
@@ -308,7 +304,7 @@ int kfd_iommu_resume(struct kfd_dev *kfd)
 	unsigned int pasid_limit;
 	int err;
 
-	if (!kfd->use_iommu_v2)
+	if (!kfd->device_info->needs_iommu_device)
 		return 0;
 
 	pasid_limit = kfd_get_pasid_limit();
@@ -359,5 +355,3 @@ int kfd_iommu_add_perf_counters(struct kfd_topology_device *kdev)
 
 	return 0;
 }
-
-#endif

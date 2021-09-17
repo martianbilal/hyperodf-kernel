@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0
 menu "Generic Driver Options"
 
-config AUXILIARY_BUS
-	bool
-
 config UEVENT_HELPER
 	bool "Support for uevent helper"
 	help
@@ -152,16 +149,15 @@ config DEBUG_TEST_DRIVER_REMOVE
 	  test this functionality.
 
 config PM_QOS_KUNIT_TEST
-	bool "KUnit Test for PM QoS features" if !KUNIT_ALL_TESTS
+	bool "KUnit Test for PM QoS features"
 	depends on KUNIT=y
-	default KUNIT_ALL_TESTS
 
 config HMEM_REPORTING
 	bool
 	default n
 	depends on NUMA
 	help
-	  Enable reporting for heterogeneous memory access attributes under
+	  Enable reporting for heterogenous memory access attributes under
 	  their non-uniform memory nodes.
 
 source "drivers/base/test/Kconfig"
@@ -212,11 +208,5 @@ config GENERIC_ARCH_TOPOLOGY
 	  CPU capacity information from DT, usage of such information for
 	  appropriate scaling, sysfs interface for reading capacity values at
 	  runtime.
-
-config GENERIC_ARCH_NUMA
-	bool
-	help
-	  Enable support for generic NUMA implementation. Currently, RISC-V
-	  and ARM64 use it.
 
 endmenu

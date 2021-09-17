@@ -30,6 +30,7 @@
  * SOFTWARE.
  */
 
+#include <linux/mlx5/cmd.h>
 #include <linux/mlx5/vport.h>
 #include <rdma/ib_mad.h>
 #include <rdma/ib_smi.h>
@@ -48,7 +49,7 @@ static bool can_do_mad_ifc(struct mlx5_ib_dev *dev, u8 port_num,
 	if (in_mad->mad_hdr.mgmt_class != IB_MGMT_CLASS_SUBN_LID_ROUTED &&
 	    in_mad->mad_hdr.mgmt_class != IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE)
 		return true;
-	return dev->port_caps[port_num - 1].has_smi;
+	return dev->mdev->port_caps[port_num - 1].has_smi;
 }
 
 static int mlx5_MAD_IFC(struct mlx5_ib_dev *dev, int ignore_mkey,
@@ -187,8 +188,8 @@ static int process_pma_cmd(struct mlx5_ib_dev *dev, u8 port_num,
 			goto done;
 		}
 
-		err = mlx5_core_query_vport_counter(mdev, 0, 0, mdev_port_num,
-						    out_cnt);
+		err = mlx5_core_query_vport_counter(mdev, 0, 0,
+						    mdev_port_num, out_cnt, sz);
 		if (!err)
 			pma_cnt_ext_assign(pma_cnt_ext, out_cnt);
 	} else {
@@ -250,8 +251,9 @@ int mlx5_ib_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
 		if (MLX5_CAP_GEN(dev->mdev, vport_counters) &&
 		    method == IB_MGMT_METHOD_GET)
 			return process_pma_cmd(dev, port_num, in, out);
-		fallthrough;
+		/* fallthrough */
 	case MLX5_IB_VENDOR_CLASS1:
+		/* fallthrough */
 	case MLX5_IB_VENDOR_CLASS2:
 	case IB_MGMT_CLASS_CONG_MGMT: {
 		if (method != IB_MGMT_METHOD_GET &&
@@ -279,7 +281,7 @@ int mlx5_ib_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
 	return IB_MAD_RESULT_SUCCESS | IB_MAD_RESULT_REPLY;
 }
 
-int mlx5_query_ext_port_caps(struct mlx5_ib_dev *dev, unsigned int port)
+int mlx5_query_ext_port_caps(struct mlx5_ib_dev *dev, u8 port)
 {
 	struct ib_smp *in_mad  = NULL;
 	struct ib_smp *out_mad = NULL;
@@ -299,7 +301,7 @@ int mlx5_query_ext_port_caps(struct mlx5_ib_dev *dev, unsigned int port)
 
 	packet_error = be16_to_cpu(out_mad->status);
 
-	dev->port_caps[port - 1].ext_port_cap = (!err && !packet_error) ?
+	dev->mdev->port_caps[port - 1].ext_port_cap = (!err && !packet_error) ?
 		MLX_EXT_PORT_CAP_FLAG_EXTENDED_PORT_INFO : 0;
 
 out:
@@ -308,8 +310,8 @@ out:
 	return err;
 }
 
-static int mlx5_query_mad_ifc_smp_attr_node_info(struct ib_device *ibdev,
-						 struct ib_smp *out_mad)
+int mlx5_query_mad_ifc_smp_attr_node_info(struct ib_device *ibdev,
+					  struct ib_smp *out_mad)
 {
 	struct ib_smp *in_mad = NULL;
 	int err = -ENOMEM;
@@ -549,7 +551,7 @@ int mlx5_query_mad_ifc_port(struct ib_device *ibdev, u8 port,
 	props->port_cap_flags	= be32_to_cpup((__be32 *)(out_mad->data + 20));
 	props->gid_tbl_len	= out_mad->data[50];
 	props->max_msg_sz	= 1 << MLX5_CAP_GEN(mdev, log_max_msg);
-	props->pkey_tbl_len	= dev->pkey_table_len;
+	props->pkey_tbl_len	= mdev->port_caps[port - 1].pkey_table_len;
 	props->bad_pkey_cntr	= be16_to_cpup((__be16 *)(out_mad->data + 46));
 	props->qkey_viol_cntr	= be16_to_cpup((__be16 *)(out_mad->data + 48));
 	props->active_width	= out_mad->data[31] & 0xf;
@@ -589,7 +591,7 @@ int mlx5_query_mad_ifc_port(struct ib_device *ibdev, u8 port,
 
 	/* If reported active speed is QDR, check if is FDR-10 */
 	if (props->active_speed == 4) {
-		if (dev->port_caps[port - 1].ext_port_cap &
+		if (mdev->port_caps[port - 1].ext_port_cap &
 		    MLX_EXT_PORT_CAP_FLAG_EXTENDED_PORT_INFO) {
 			init_query_mad(in_mad);
 			in_mad->attr_id = MLX5_ATTR_EXTENDED_PORT_INFO;

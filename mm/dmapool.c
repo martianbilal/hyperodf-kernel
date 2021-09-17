@@ -28,7 +28,6 @@
 #include <linux/mutex.h>
 #include <linux/poison.h>
 #include <linux/sched.h>
-#include <linux/sched/mm.h>
 #include <linux/slab.h>
 #include <linux/stat.h>
 #include <linux/spinlock.h>
@@ -145,7 +144,9 @@ struct dma_pool *dma_pool_create(const char *name, struct device *dev,
 	else if (size < 4)
 		size = 4;
 
-	size = ALIGN(size, align);
+	if ((size % align) != 0)
+		size = ALIGN(size, align);
+
 	allocation = max_t(size_t, size, PAGE_SIZE);
 
 	if (!boundary)
@@ -267,7 +268,6 @@ static void pool_free_page(struct dma_pool *pool, struct dma_page *page)
  */
 void dma_pool_destroy(struct dma_pool *pool)
 {
-	struct dma_page *page, *tmp;
 	bool empty = false;
 
 	if (unlikely(!pool))
@@ -283,13 +283,17 @@ void dma_pool_destroy(struct dma_pool *pool)
 		device_remove_file(pool->dev, &dev_attr_pools);
 	mutex_unlock(&pools_reg_lock);
 
-	list_for_each_entry_safe(page, tmp, &pool->page_list, page_list) {
+	while (!list_empty(&pool->page_list)) {
+		struct dma_page *page;
+		page = list_entry(pool->page_list.next,
+				  struct dma_page, page_list);
 		if (is_page_busy(page)) {
 			if (pool->dev)
-				dev_err(pool->dev, "%s %s, %p busy\n", __func__,
+				dev_err(pool->dev,
+					"dma_pool_destroy %s, %p busy\n",
 					pool->name, page->vaddr);
 			else
-				pr_err("%s %s, %p busy\n", __func__,
+				pr_err("dma_pool_destroy %s, %p busy\n",
 				       pool->name, page->vaddr);
 			/* leak the still-in-use consistent memory */
 			list_del(&page->page_list);
@@ -320,7 +324,7 @@ void *dma_pool_alloc(struct dma_pool *pool, gfp_t mem_flags,
 	size_t offset;
 	void *retval;
 
-	might_alloc(mem_flags);
+	might_sleep_if(gfpflags_allow_blocking(mem_flags));
 
 	spin_lock_irqsave(&pool->lock, flags);
 	list_for_each_entry(page, &pool->page_list, page_list) {
@@ -353,11 +357,12 @@ void *dma_pool_alloc(struct dma_pool *pool, gfp_t mem_flags,
 			if (data[i] == POOL_POISON_FREED)
 				continue;
 			if (pool->dev)
-				dev_err(pool->dev, "%s %s, %p (corrupted)\n",
-					__func__, pool->name, retval);
+				dev_err(pool->dev,
+					"dma_pool_alloc %s, %p (corrupted)\n",
+					pool->name, retval);
 			else
-				pr_err("%s %s, %p (corrupted)\n",
-					__func__, pool->name, retval);
+				pr_err("dma_pool_alloc %s, %p (corrupted)\n",
+					pool->name, retval);
 
 			/*
 			 * Dump the first 4 bytes even if they are not
@@ -413,11 +418,12 @@ void dma_pool_free(struct dma_pool *pool, void *vaddr, dma_addr_t dma)
 	if (!page) {
 		spin_unlock_irqrestore(&pool->lock, flags);
 		if (pool->dev)
-			dev_err(pool->dev, "%s %s, %p/%pad (bad dma)\n",
-				__func__, pool->name, vaddr, &dma);
+			dev_err(pool->dev,
+				"dma_pool_free %s, %p/%lx (bad dma)\n",
+				pool->name, vaddr, (unsigned long)dma);
 		else
-			pr_err("%s %s, %p/%pad (bad dma)\n",
-			       __func__, pool->name, vaddr, &dma);
+			pr_err("dma_pool_free %s, %p/%lx (bad dma)\n",
+			       pool->name, vaddr, (unsigned long)dma);
 		return;
 	}
 
@@ -428,11 +434,12 @@ void dma_pool_free(struct dma_pool *pool, void *vaddr, dma_addr_t dma)
 	if ((dma - page->dma) != offset) {
 		spin_unlock_irqrestore(&pool->lock, flags);
 		if (pool->dev)
-			dev_err(pool->dev, "%s %s, %p (bad vaddr)/%pad\n",
-				__func__, pool->name, vaddr, &dma);
+			dev_err(pool->dev,
+				"dma_pool_free %s, %p (bad vaddr)/%pad\n",
+				pool->name, vaddr, &dma);
 		else
-			pr_err("%s %s, %p (bad vaddr)/%pad\n",
-			       __func__, pool->name, vaddr, &dma);
+			pr_err("dma_pool_free %s, %p (bad vaddr)/%pad\n",
+			       pool->name, vaddr, &dma);
 		return;
 	}
 	{
@@ -444,11 +451,11 @@ void dma_pool_free(struct dma_pool *pool, void *vaddr, dma_addr_t dma)
 			}
 			spin_unlock_irqrestore(&pool->lock, flags);
 			if (pool->dev)
-				dev_err(pool->dev, "%s %s, dma %pad already free\n",
-					__func__, pool->name, &dma);
+				dev_err(pool->dev, "dma_pool_free %s, dma %pad already free\n",
+					pool->name, &dma);
 			else
-				pr_err("%s %s, dma %pad already free\n",
-				       __func__, pool->name, &dma);
+				pr_err("dma_pool_free %s, dma %pad already free\n",
+				       pool->name, &dma);
 			return;
 		}
 	}

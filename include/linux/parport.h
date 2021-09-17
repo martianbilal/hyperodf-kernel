@@ -297,37 +297,6 @@ int __must_check __parport_register_driver(struct parport_driver *,
  * parport_register_driver must be a macro so that KBUILD_MODNAME can
  * be expanded
  */
-
-/**
- *	parport_register_driver - register a parallel port device driver
- *	@driver: structure describing the driver
- *
- *	This can be called by a parallel port device driver in order
- *	to receive notifications about ports being found in the
- *	system, as well as ports no longer available.
- *
- *	If devmodel is true then the new device model is used
- *	for registration.
- *
- *	The @driver structure is allocated by the caller and must not be
- *	deallocated until after calling parport_unregister_driver().
- *
- *	If using the non device model:
- *	The driver's attach() function may block.  The port that
- *	attach() is given will be valid for the duration of the
- *	callback, but if the driver wants to take a copy of the
- *	pointer it must call parport_get_port() to do so.  Calling
- *	parport_register_device() on that port will do this for you.
- *
- *	The driver's detach() function may block.  The port that
- *	detach() is given will be valid for the duration of the
- *	callback, but if the driver wants to take a copy of the
- *	pointer it must call parport_get_port() to do so.
- *
- *
- *	Returns 0 on success. The non device model will always succeeds.
- *	but the new device model can fail and will return the error code.
- **/
 #define parport_register_driver(driver)             \
 	__parport_register_driver(driver, THIS_MODULE, KBUILD_MODNAME)
 
@@ -356,10 +325,18 @@ struct pardev_cb {
 	unsigned int flags;
 };
 
-/*
- * parport_register_dev_model declares that a device is connected to a
- * port, and tells the kernel all it needs to know.
- */
+/* parport_register_device declares that a device is connected to a
+   port, and tells the kernel all it needs to know.
+   - pf is the preemption function (may be NULL for no callback)
+   - kf is the wake-up function (may be NULL for no callback)
+   - irq_func is the interrupt handler (may be NULL for no interrupts)
+   - handle is a user pointer that gets handed to callback functions.  */
+struct pardevice *parport_register_device(struct parport *port, 
+			  const char *name,
+			  int (*pf)(void *), void (*kf)(void *),
+			  void (*irq_func)(void *), 
+			  int flags, void *handle);
+
 struct pardevice *
 parport_register_dev_model(struct parport *port, const char *name,
 			   const struct pardev_cb *par_dev_cb, int cnt);

@@ -11,18 +11,14 @@
 #include <linux/utime.h>
 #include <linux/file.h>
 #include <linux/memblock.h>
-#include <linux/mm.h>
-#include <linux/namei.h>
-#include <linux/init_syscalls.h>
 
-static ssize_t __init xwrite(struct file *file, const char *p, size_t count,
-		loff_t *pos)
+static ssize_t __init xwrite(int fd, const char *p, size_t count)
 {
 	ssize_t out = 0;
 
 	/* sys_write only can write MAX_RW_COUNT aka 2G-4K bytes at most */
 	while (count) {
-		ssize_t rv = kernel_write(file, p, count, pos);
+		ssize_t rv = ksys_write(fd, p, count);
 
 		if (rv < 0) {
 			if (rv == -EINTR || rv == -EAGAIN)
@@ -44,16 +40,6 @@ static void __init error(char *x)
 {
 	if (!message)
 		message = x;
-}
-
-static void panic_show_mem(const char *fmt, ...)
-{
-	va_list args;
-
-	show_mem(0, NULL);
-	va_start(args, fmt);
-	panic(fmt, args);
-	va_end(args);
 }
 
 /* link hash */
@@ -91,7 +77,7 @@ static char __init *find_link(int major, int minor, int ino,
 	}
 	q = kmalloc(sizeof(struct hash), GFP_KERNEL);
 	if (!q)
-		panic_show_mem("can't allocate link hash entry");
+		panic("can't allocate link hash entry");
 	q->major = major;
 	q->minor = minor;
 	q->ino = ino;
@@ -122,7 +108,8 @@ static long __init do_utime(char *filename, time64_t mtime)
 	t[0].tv_nsec = 0;
 	t[1].tv_sec = mtime;
 	t[1].tv_nsec = 0;
-	return init_utimes(filename, t);
+
+	return do_utimes(AT_FDCWD, filename, t, AT_SYMLINK_NOFOLLOW);
 }
 
 static __initdata LIST_HEAD(dir_list);
@@ -136,7 +123,7 @@ static void __init dir_add(const char *name, time64_t mtime)
 {
 	struct dir_entry *de = kmalloc(sizeof(struct dir_entry), GFP_KERNEL);
 	if (!de)
-		panic_show_mem("can't allocate dir_entry buffer");
+		panic("can't allocate dir_entry buffer");
 	INIT_LIST_HEAD(&de->list);
 	de->name = kstrdup(name, GFP_KERNEL);
 	de->mtime = mtime;
@@ -213,6 +200,7 @@ static inline void __init eat(unsigned n)
 	byte_count -= n;
 }
 
+static __initdata char *vcollected;
 static __initdata char *collected;
 static long remains __initdata;
 static __initdata char *collect;
@@ -308,12 +296,11 @@ static void __init clean_path(char *path, umode_t fmode)
 {
 	struct kstat st;
 
-	if (!init_stat(path, &st, AT_SYMLINK_NOFOLLOW) &&
-	    (st.mode ^ fmode) & S_IFMT) {
+	if (!vfs_lstat(path, &st) && (st.mode ^ fmode) & S_IFMT) {
 		if (S_ISDIR(st.mode))
-			init_rmdir(path);
+			ksys_rmdir(path);
 		else
-			init_unlink(path);
+			ksys_unlink(path);
 	}
 }
 
@@ -323,14 +310,13 @@ static int __init maybe_link(void)
 		char *old = find_link(major, minor, ino, mode, collected);
 		if (old) {
 			clean_path(collected, 0);
-			return (init_link(old, collected) < 0) ? -1 : 1;
+			return (ksys_link(old, collected) < 0) ? -1 : 1;
 		}
 	}
 	return 0;
 }
 
-static __initdata struct file *wfile;
-static __initdata loff_t wfile_pos;
+static __initdata int wfd;
 
 static int __init do_name(void)
 {
@@ -347,28 +333,28 @@ static int __init do_name(void)
 			int openflags = O_WRONLY|O_CREAT;
 			if (ml != 1)
 				openflags |= O_TRUNC;
-			wfile = filp_open(collected, openflags, mode);
-			if (IS_ERR(wfile))
-				return 0;
-			wfile_pos = 0;
+			wfd = ksys_open(collected, openflags, mode);
 
-			vfs_fchown(wfile, uid, gid);
-			vfs_fchmod(wfile, mode);
-			if (body_len)
-				vfs_truncate(&wfile->f_path, body_len);
-			state = CopyFile;
+			if (wfd >= 0) {
+				ksys_fchown(wfd, uid, gid);
+				ksys_fchmod(wfd, mode);
+				if (body_len)
+					ksys_ftruncate(wfd, body_len);
+				vcollected = kstrdup(collected, GFP_KERNEL);
+				state = CopyFile;
+			}
 		}
 	} else if (S_ISDIR(mode)) {
-		init_mkdir(collected, mode);
-		init_chown(collected, uid, gid, 0);
-		init_chmod(collected, mode);
+		ksys_mkdir(collected, mode);
+		ksys_chown(collected, uid, gid);
+		ksys_chmod(collected, mode);
 		dir_add(collected, mtime);
 	} else if (S_ISBLK(mode) || S_ISCHR(mode) ||
 		   S_ISFIFO(mode) || S_ISSOCK(mode)) {
 		if (maybe_link() == 0) {
-			init_mknod(collected, mode, rdev);
-			init_chown(collected, uid, gid, 0);
-			init_chmod(collected, mode);
+			ksys_mknod(collected, mode, rdev);
+			ksys_chown(collected, uid, gid);
+			ksys_chmod(collected, mode);
 			do_utime(collected, mtime);
 		}
 	}
@@ -378,20 +364,16 @@ static int __init do_name(void)
 static int __init do_copy(void)
 {
 	if (byte_count >= body_len) {
-		struct timespec64 t[2] = { };
-		if (xwrite(wfile, victim, body_len, &wfile_pos) != body_len)
+		if (xwrite(wfd, victim, body_len) != body_len)
 			error("write error");
-
-		t[0].tv_sec = mtime;
-		t[1].tv_sec = mtime;
-		vfs_utimes(&wfile->f_path, t);
-
-		fput(wfile);
+		ksys_close(wfd);
+		do_utime(vcollected, mtime);
+		kfree(vcollected);
 		eat(body_len);
 		state = SkipIt;
 		return 0;
 	} else {
-		if (xwrite(wfile, victim, byte_count, &wfile_pos) != byte_count)
+		if (xwrite(wfd, victim, byte_count) != byte_count)
 			error("write error");
 		body_len -= byte_count;
 		eat(byte_count);
@@ -403,8 +385,8 @@ static int __init do_symlink(void)
 {
 	collected[N_ALIGN(name_len) + body_len] = '\0';
 	clean_path(collected, 0);
-	init_symlink(collected + N_ALIGN(name_len), collected);
-	init_chown(collected, uid, gid, AT_SYMLINK_NOFOLLOW);
+	ksys_symlink(collected + N_ALIGN(name_len), collected);
+	ksys_lchown(collected, uid, gid);
 	do_utime(collected, mtime);
 	state = SkipIt;
 	next_state = Reset;
@@ -471,7 +453,7 @@ static char * __init unpack_to_rootfs(char *buf, unsigned long len)
 	name_buf = kmalloc(N_ALIGN(PATH_MAX), GFP_KERNEL);
 
 	if (!header_buf || !symlink_buf || !name_buf)
-		panic_show_mem("can't allocate buffers");
+		panic("can't allocate buffers");
 
 	state = Start;
 	this_header = 0;
@@ -546,52 +528,7 @@ extern unsigned long __initramfs_size;
 #include <linux/initrd.h>
 #include <linux/kexec.h>
 
-void __init reserve_initrd_mem(void)
-{
-	phys_addr_t start;
-	unsigned long size;
-
-	/* Ignore the virtul address computed during device tree parsing */
-	initrd_start = initrd_end = 0;
-
-	if (!phys_initrd_size)
-		return;
-	/*
-	 * Round the memory region to page boundaries as per free_initrd_mem()
-	 * This allows us to detect whether the pages overlapping the initrd
-	 * are in use, but more importantly, reserves the entire set of pages
-	 * as we don't want these pages allocated for other purposes.
-	 */
-	start = round_down(phys_initrd_start, PAGE_SIZE);
-	size = phys_initrd_size + (phys_initrd_start - start);
-	size = round_up(size, PAGE_SIZE);
-
-	if (!memblock_is_region_memory(start, size)) {
-		pr_err("INITRD: 0x%08llx+0x%08lx is not a memory region",
-		       (u64)start, size);
-		goto disable;
-	}
-
-	if (memblock_is_region_reserved(start, size)) {
-		pr_err("INITRD: 0x%08llx+0x%08lx overlaps in-use memory region\n",
-		       (u64)start, size);
-		goto disable;
-	}
-
-	memblock_reserve(start, size);
-	/* Now convert initrd to virtual addresses */
-	initrd_start = (unsigned long)__va(phys_initrd_start);
-	initrd_end = initrd_start + phys_initrd_size;
-	initrd_below_start_ok = 1;
-
-	return;
-disable:
-	pr_cont(" - disabling initrd\n");
-	initrd_start = 0;
-	initrd_end = 0;
-}
-
-void __weak __init free_initrd_mem(unsigned long start, unsigned long end)
+void __weak free_initrd_mem(unsigned long start, unsigned long end)
 {
 #ifdef CONFIG_ARCH_KEEP_MEMBLOCK
 	unsigned long aligned_start = ALIGN_DOWN(start, PAGE_SIZE);
@@ -635,26 +572,82 @@ static inline bool kexec_free_initrd(void)
 #endif /* CONFIG_KEXEC_CORE */
 
 #ifdef CONFIG_BLK_DEV_RAM
+#define BUF_SIZE 1024
+static void __init clean_rootfs(void)
+{
+	int fd;
+	void *buf;
+	struct linux_dirent64 *dirp;
+	int num;
+
+	fd = ksys_open("/", O_RDONLY, 0);
+	WARN_ON(fd < 0);
+	if (fd < 0)
+		return;
+	buf = kzalloc(BUF_SIZE, GFP_KERNEL);
+	WARN_ON(!buf);
+	if (!buf) {
+		ksys_close(fd);
+		return;
+	}
+
+	dirp = buf;
+	num = ksys_getdents64(fd, dirp, BUF_SIZE);
+	while (num > 0) {
+		while (num > 0) {
+			struct kstat st;
+			int ret;
+
+			ret = vfs_lstat(dirp->d_name, &st);
+			WARN_ON_ONCE(ret);
+			if (!ret) {
+				if (S_ISDIR(st.mode))
+					ksys_rmdir(dirp->d_name);
+				else
+					ksys_unlink(dirp->d_name);
+			}
+
+			num -= dirp->d_reclen;
+			dirp = (void *)dirp + dirp->d_reclen;
+		}
+		dirp = buf;
+		memset(buf, 0, BUF_SIZE);
+		num = ksys_getdents64(fd, dirp, BUF_SIZE);
+	}
+
+	ksys_close(fd);
+	kfree(buf);
+}
+#else
+static inline void clean_rootfs(void)
+{
+}
+#endif /* CONFIG_BLK_DEV_RAM */
+
+#ifdef CONFIG_BLK_DEV_RAM
 static void __init populate_initrd_image(char *err)
 {
 	ssize_t written;
-	struct file *file;
-	loff_t pos = 0;
+	int fd;
 
 	unpack_to_rootfs(__initramfs_start, __initramfs_size);
 
 	printk(KERN_INFO "rootfs image is not initramfs (%s); looks like an initrd\n",
 			err);
-	file = filp_open("/initrd.image", O_WRONLY | O_CREAT, 0700);
-	if (IS_ERR(file))
+	fd = ksys_open("/initrd.image", O_WRONLY | O_CREAT, 0700);
+	if (fd < 0)
 		return;
 
-	written = xwrite(file, (char *)initrd_start, initrd_end - initrd_start,
-			&pos);
+	written = xwrite(fd, (char *)initrd_start, initrd_end - initrd_start);
 	if (written != initrd_end - initrd_start)
 		pr_err("/initrd.image: incomplete write (%zd != %ld)\n",
 		       written, initrd_end - initrd_start);
-	fput(file);
+	ksys_close(fd);
+}
+#else
+static void __init populate_initrd_image(char *err)
+{
+	printk(KERN_EMERG "Initramfs unpacking failed: %s\n", err);
 }
 #endif /* CONFIG_BLK_DEV_RAM */
 
@@ -663,7 +656,7 @@ static int __init populate_rootfs(void)
 	/* Load the built in initramfs */
 	char *err = unpack_to_rootfs(__initramfs_start, __initramfs_size);
 	if (err)
-		panic_show_mem("%s", err); /* Failed to decompress INTERNAL initramfs */
+		panic("%s", err); /* Failed to decompress INTERNAL initramfs */
 
 	if (!initrd_start || IS_ENABLED(CONFIG_INITRAMFS_FORCE))
 		goto done;
@@ -675,11 +668,8 @@ static int __init populate_rootfs(void)
 
 	err = unpack_to_rootfs((char *)initrd_start, initrd_end - initrd_start);
 	if (err) {
-#ifdef CONFIG_BLK_DEV_RAM
+		clean_rootfs();
 		populate_initrd_image(err);
-#else
-		printk(KERN_EMERG "Initramfs unpacking failed: %s\n", err);
-#endif
 	}
 
 done:

@@ -251,6 +251,8 @@ line of text and contains the following stats separated by whitespace:
 
  ================ =============================================================
  orig_data_size   uncompressed size of data stored in this disk.
+		  This excludes same-element-filled pages (same_pages) since
+		  no memory is allocated for them.
                   Unit: bytes
  compr_data_size  compressed size of data stored in this disk
  mem_used_total   the amount of memory allocated for this disk. This
@@ -266,7 +268,6 @@ line of text and contains the following stats separated by whitespace:
                   No memory is allocated for such pages.
  pages_compacted  the number of pages freed during compaction
  huge_pages	  the number of incompressible pages
- huge_pages_since the number of incompressible pages since zram set up
  ================ =============================================================
 
 File /sys/block/zram<id>/bd_stat
@@ -335,11 +336,6 @@ Admin can request writeback of those idle pages at right timing via::
 
 With the command, zram writeback idle pages from memory to the storage.
 
-If admin want to write a specific page in zram device to backing device,
-they could write a page index into the interface.
-
-	echo "page_index=1251" > /sys/block/zramX/writeback
-
 If there are lots of write IO with flash device, potentially, it has
 flash wearout problem so that admin needs to design write limitation
 to guarantee storage health for entire product life.
@@ -366,7 +362,7 @@ like below::
 		/sys/block/zram0/writeback_limit.
 	$ echo 1 > /sys/block/zram0/writeback_limit_enable
 
-If admins want to allow further write again once the budget is exhausted,
+If admins want to allow further write again once the bugdet is exhausted,
 he could do it like below::
 
 	$ echo $((400<<MB_SHIFT>>4K_SHIFT)) > \

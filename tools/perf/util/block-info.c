@@ -65,7 +65,8 @@ struct block_info *block_info__new(void)
 	return bi;
 }
 
-int64_t __block_info__cmp(struct hist_entry *left, struct hist_entry *right)
+int64_t block_info__cmp(struct perf_hpp_fmt *fmt __maybe_unused,
+			struct hist_entry *left, struct hist_entry *right)
 {
 	struct block_info *bi_l = left->block_info;
 	struct block_info *bi_r = right->block_info;
@@ -73,27 +74,30 @@ int64_t __block_info__cmp(struct hist_entry *left, struct hist_entry *right)
 
 	if (!bi_l->sym || !bi_r->sym) {
 		if (!bi_l->sym && !bi_r->sym)
-			return -1;
+			return 0;
 		else if (!bi_l->sym)
 			return -1;
 		else
 			return 1;
 	}
 
-	cmp = strcmp(bi_l->sym->name, bi_r->sym->name);
-	if (cmp)
+	if (bi_l->sym == bi_r->sym) {
+		if (bi_l->start == bi_r->start) {
+			if (bi_l->end == bi_r->end)
+				return 0;
+			else
+				return (int64_t)(bi_r->end - bi_l->end);
+		} else
+			return (int64_t)(bi_r->start - bi_l->start);
+	} else {
+		cmp = strcmp(bi_l->sym->name, bi_r->sym->name);
 		return cmp;
+	}
 
-	if (bi_l->start != bi_r->start)
-		return (int64_t)(bi_r->start - bi_l->start);
+	if (bi_l->sym->start != bi_r->sym->start)
+		return (int64_t)(bi_r->sym->start - bi_l->sym->start);
 
-	return (int64_t)(bi_r->end - bi_l->end);
-}
-
-int64_t block_info__cmp(struct perf_hpp_fmt *fmt __maybe_unused,
-			struct hist_entry *left, struct hist_entry *right)
-{
-	return __block_info__cmp(left, right);
+	return (int64_t)(bi_r->sym->end - bi_l->sym->end);
 }
 
 static void init_block_info(struct block_info *bi, struct symbol *sym,
@@ -181,17 +185,6 @@ static int block_column_width(struct perf_hpp_fmt *fmt,
 	return block_fmt->width;
 }
 
-static int color_pct(struct perf_hpp *hpp, int width, double pct)
-{
-#ifdef HAVE_SLANG_SUPPORT
-	if (use_browser) {
-		return __hpp__slsmg_color_printf(hpp, "%*.2f%%",
-						 width - 1, pct);
-	}
-#endif
-	return hpp_color_scnprintf(hpp, "%*.2f%%", width - 1, pct);
-}
-
 static int block_total_cycles_pct_entry(struct perf_hpp_fmt *fmt,
 					struct perf_hpp *hpp,
 					struct hist_entry *he)
@@ -199,11 +192,14 @@ static int block_total_cycles_pct_entry(struct perf_hpp_fmt *fmt,
 	struct block_fmt *block_fmt = container_of(fmt, struct block_fmt, fmt);
 	struct block_info *bi = he->block_info;
 	double ratio = 0.0;
+	char buf[16];
 
 	if (block_fmt->total_cycles)
-		ratio = (double)bi->cycles_aggr / (double)block_fmt->total_cycles;
+		ratio = (double)bi->cycles / (double)block_fmt->total_cycles;
 
-	return color_pct(hpp, block_fmt->width, 100.0 * ratio);
+	sprintf(buf, "%.2f%%", 100.0 * ratio);
+
+	return scnprintf(hpp->buf, hpp->size, "%*s", block_fmt->width, buf);
 }
 
 static int64_t block_total_cycles_pct_sort(struct perf_hpp_fmt *fmt,
@@ -216,9 +212,9 @@ static int64_t block_total_cycles_pct_sort(struct perf_hpp_fmt *fmt,
 	double l, r;
 
 	if (block_fmt->total_cycles) {
-		l = ((double)bi_l->cycles_aggr /
+		l = ((double)bi_l->cycles /
 			(double)block_fmt->total_cycles) * 100000.0;
-		r = ((double)bi_r->cycles_aggr /
+		r = ((double)bi_r->cycles /
 			(double)block_fmt->total_cycles) * 100000.0;
 		return (int64_t)l - (int64_t)r;
 	}
@@ -256,13 +252,16 @@ static int block_cycles_pct_entry(struct perf_hpp_fmt *fmt,
 	struct block_info *bi = he->block_info;
 	double ratio = 0.0;
 	u64 avg;
+	char buf[16];
 
 	if (block_fmt->block_cycles && bi->num_aggr) {
 		avg = bi->cycles_aggr / bi->num_aggr;
 		ratio = (double)avg / (double)block_fmt->block_cycles;
 	}
 
-	return color_pct(hpp, block_fmt->width, 100.0 * ratio);
+	sprintf(buf, "%.2f%%", 100.0 * ratio);
+
+	return scnprintf(hpp->buf, hpp->size, "%*s", block_fmt->width, buf);
 }
 
 static int block_avg_cycles_entry(struct perf_hpp_fmt *fmt,
@@ -350,7 +349,7 @@ static void hpp_register(struct block_fmt *block_fmt, int idx,
 
 	switch (idx) {
 	case PERF_HPP_REPORT__BLOCK_TOTAL_CYCLES_PCT:
-		fmt->color = block_total_cycles_pct_entry;
+		fmt->entry = block_total_cycles_pct_entry;
 		fmt->cmp = block_info__cmp;
 		fmt->sort = block_total_cycles_pct_sort;
 		break;
@@ -358,7 +357,7 @@ static void hpp_register(struct block_fmt *block_fmt, int idx,
 		fmt->entry = block_cycles_lbr_entry;
 		break;
 	case PERF_HPP_REPORT__BLOCK_CYCLES_PCT:
-		fmt->color = block_cycles_pct_entry;
+		fmt->entry = block_cycles_pct_entry;
 		break;
 	case PERF_HPP_REPORT__BLOCK_AVG_CYCLES:
 		fmt->entry = block_avg_cycles_entry;
@@ -378,41 +377,33 @@ static void hpp_register(struct block_fmt *block_fmt, int idx,
 }
 
 static void register_block_columns(struct perf_hpp_list *hpp_list,
-				   struct block_fmt *block_fmts,
-				   int *block_hpps, int nr_hpps)
+				   struct block_fmt *block_fmts)
 {
-	for (int i = 0; i < nr_hpps; i++)
-		hpp_register(&block_fmts[i], block_hpps[i], hpp_list);
+	for (int i = 0; i < PERF_HPP_REPORT__BLOCK_MAX_INDEX; i++)
+		hpp_register(&block_fmts[i], i, hpp_list);
 }
 
-static void init_block_hist(struct block_hist *bh, struct block_fmt *block_fmts,
-			    int *block_hpps, int nr_hpps)
+static void init_block_hist(struct block_hist *bh, struct block_fmt *block_fmts)
 {
 	__hists__init(&bh->block_hists, &bh->block_list);
 	perf_hpp_list__init(&bh->block_list);
 	bh->block_list.nr_header_lines = 1;
 
-	register_block_columns(&bh->block_list, block_fmts,
-			       block_hpps, nr_hpps);
+	register_block_columns(&bh->block_list, block_fmts);
 
-	/* Sort by the first fmt */
-	perf_hpp_list__register_sort_field(&bh->block_list, &block_fmts[0].fmt);
+	perf_hpp_list__register_sort_field(&bh->block_list,
+		&block_fmts[PERF_HPP_REPORT__BLOCK_TOTAL_CYCLES_PCT].fmt);
 }
 
-static int process_block_report(struct hists *hists,
-				struct block_report *block_report,
-				u64 total_cycles, int *block_hpps,
-				int nr_hpps)
+static void process_block_report(struct hists *hists,
+				 struct block_report *block_report,
+				 u64 total_cycles)
 {
 	struct rb_node *next = rb_first_cached(&hists->entries);
 	struct block_hist *bh = &block_report->hist;
 	struct hist_entry *he;
 
-	if (nr_hpps > PERF_HPP_REPORT__BLOCK_MAX_INDEX)
-		return -1;
-
-	block_report->nr_fmts = nr_hpps;
-	init_block_hist(bh, block_report->fmts, block_hpps, nr_hpps);
+	init_block_hist(bh, block_report->fmts);
 
 	while (next) {
 		he = rb_entry(next, struct hist_entry, rb_node);
@@ -421,19 +412,16 @@ static int process_block_report(struct hists *hists,
 		next = rb_next(&he->rb_node);
 	}
 
-	for (int i = 0; i < nr_hpps; i++) {
+	for (int i = 0; i < PERF_HPP_REPORT__BLOCK_MAX_INDEX; i++) {
 		block_report->fmts[i].total_cycles = total_cycles;
 		block_report->fmts[i].block_cycles = block_report->cycles;
 	}
 
 	hists__output_resort(&bh->block_hists, NULL);
-	return 0;
 }
 
 struct block_report *block_info__create_report(struct evlist *evlist,
-					       u64 total_cycles,
-					       int *block_hpps, int nr_hpps,
-					       int *nr_reps)
+					       u64 total_cycles)
 {
 	struct block_report *block_reports;
 	int nr_hists = evlist->core.nr_entries, i = 0;
@@ -446,21 +434,11 @@ struct block_report *block_info__create_report(struct evlist *evlist,
 	evlist__for_each_entry(evlist, pos) {
 		struct hists *hists = evsel__hists(pos);
 
-		process_block_report(hists, &block_reports[i], total_cycles,
-				     block_hpps, nr_hpps);
+		process_block_report(hists, &block_reports[i], total_cycles);
 		i++;
 	}
 
-	*nr_reps = nr_hists;
 	return block_reports;
-}
-
-void block_info__free_report(struct block_report *reps, int nr_reps)
-{
-	for (int i = 0; i < nr_reps; i++)
-		hists__delete_entries(&reps[i].hist.block_hists);
-
-	free(reps);
 }
 
 int report__browse_block_hists(struct block_hist *bh, float min_percent,
@@ -474,11 +452,13 @@ int report__browse_block_hists(struct block_hist *bh, float min_percent,
 		symbol_conf.report_individual_block = true;
 		hists__fprintf(&bh->block_hists, true, 0, 0, min_percent,
 			       stdout, true);
+		hists__delete_entries(&bh->block_hists);
 		return 0;
 	case 1:
 		symbol_conf.report_individual_block = true;
 		ret = block_hists_tui_browse(bh, evsel, min_percent,
 					     env, annotation_opts);
+		hists__delete_entries(&bh->block_hists);
 		return ret;
 	default:
 		return -1;

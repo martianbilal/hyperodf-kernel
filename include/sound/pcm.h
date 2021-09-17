@@ -229,7 +229,7 @@ typedef int (*snd_pcm_hw_rule_func_t)(struct snd_pcm_hw_params *params,
 struct snd_pcm_hw_rule {
 	unsigned int cond;
 	int var;
-	int deps[5];
+	int deps[4];
 
 	snd_pcm_hw_rule_func_t func;
 	void *private;
@@ -643,11 +643,6 @@ void snd_pcm_stream_unlock_irqrestore(struct snd_pcm_substream *substream,
  */
 #define snd_pcm_group_for_each_entry(s, substream) \
 	list_for_each_entry(s, &substream->group->substreams, link_list)
-
-#define for_each_pcm_streams(stream)			\
-	for (stream  = SNDRV_PCM_STREAM_PLAYBACK;	\
-	     stream <= SNDRV_PCM_STREAM_LAST;		\
-	     stream++)
 
 /**
  * snd_pcm_running - Check whether the substream is in a running state
@@ -1127,14 +1122,7 @@ snd_pcm_kernel_readv(struct snd_pcm_substream *substream,
 	return __snd_pcm_lib_xfer(substream, bufs, false, frames, true);
 }
 
-int snd_pcm_hw_limit_rates(struct snd_pcm_hardware *hw);
-
-static inline int
-snd_pcm_limit_hw_rates(struct snd_pcm_runtime *runtime)
-{
-	return snd_pcm_hw_limit_rates(&runtime->hw);
-}
-
+int snd_pcm_limit_hw_rates(struct snd_pcm_runtime *runtime);
 unsigned int snd_pcm_rate_to_rate_bit(unsigned int rate);
 unsigned int snd_pcm_rate_bit_to_rate(unsigned int rate_bit);
 unsigned int snd_pcm_rate_mask_intersect(unsigned int rates_a,
@@ -1284,8 +1272,8 @@ snd_pcm_sgbuf_get_ptr(struct snd_pcm_substream *substream, unsigned int ofs)
 }
 
 /**
- * snd_pcm_sgbuf_get_chunk_size - Compute the max size that fits within the
- * contig. page from the given size
+ * snd_pcm_sgbuf_chunk_size - Compute the max size that fits within the contig.
+ * page from the given size
  * @substream: PCM substream
  * @ofs: byte offset
  * @size: byte size to examine
@@ -1426,15 +1414,6 @@ static inline u64 pcm_format_to_bits(snd_pcm_format_t pcm_format)
 {
 	return 1ULL << (__force int) pcm_format;
 }
-
-/**
- * pcm_for_each_format - helper to iterate for each format type
- * @f: the iterator variable in snd_pcm_format_t type
- */
-#define pcm_for_each_format(f)						\
-	for ((f) = SNDRV_PCM_FORMAT_FIRST;				\
-	     (__force int)(f) <= (__force int)SNDRV_PCM_FORMAT_LAST;	\
-	     (f) = (__force snd_pcm_format_t)((__force int)(f) + 1))
 
 /* printk helpers */
 #define pcm_err(pcm, fmt, args...) \

@@ -29,7 +29,6 @@
 #include "intel_gt.h"
 #include "intel_engine_heartbeat.h"
 #include "intel_engine_pm.h"
-#include "selftest_engine_heartbeat.h"
 
 #include "i915_selftest.h"
 #include "selftests/i915_random.h"
@@ -204,12 +203,12 @@ hang_create_request(struct hang *h, struct intel_engine_cs *engine)
 		*batch++ = lower_32_bits(hws_address(hws, rq));
 		*batch++ = upper_32_bits(hws_address(hws, rq));
 		*batch++ = rq->fence.seqno;
-		*batch++ = MI_NOOP;
+		*batch++ = MI_ARB_CHECK;
 
 		memset(batch, 0, 1024);
 		batch += 1024 / sizeof(*batch);
 
-		*batch++ = MI_NOOP;
+		*batch++ = MI_ARB_CHECK;
 		*batch++ = MI_BATCH_BUFFER_START | 1 << 8 | 1;
 		*batch++ = lower_32_bits(vma->node.start);
 		*batch++ = upper_32_bits(vma->node.start);
@@ -218,12 +217,12 @@ hang_create_request(struct hang *h, struct intel_engine_cs *engine)
 		*batch++ = 0;
 		*batch++ = lower_32_bits(hws_address(hws, rq));
 		*batch++ = rq->fence.seqno;
-		*batch++ = MI_NOOP;
+		*batch++ = MI_ARB_CHECK;
 
 		memset(batch, 0, 1024);
 		batch += 1024 / sizeof(*batch);
 
-		*batch++ = MI_NOOP;
+		*batch++ = MI_ARB_CHECK;
 		*batch++ = MI_BATCH_BUFFER_START | 1 << 8;
 		*batch++ = lower_32_bits(vma->node.start);
 	} else if (INTEL_GEN(gt->i915) >= 4) {
@@ -231,24 +230,24 @@ hang_create_request(struct hang *h, struct intel_engine_cs *engine)
 		*batch++ = 0;
 		*batch++ = lower_32_bits(hws_address(hws, rq));
 		*batch++ = rq->fence.seqno;
-		*batch++ = MI_NOOP;
+		*batch++ = MI_ARB_CHECK;
 
 		memset(batch, 0, 1024);
 		batch += 1024 / sizeof(*batch);
 
-		*batch++ = MI_NOOP;
+		*batch++ = MI_ARB_CHECK;
 		*batch++ = MI_BATCH_BUFFER_START | 2 << 6;
 		*batch++ = lower_32_bits(vma->node.start);
 	} else {
 		*batch++ = MI_STORE_DWORD_IMM | MI_MEM_VIRTUAL;
 		*batch++ = lower_32_bits(hws_address(hws, rq));
 		*batch++ = rq->fence.seqno;
-		*batch++ = MI_NOOP;
+		*batch++ = MI_ARB_CHECK;
 
 		memset(batch, 0, 1024);
 		batch += 1024 / sizeof(*batch);
 
-		*batch++ = MI_NOOP;
+		*batch++ = MI_ARB_CHECK;
 		*batch++ = MI_BATCH_BUFFER_START | 2 << 6;
 		*batch++ = lower_32_bits(vma->node.start);
 	}
@@ -269,7 +268,7 @@ hang_create_request(struct hang *h, struct intel_engine_cs *engine)
 
 cancel_rq:
 	if (err) {
-		i915_request_set_error_once(rq, err);
+		i915_request_skip(rq, err);
 		i915_request_add(rq);
 	}
 unpin_hws:
@@ -309,6 +308,24 @@ static bool wait_until_running(struct hang *h, struct i915_request *rq)
 		 wait_for(i915_seqno_passed(hws_seqno(h, rq),
 					    rq->fence.seqno),
 			  1000));
+}
+
+static void engine_heartbeat_disable(struct intel_engine_cs *engine,
+				     unsigned long *saved)
+{
+	*saved = engine->props.heartbeat_interval_ms;
+	engine->props.heartbeat_interval_ms = 0;
+
+	intel_engine_pm_get(engine);
+	intel_engine_park_heartbeat(engine);
+}
+
+static void engine_heartbeat_enable(struct intel_engine_cs *engine,
+				    unsigned long saved)
+{
+	intel_engine_pm_put(engine);
+
+	engine->props.heartbeat_interval_ms = saved;
 }
 
 static int igt_hang_sanitycheck(void *arg)
@@ -456,6 +473,7 @@ static int igt_reset_nop_engine(void *arg)
 	for_each_engine(engine, gt, id) {
 		unsigned int reset_count, reset_engine_count, count;
 		struct intel_context *ce;
+		unsigned long heartbeat;
 		IGT_TIMEOUT(end_time);
 		int err;
 
@@ -467,7 +485,7 @@ static int igt_reset_nop_engine(void *arg)
 		reset_engine_count = i915_reset_engine_count(global, engine);
 		count = 0;
 
-		st_engine_heartbeat_disable(engine);
+		engine_heartbeat_disable(engine, &heartbeat);
 		set_bit(I915_RESET_ENGINE + id, &gt->reset.flags);
 		do {
 			int i;
@@ -484,20 +502,6 @@ static int igt_reset_nop_engine(void *arg)
 
 				rq = intel_context_create_request(ce);
 				if (IS_ERR(rq)) {
-					struct drm_printer p =
-						drm_info_printer(gt->i915->drm.dev);
-					intel_engine_dump(engine, &p,
-							  "%s(%s): failed to submit request\n",
-							  __func__,
-							  engine->name);
-
-					GEM_TRACE("%s(%s): failed to submit request\n",
-						  __func__,
-						  engine->name);
-					GEM_TRACE_DUMP();
-
-					intel_gt_set_wedged(gt);
-
 					err = PTR_ERR(rq);
 					break;
 				}
@@ -506,8 +510,7 @@ static int igt_reset_nop_engine(void *arg)
 			}
 			err = intel_engine_reset(engine, NULL);
 			if (err) {
-				pr_err("intel_engine_reset(%s) failed, err:%d\n",
-				       engine->name, err);
+				pr_err("i915_reset_engine failed\n");
 				break;
 			}
 
@@ -526,154 +529,11 @@ static int igt_reset_nop_engine(void *arg)
 			}
 		} while (time_before(jiffies, end_time));
 		clear_bit(I915_RESET_ENGINE + id, &gt->reset.flags);
-		st_engine_heartbeat_enable(engine);
+		engine_heartbeat_enable(engine, heartbeat);
 
 		pr_info("%s(%s): %d resets\n", __func__, engine->name, count);
 
 		intel_context_put(ce);
-		if (igt_flush_test(gt->i915))
-			err = -EIO;
-		if (err)
-			return err;
-	}
-
-	return 0;
-}
-
-static void force_reset_timeout(struct intel_engine_cs *engine)
-{
-	engine->reset_timeout.probability = 999;
-	atomic_set(&engine->reset_timeout.times, -1);
-}
-
-static void cancel_reset_timeout(struct intel_engine_cs *engine)
-{
-	memset(&engine->reset_timeout, 0, sizeof(engine->reset_timeout));
-}
-
-static int igt_reset_fail_engine(void *arg)
-{
-	struct intel_gt *gt = arg;
-	struct intel_engine_cs *engine;
-	enum intel_engine_id id;
-
-	/* Check that we can recover from engine-reset failues */
-
-	if (!intel_has_reset_engine(gt))
-		return 0;
-
-	for_each_engine(engine, gt, id) {
-		unsigned int count;
-		struct intel_context *ce;
-		IGT_TIMEOUT(end_time);
-		int err;
-
-		ce = intel_context_create(engine);
-		if (IS_ERR(ce))
-			return PTR_ERR(ce);
-
-		st_engine_heartbeat_disable(engine);
-		set_bit(I915_RESET_ENGINE + id, &gt->reset.flags);
-
-		force_reset_timeout(engine);
-		err = intel_engine_reset(engine, NULL);
-		cancel_reset_timeout(engine);
-		if (err == 0) /* timeouts only generated on gen8+ */
-			goto skip;
-
-		count = 0;
-		do {
-			struct i915_request *last = NULL;
-			int i;
-
-			if (!wait_for_idle(engine)) {
-				pr_err("%s failed to idle before reset\n",
-				       engine->name);
-				err = -EIO;
-				break;
-			}
-
-			for (i = 0; i < count % 15; i++) {
-				struct i915_request *rq;
-
-				rq = intel_context_create_request(ce);
-				if (IS_ERR(rq)) {
-					struct drm_printer p =
-						drm_info_printer(gt->i915->drm.dev);
-					intel_engine_dump(engine, &p,
-							  "%s(%s): failed to submit request\n",
-							  __func__,
-							  engine->name);
-
-					GEM_TRACE("%s(%s): failed to submit request\n",
-						  __func__,
-						  engine->name);
-					GEM_TRACE_DUMP();
-
-					intel_gt_set_wedged(gt);
-					if (last)
-						i915_request_put(last);
-
-					err = PTR_ERR(rq);
-					goto out;
-				}
-
-				if (last)
-					i915_request_put(last);
-				last = i915_request_get(rq);
-				i915_request_add(rq);
-			}
-
-			if (count & 1) {
-				err = intel_engine_reset(engine, NULL);
-				if (err) {
-					GEM_TRACE_ERR("intel_engine_reset(%s) failed, err:%d\n",
-						      engine->name, err);
-					GEM_TRACE_DUMP();
-					i915_request_put(last);
-					break;
-				}
-			} else {
-				force_reset_timeout(engine);
-				err = intel_engine_reset(engine, NULL);
-				cancel_reset_timeout(engine);
-				if (err != -ETIMEDOUT) {
-					pr_err("intel_engine_reset(%s) did not fail, err:%d\n",
-					       engine->name, err);
-					i915_request_put(last);
-					break;
-				}
-			}
-
-			err = 0;
-			if (last) {
-				if (i915_request_wait(last, 0, HZ / 2) < 0) {
-					struct drm_printer p =
-						drm_info_printer(gt->i915->drm.dev);
-
-					intel_engine_dump(engine, &p,
-							  "%s(%s): failed to complete request\n",
-							  __func__,
-							  engine->name);
-
-					GEM_TRACE("%s(%s): failed to complete request\n",
-						  __func__,
-						  engine->name);
-					GEM_TRACE_DUMP();
-
-					err = -EIO;
-				}
-				i915_request_put(last);
-			}
-			count++;
-		} while (err == 0 && time_before(jiffies, end_time));
-out:
-		pr_info("%s(%s): %d resets\n", __func__, engine->name, count);
-skip:
-		clear_bit(I915_RESET_ENGINE + id, &gt->reset.flags);
-		st_engine_heartbeat_enable(engine);
-		intel_context_put(ce);
-
 		if (igt_flush_test(gt->i915))
 			err = -EIO;
 		if (err)
@@ -704,7 +564,7 @@ static int __igt_reset_engine(struct intel_gt *gt, bool active)
 
 	for_each_engine(engine, gt, id) {
 		unsigned int reset_count, reset_engine_count;
-		unsigned long count;
+		unsigned long heartbeat;
 		IGT_TIMEOUT(end_time);
 
 		if (active && !intel_engine_can_store_dword(engine))
@@ -720,9 +580,8 @@ static int __igt_reset_engine(struct intel_gt *gt, bool active)
 		reset_count = i915_reset_count(global);
 		reset_engine_count = i915_reset_engine_count(global, engine);
 
-		st_engine_heartbeat_disable(engine);
+		engine_heartbeat_disable(engine, &heartbeat);
 		set_bit(I915_RESET_ENGINE + id, &gt->reset.flags);
-		count = 0;
 		do {
 			if (active) {
 				struct i915_request *rq;
@@ -754,8 +613,7 @@ static int __igt_reset_engine(struct intel_gt *gt, bool active)
 
 			err = intel_engine_reset(engine, NULL);
 			if (err) {
-				pr_err("intel_engine_reset(%s) failed, err:%d\n",
-				       engine->name, err);
+				pr_err("i915_reset_engine failed\n");
 				break;
 			}
 
@@ -772,13 +630,9 @@ static int __igt_reset_engine(struct intel_gt *gt, bool active)
 				err = -EINVAL;
 				break;
 			}
-
-			count++;
 		} while (time_before(jiffies, end_time));
 		clear_bit(I915_RESET_ENGINE + id, &gt->reset.flags);
-		st_engine_heartbeat_enable(engine);
-		pr_info("%s: Completed %lu %s resets\n",
-			engine->name, count, active ? "active" : "idle");
+		engine_heartbeat_enable(engine, heartbeat);
 
 		if (err)
 			break;
@@ -935,6 +789,7 @@ static int __igt_reset_engines(struct intel_gt *gt,
 		struct active_engine threads[I915_NUM_ENGINES] = {};
 		unsigned long device = i915_reset_count(global);
 		unsigned long count = 0, reported;
+		unsigned long heartbeat;
 		IGT_TIMEOUT(end_time);
 
 		if (flags & TEST_ACTIVE &&
@@ -955,10 +810,10 @@ static int __igt_reset_engines(struct intel_gt *gt,
 			threads[tmp].resets =
 				i915_reset_engine_count(global, other);
 
-			if (other == engine && !(flags & TEST_SELF))
+			if (!(flags & TEST_OTHERS))
 				continue;
 
-			if (other != engine && !(flags & TEST_OTHERS))
+			if (other == engine && !(flags & TEST_SELF))
 				continue;
 
 			threads[tmp].engine = other;
@@ -977,7 +832,7 @@ static int __igt_reset_engines(struct intel_gt *gt,
 
 		yield(); /* start all threads before we begin */
 
-		st_engine_heartbeat_disable(engine);
+		engine_heartbeat_disable(engine, &heartbeat);
 		set_bit(I915_RESET_ENGINE + id, &gt->reset.flags);
 		do {
 			struct i915_request *rq = NULL;
@@ -1016,29 +871,13 @@ static int __igt_reset_engines(struct intel_gt *gt,
 			count++;
 
 			if (rq) {
-				if (rq->fence.error != -EIO) {
-					pr_err("i915_reset_engine(%s:%s):"
-					       " failed to reset request %llx:%lld\n",
-					       engine->name, test_name,
-					       rq->fence.context,
-					       rq->fence.seqno);
-					i915_request_put(rq);
-
-					GEM_TRACE_DUMP();
-					intel_gt_set_wedged(gt);
-					err = -EIO;
-					break;
-				}
-
 				if (i915_request_wait(rq, 0, HZ / 5) < 0) {
 					struct drm_printer p =
 						drm_info_printer(gt->i915->drm.dev);
 
 					pr_err("i915_reset_engine(%s:%s):"
-					       " failed to complete request %llx:%lld after reset\n",
-					       engine->name, test_name,
-					       rq->fence.context,
-					       rq->fence.seqno);
+					       " failed to complete request after reset\n",
+					       engine->name, test_name);
 					intel_engine_dump(engine, &p,
 							  "%s\n", engine->name);
 					i915_request_put(rq);
@@ -1067,7 +906,7 @@ static int __igt_reset_engines(struct intel_gt *gt,
 			}
 		} while (time_before(jiffies, end_time));
 		clear_bit(I915_RESET_ENGINE + id, &gt->reset.flags);
-		st_engine_heartbeat_enable(engine);
+		engine_heartbeat_enable(engine, heartbeat);
 
 		pr_info("i915_reset_engine(%s:%s): %lu resets\n",
 			engine->name, test_name, count);
@@ -1149,7 +988,7 @@ static int igt_reset_engines(void *arg)
 		},
 		{
 			"self-priority",
-			TEST_ACTIVE | TEST_PRIORITY | TEST_SELF,
+			TEST_OTHERS | TEST_ACTIVE | TEST_PRIORITY | TEST_SELF,
 		},
 		{ }
 	};
@@ -1629,8 +1468,7 @@ static int igt_reset_queue(void *arg)
 			prev = rq;
 			count++;
 		} while (time_before(jiffies, end_time));
-		pr_info("%s: Completed %d queued resets\n",
-			engine->name, count);
+		pr_info("%s: Completed %d resets\n", engine->name, count);
 
 		*h.batch = MI_BATCH_BUFFER_END;
 		intel_gt_chipset_flush(engine->gt);
@@ -1727,21 +1565,13 @@ static int __igt_atomic_reset_engine(struct intel_engine_cs *engine,
 	GEM_TRACE("i915_reset_engine(%s:%s) under %s\n",
 		  engine->name, mode, p->name);
 
-	if (t->func)
-		tasklet_disable(t);
-	if (strcmp(p->name, "softirq"))
-		local_bh_disable();
+	tasklet_disable(t);
 	p->critical_section_begin();
 
-	err = __intel_engine_reset_bh(engine, NULL);
+	err = intel_engine_reset(engine, NULL);
 
 	p->critical_section_end();
-	if (strcmp(p->name, "softirq"))
-		local_bh_enable();
-	if (t->func) {
-		tasklet_enable(t);
-		tasklet_hi_schedule(t);
-	}
+	tasklet_enable(t);
 
 	if (err)
 		pr_err("i915_reset_engine(%s:%s) failed under %s\n",
@@ -1810,7 +1640,7 @@ static int igt_reset_engines_atomic(void *arg)
 	if (!intel_has_reset_engine(gt))
 		return 0;
 
-	if (intel_uc_uses_guc_submission(&gt->uc))
+	if (USES_GUC_SUBMISSION(gt->i915))
 		return 0;
 
 	igt_global_reset_lock(gt);
@@ -1847,7 +1677,6 @@ int intel_hangcheck_live_selftests(struct drm_i915_private *i915)
 		SUBTEST(igt_reset_nop_engine),
 		SUBTEST(igt_reset_idle_engine),
 		SUBTEST(igt_reset_active_engine),
-		SUBTEST(igt_reset_fail_engine),
 		SUBTEST(igt_reset_engines),
 		SUBTEST(igt_reset_engines_atomic),
 		SUBTEST(igt_reset_queue),

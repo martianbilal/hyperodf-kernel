@@ -585,7 +585,8 @@ static int newary(struct ipc_namespace *ns, struct ipc_params *params)
 /*
  * Called with sem_ids.rwsem and ipcp locked.
  */
-static int sem_more_checks(struct kern_ipc_perm *ipcp, struct ipc_params *params)
+static inline int sem_more_checks(struct kern_ipc_perm *ipcp,
+				struct ipc_params *params)
 {
 	struct sem_array *sma;
 
@@ -784,14 +785,12 @@ would_block:
 static inline void wake_up_sem_queue_prepare(struct sem_queue *q, int error,
 					     struct wake_q_head *wake_q)
 {
-	struct task_struct *sleeper;
-
-	sleeper = get_task_struct(q->sleeper);
+	get_task_struct(q->sleeper);
 
 	/* see SEM_BARRIER_2 for purpuse/pairing */
 	smp_store_release(&q->status, error);
 
-	wake_q_add_safe(wake_q, sleeper);
+	wake_q_add_safe(wake_q, q->sleeper);
 }
 
 static void unlink_queue(struct sem_array *sma, struct sem_queue *q)
@@ -1693,7 +1692,7 @@ static long ksys_semctl(int semid, int semnum, int cmd, unsigned long arg, int v
 	case IPC_SET:
 		if (copy_semid_from_user(&semid64, p, version))
 			return -EFAULT;
-		fallthrough;
+		/* fall through */
 	case IPC_RMID:
 		return semctl_down(ns, semid, cmd, &semid64);
 	default:
@@ -1807,7 +1806,7 @@ static long compat_ksys_semctl(int semid, int semnum, int cmd, int arg, int vers
 	case IPC_SET:
 		if (copy_compat_semid_from_user(&semid64, p, version))
 			return -EFAULT;
-		fallthrough;
+		/* fallthru */
 	case IPC_RMID:
 		return semctl_down(ns, semid, cmd, &semid64);
 	default:

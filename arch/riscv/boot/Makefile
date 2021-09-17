@@ -14,11 +14,9 @@
 # Based on the ia64 and arm64 boot/Makefile.
 #
 
-KCOV_INSTRUMENT := n
-
 OBJCOPYFLAGS_Image :=-O binary -R .note -R .note.gnu.build-id -R .comment -S
 
-targets := Image Image.* loader loader.o loader.lds loader.bin
+targets := Image loader
 
 $(obj)/Image: vmlinux FORCE
 	$(call if_changed,objcopy)
@@ -42,9 +40,6 @@ $(obj)/Image.lzma: $(obj)/Image FORCE
 
 $(obj)/Image.lzo: $(obj)/Image FORCE
 	$(call if_changed,lzo)
-
-$(obj)/loader.bin: $(obj)/loader FORCE
-	$(call if_changed,objcopy)
 
 install:
 	$(CONFIG_SHELL) $(srctree)/$(src)/install.sh $(KERNELRELEASE) \

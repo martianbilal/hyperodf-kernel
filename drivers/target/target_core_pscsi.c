@@ -620,9 +620,8 @@ static void pscsi_complete_cmd(struct se_cmd *cmd, u8 scsi_status,
 			unsigned char *buf;
 
 			buf = transport_kmap_data_sg(cmd);
-			if (!buf) {
+			if (!buf)
 				; /* XXX: TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE */
-			}
 
 			if (cdb[0] == MODE_SENSE_10) {
 				if (!(buf[3] & 0x80))
@@ -882,7 +881,8 @@ pscsi_map_sg(struct se_cmd *cmd, struct scatterlist *sgl, u32 sgl_nents,
 
 			if (!bio) {
 new_bio:
-				nr_vecs = bio_max_segs(nr_pages);
+				nr_vecs = min_t(int, BIO_MAX_PAGES, nr_pages);
+				nr_pages -= nr_vecs;
 				/*
 				 * Calls bio_kmalloc() and sets bio->bi_end_io()
 				 */
@@ -939,14 +939,6 @@ new_bio:
 
 	return 0;
 fail:
-	if (bio)
-		bio_put(bio);
-	while (req->bio) {
-		bio = req->bio;
-		req->bio = bio->bi_next;
-		bio_put(bio);
-	}
-	req->biotail = NULL;
 	return TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
 }
 
@@ -1008,7 +1000,8 @@ pscsi_execute_cmd(struct se_cmd *cmd)
 		req->timeout = PS_TIMEOUT_OTHER;
 	scsi_req(req)->retries = PS_RETRY;
 
-	blk_execute_rq_nowait(NULL, req, (cmd->sam_task_attr == TCM_HEAD_TAG),
+	blk_execute_rq_nowait(pdv->pdv_sd->request_queue, NULL, req,
+			(cmd->sam_task_attr == TCM_HEAD_TAG),
 			pscsi_req_done);
 
 	return 0;
@@ -1036,8 +1029,9 @@ static sector_t pscsi_get_blocks(struct se_device *dev)
 {
 	struct pscsi_dev_virt *pdv = PSCSI_DEV(dev);
 
-	if (pdv->pdv_bd)
-		return bdev_nr_sectors(pdv->pdv_bd);
+	if (pdv->pdv_bd && pdv->pdv_bd->bd_part)
+		return pdv->pdv_bd->bd_part->nr_sects;
+
 	return 0;
 }
 
@@ -1076,9 +1070,9 @@ static void pscsi_req_done(struct request *req, blk_status_t status)
 static const struct target_backend_ops pscsi_ops = {
 	.name			= "pscsi",
 	.owner			= THIS_MODULE,
-	.transport_flags_default = TRANSPORT_FLAG_PASSTHROUGH |
-				   TRANSPORT_FLAG_PASSTHROUGH_ALUA |
-				   TRANSPORT_FLAG_PASSTHROUGH_PGR,
+	.transport_flags	= TRANSPORT_FLAG_PASSTHROUGH |
+				  TRANSPORT_FLAG_PASSTHROUGH_ALUA |
+				  TRANSPORT_FLAG_PASSTHROUGH_PGR,
 	.attach_hba		= pscsi_attach_hba,
 	.detach_hba		= pscsi_detach_hba,
 	.pmode_enable_hba	= pscsi_pmode_enable_hba,

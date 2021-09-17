@@ -30,12 +30,10 @@
 #define PAD_SIZE 16
 #define FILL_CHAR '$'
 
-KSTM_MODULE_GLOBALS();
-
+static unsigned total_tests __initdata;
+static unsigned failed_tests __initdata;
 static char *test_buffer __initdata;
 static char *alloced_buffer __initdata;
-
-extern bool no_hash_pointers;
 
 static int __printf(4, 0) __init
 do_test(int bufsize, const char *expect, int elen,
@@ -303,12 +301,6 @@ plain(void)
 {
 	int err;
 
-	if (no_hash_pointers) {
-		pr_warn("skipping plain 'p' tests");
-		skipped_tests += 2;
-		return;
-	}
-
 	err = plain_hash();
 	if (err) {
 		pr_warn("plain 'p' does not appear to be hashed\n");
@@ -502,7 +494,7 @@ struct_va_format(void)
 }
 
 static void __init
-time_and_date(void)
+struct_rtc_time(void)
 {
 	/* 1543210543 */
 	const struct rtc_time tm = {
@@ -513,21 +505,14 @@ time_and_date(void)
 		.tm_mon = 10,
 		.tm_year = 118,
 	};
-	/* 2019-01-04T15:32:23 */
-	time64_t t = 1546615943;
 
-	test("(%pt?)", "%pt", &tm);
+	test("(%ptR?)", "%pt", &tm);
 	test("2018-11-26T05:35:43", "%ptR", &tm);
 	test("0118-10-26T05:35:43", "%ptRr", &tm);
 	test("05:35:43|2018-11-26", "%ptRt|%ptRd", &tm, &tm);
 	test("05:35:43|0118-10-26", "%ptRtr|%ptRdr", &tm, &tm);
 	test("05:35:43|2018-11-26", "%ptRttr|%ptRdtr", &tm, &tm);
 	test("05:35:43 tr|2018-11-26 tr", "%ptRt tr|%ptRd tr", &tm, &tm);
-
-	test("2019-01-04T15:32:23", "%ptT", &t);
-	test("0119-00-04T15:32:23", "%ptTr", &t);
-	test("15:32:23|2019-01-04", "%ptTt|%ptTd", &t, &t);
-	test("15:32:23|0119-00-04", "%ptTtr|%ptTdr", &t, &t);
 }
 
 static void __init
@@ -693,7 +678,7 @@ test_pointer(void)
 	uuid();
 	dentry();
 	struct_va_format();
-	time_and_date();
+	struct_rtc_time();
 	struct_clk();
 	bitmap();
 	netdev_features();

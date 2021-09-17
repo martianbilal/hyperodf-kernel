@@ -460,7 +460,8 @@ add:
 		if (dinfo->i_alloc_type == ICBTAG_FLAG_AD_IN_ICB) {
 			block = dinfo->i_location.logicalBlockNum;
 			fi = (struct fileIdentDesc *)
-					(dinfo->i_data + fibh->soffset -
+					(dinfo->i_ext.i_data +
+					 fibh->soffset -
 					 udf_ext0_offset(dir) +
 					 dinfo->i_lenEAttr);
 		} else {
@@ -604,8 +605,8 @@ static int udf_add_nondir(struct dentry *dentry, struct inode *inode)
 	return 0;
 }
 
-static int udf_create(struct user_namespace *mnt_userns, struct inode *dir,
-		      struct dentry *dentry, umode_t mode, bool excl)
+static int udf_create(struct inode *dir, struct dentry *dentry, umode_t mode,
+		      bool excl)
 {
 	struct inode *inode = udf_new_inode(dir, mode);
 
@@ -623,8 +624,7 @@ static int udf_create(struct user_namespace *mnt_userns, struct inode *dir,
 	return udf_add_nondir(dentry, inode);
 }
 
-static int udf_tmpfile(struct user_namespace *mnt_userns, struct inode *dir,
-		       struct dentry *dentry, umode_t mode)
+static int udf_tmpfile(struct inode *dir, struct dentry *dentry, umode_t mode)
 {
 	struct inode *inode = udf_new_inode(dir, mode);
 
@@ -643,8 +643,8 @@ static int udf_tmpfile(struct user_namespace *mnt_userns, struct inode *dir,
 	return 0;
 }
 
-static int udf_mknod(struct user_namespace *mnt_userns, struct inode *dir,
-		     struct dentry *dentry, umode_t mode, dev_t rdev)
+static int udf_mknod(struct inode *dir, struct dentry *dentry, umode_t mode,
+		     dev_t rdev)
 {
 	struct inode *inode;
 
@@ -659,8 +659,7 @@ static int udf_mknod(struct user_namespace *mnt_userns, struct inode *dir,
 	return udf_add_nondir(dentry, inode);
 }
 
-static int udf_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
-		     struct dentry *dentry, umode_t mode)
+static int udf_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 {
 	struct inode *inode;
 	struct udf_fileident_bh fibh;
@@ -879,8 +878,8 @@ out:
 	return retval;
 }
 
-static int udf_symlink(struct user_namespace *mnt_userns, struct inode *dir,
-		       struct dentry *dentry, const char *symname)
+static int udf_symlink(struct inode *dir, struct dentry *dentry,
+		       const char *symname)
 {
 	struct inode *inode = udf_new_inode(dir, S_IFLNK | 0777);
 	struct pathComponent *pc;
@@ -941,7 +940,7 @@ static int udf_symlink(struct user_namespace *mnt_userns, struct inode *dir,
 		mark_buffer_dirty_inode(epos.bh, inode);
 		ea = epos.bh->b_data + udf_ext0_offset(inode);
 	} else
-		ea = iinfo->i_data + iinfo->i_lenEAttr;
+		ea = iinfo->i_ext.i_data + iinfo->i_lenEAttr;
 
 	eoffset = sb->s_blocksize - udf_ext0_offset(inode);
 	pc = (struct pathComponent *)ea;
@@ -1067,9 +1066,9 @@ static int udf_link(struct dentry *old_dentry, struct inode *dir,
 /* Anybody can rename anything with this: the permission checks are left to the
  * higher-level routines.
  */
-static int udf_rename(struct user_namespace *mnt_userns, struct inode *old_dir,
-		      struct dentry *old_dentry, struct inode *new_dir,
-		      struct dentry *new_dentry, unsigned int flags)
+static int udf_rename(struct inode *old_dir, struct dentry *old_dentry,
+		      struct inode *new_dir, struct dentry *new_dentry,
+		      unsigned int flags)
 {
 	struct inode *old_inode = d_inode(old_dentry);
 	struct inode *new_inode = d_inode(new_dentry);
@@ -1121,7 +1120,7 @@ static int udf_rename(struct user_namespace *mnt_userns, struct inode *old_dir,
 		retval = -EIO;
 		if (old_iinfo->i_alloc_type == ICBTAG_FLAG_AD_IN_ICB) {
 			dir_fi = udf_get_fileident(
-					old_iinfo->i_data -
+					old_iinfo->i_ext.i_data -
 					  (old_iinfo->i_efe ?
 					   sizeof(struct extendedFileEntry) :
 					   sizeof(struct fileEntry)),

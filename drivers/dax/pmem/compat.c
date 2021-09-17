@@ -22,7 +22,7 @@ static int dax_pmem_compat_probe(struct device *dev)
 		return -ENOMEM;
 
 	device_lock(&dev_dax->dev);
-	rc = dev_dax_probe(dev_dax);
+	rc = dev_dax_probe(&dev_dax->dev);
 	device_unlock(&dev_dax->dev);
 
 	devres_close_group(&dev_dax->dev, dev_dax);
@@ -41,9 +41,10 @@ static int dax_pmem_compat_release(struct device *dev, void *data)
 	return 0;
 }
 
-static void dax_pmem_compat_remove(struct device *dev)
+static int dax_pmem_compat_remove(struct device *dev)
 {
 	device_for_each_child(dev, NULL, dax_pmem_compat_release);
+	return 0;
 }
 
 static struct nd_device_driver dax_pmem_compat_driver = {

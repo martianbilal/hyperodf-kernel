@@ -18,8 +18,10 @@ static int gen6_verify_ring_freq(struct intel_llc *llc)
 
 	wakeref = intel_runtime_pm_get(llc_to_gt(llc)->uncore->rpm);
 
-	if (!get_ia_constants(llc, &consts))
+	if (!get_ia_constants(llc, &consts)) {
+		err = -ENODEV;
 		goto out_rpm;
+	}
 
 	for (gpu_freq = consts.min_gpu_freq;
 	     gpu_freq <= consts.max_gpu_freq;
@@ -69,5 +71,10 @@ out_rpm:
 
 int st_llc_verify(struct intel_llc *llc)
 {
-	return gen6_verify_ring_freq(llc);
+	int err = 0;
+
+	if (HAS_LLC(llc_to_gt(llc)->i915))
+		err = gen6_verify_ring_freq(llc);
+
+	return err;
 }

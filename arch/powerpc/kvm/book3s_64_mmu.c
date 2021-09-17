@@ -311,7 +311,7 @@ do_second:
 	case 2:
 	case 6:
 		gpte->may_write = true;
-		fallthrough;
+		/* fall through */
 	case 3:
 	case 5:
 	case 7:

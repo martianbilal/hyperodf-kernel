@@ -111,15 +111,15 @@ static const struct file_operations msm_gpu_fops = {
 static int msm_gem_show(struct drm_device *dev, struct seq_file *m)
 {
 	struct msm_drm_private *priv = dev->dev_private;
-	int ret;
+	struct msm_gpu *gpu = priv->gpu;
 
-	ret = mutex_lock_interruptible(&priv->obj_lock);
-	if (ret)
-		return ret;
+	if (gpu) {
+		seq_printf(m, "Active Objects (%s):\n", gpu->name);
+		msm_gem_describe_objects(&gpu->active_list, m);
+	}
 
-	msm_gem_describe_objects(&priv->objects, m);
-
-	mutex_unlock(&priv->obj_lock);
+	seq_printf(m, "Inactive Objects:\n");
+	msm_gem_describe_objects(&priv->inactive_list, m);
 
 	return 0;
 }
@@ -214,20 +214,31 @@ int msm_debugfs_late_init(struct drm_device *dev)
 	return ret;
 }
 
-void msm_debugfs_init(struct drm_minor *minor)
+int msm_debugfs_init(struct drm_minor *minor)
 {
 	struct drm_device *dev = minor->dev;
 	struct msm_drm_private *priv = dev->dev_private;
+	int ret;
 
-	drm_debugfs_create_files(msm_debugfs_list,
-				 ARRAY_SIZE(msm_debugfs_list),
-				 minor->debugfs_root, minor);
+	ret = drm_debugfs_create_files(msm_debugfs_list,
+			ARRAY_SIZE(msm_debugfs_list),
+			minor->debugfs_root, minor);
+
+	if (ret) {
+		DRM_DEV_ERROR(dev->dev, "could not install msm_debugfs_list\n");
+		return ret;
+	}
 
 	debugfs_create_file("gpu", S_IRUSR, minor->debugfs_root,
 		dev, &msm_gpu_fops);
 
-	if (priv->kms && priv->kms->funcs->debugfs_init)
-		priv->kms->funcs->debugfs_init(priv->kms, minor);
+	if (priv->kms && priv->kms->funcs->debugfs_init) {
+		ret = priv->kms->funcs->debugfs_init(priv->kms, minor);
+		if (ret)
+			return ret;
+	}
+
+	return ret;
 }
 #endif
 

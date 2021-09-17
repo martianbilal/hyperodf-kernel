@@ -406,9 +406,7 @@ static int stm32_spdifrx_dma_ctrl_register(struct device *dev,
 
 	spdifrx->ctrl_chan = dma_request_chan(dev, "rx-ctrl");
 	if (IS_ERR(spdifrx->ctrl_chan)) {
-		if (PTR_ERR(spdifrx->ctrl_chan) != -EPROBE_DEFER)
-			dev_err(dev, "dma_request_slave_channel error %ld\n",
-				PTR_ERR(spdifrx->ctrl_chan));
+		dev_err(dev, "dma_request_slave_channel failed\n");
 		return PTR_ERR(spdifrx->ctrl_chan);
 	}
 
@@ -931,31 +929,13 @@ static int stm32_spdifrx_parse_of(struct platform_device *pdev,
 
 	spdifrx->kclk = devm_clk_get(&pdev->dev, "kclk");
 	if (IS_ERR(spdifrx->kclk)) {
-		if (PTR_ERR(spdifrx->kclk) != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "Could not get kclk: %ld\n",
-				PTR_ERR(spdifrx->kclk));
+		dev_err(&pdev->dev, "Could not get kclk\n");
 		return PTR_ERR(spdifrx->kclk);
 	}
 
 	spdifrx->irq = platform_get_irq(pdev, 0);
 	if (spdifrx->irq < 0)
 		return spdifrx->irq;
-
-	return 0;
-}
-
-static int stm32_spdifrx_remove(struct platform_device *pdev)
-{
-	struct stm32_spdifrx_data *spdifrx = platform_get_drvdata(pdev);
-
-	if (spdifrx->ctrl_chan)
-		dma_release_channel(spdifrx->ctrl_chan);
-
-	if (spdifrx->dmab)
-		snd_dma_free_pages(spdifrx->dmab);
-
-	snd_dmaengine_pcm_unregister(&pdev->dev);
-	snd_soc_unregister_component(&pdev->dev);
 
 	return 0;
 }
@@ -987,9 +967,7 @@ static int stm32_spdifrx_probe(struct platform_device *pdev)
 						    spdifrx->base,
 						    spdifrx->regmap_conf);
 	if (IS_ERR(spdifrx->regmap)) {
-		if (PTR_ERR(spdifrx->regmap) != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "Regmap init error %ld\n",
-				PTR_ERR(spdifrx->regmap));
+		dev_err(&pdev->dev, "Regmap init failed\n");
 		return PTR_ERR(spdifrx->regmap);
 	}
 
@@ -1000,37 +978,30 @@ static int stm32_spdifrx_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	rst = devm_reset_control_get_optional_exclusive(&pdev->dev, NULL);
-	if (IS_ERR(rst)) {
-		if (PTR_ERR(rst) != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "Reset controller error %ld\n",
-				PTR_ERR(rst));
-		return PTR_ERR(rst);
-	}
-	reset_control_assert(rst);
-	udelay(2);
-	reset_control_deassert(rst);
-
-	pcm_config = &stm32_spdifrx_pcm_config;
-	ret = snd_dmaengine_pcm_register(&pdev->dev, pcm_config, 0);
-	if (ret) {
-		if (ret != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "PCM DMA register error %d\n", ret);
-		return ret;
+	rst = devm_reset_control_get_exclusive(&pdev->dev, NULL);
+	if (!IS_ERR(rst)) {
+		reset_control_assert(rst);
+		udelay(2);
+		reset_control_deassert(rst);
 	}
 
-	ret = snd_soc_register_component(&pdev->dev,
-					 &stm32_spdifrx_component,
-					 stm32_spdifrx_dai,
-					 ARRAY_SIZE(stm32_spdifrx_dai));
-	if (ret) {
-		snd_dmaengine_pcm_unregister(&pdev->dev);
+	ret = devm_snd_soc_register_component(&pdev->dev,
+					      &stm32_spdifrx_component,
+					      stm32_spdifrx_dai,
+					      ARRAY_SIZE(stm32_spdifrx_dai));
+	if (ret)
 		return ret;
-	}
 
 	ret = stm32_spdifrx_dma_ctrl_register(&pdev->dev, spdifrx);
 	if (ret)
 		goto error;
+
+	pcm_config = &stm32_spdifrx_pcm_config;
+	ret = devm_snd_dmaengine_pcm_register(&pdev->dev, pcm_config, 0);
+	if (ret) {
+		dev_err(&pdev->dev, "PCM DMA register returned %d\n", ret);
+		goto error;
+	}
 
 	ret = regmap_read(spdifrx->regmap, STM32_SPDIFRX_IDR, &idr);
 	if (ret)
@@ -1049,9 +1020,25 @@ static int stm32_spdifrx_probe(struct platform_device *pdev)
 	return ret;
 
 error:
-	stm32_spdifrx_remove(pdev);
+	if (!IS_ERR(spdifrx->ctrl_chan))
+		dma_release_channel(spdifrx->ctrl_chan);
+	if (spdifrx->dmab)
+		snd_dma_free_pages(spdifrx->dmab);
 
 	return ret;
+}
+
+static int stm32_spdifrx_remove(struct platform_device *pdev)
+{
+	struct stm32_spdifrx_data *spdifrx = platform_get_drvdata(pdev);
+
+	if (spdifrx->ctrl_chan)
+		dma_release_channel(spdifrx->ctrl_chan);
+
+	if (spdifrx->dmab)
+		snd_dma_free_pages(spdifrx->dmab);
+
+	return 0;
 }
 
 MODULE_DEVICE_TABLE(of, stm32_spdifrx_ids);

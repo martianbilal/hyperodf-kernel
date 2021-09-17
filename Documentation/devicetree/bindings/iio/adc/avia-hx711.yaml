@@ -53,8 +53,6 @@ required:
   - dout-gpios
   - avdd-supply
 
-additionalProperties: false
-
 examples:
   - |
     #include <dt-bindings/gpio/gpio.h>

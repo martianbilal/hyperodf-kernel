@@ -40,8 +40,6 @@ required:
   - '#clock-cells'
   - '#reset-cells'
 
-additionalProperties: false
-
 examples:
   - |
     clock-controller@1800000 {

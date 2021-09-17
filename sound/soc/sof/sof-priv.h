@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause) */
+/* SPDX-License-Identifier: (GPL-2.0 OR BSD-3-Clause) */
 /*
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
@@ -18,18 +18,14 @@
 #include <sound/sof/pm.h>
 #include <sound/sof/trace.h>
 #include <uapi/sound/sof/fw.h>
-#include <sound/sof/ext_manifest.h>
 
 /* debug flags */
 #define SOF_DBG_ENABLE_TRACE	BIT(0)
-#define SOF_DBG_RETAIN_CTX	BIT(1)	/* prevent DSP D3 on FW exception */
-
-#define SOF_DBG_DUMP_REGS		BIT(0)
-#define SOF_DBG_DUMP_MBOX		BIT(1)
-#define SOF_DBG_DUMP_TEXT		BIT(2)
-#define SOF_DBG_DUMP_PCI		BIT(3)
-#define SOF_DBG_DUMP_FORCE_ERR_LEVEL	BIT(4) /* used to dump dsp status with error log level */
-
+#define SOF_DBG_REGS		BIT(1)
+#define SOF_DBG_MBOX		BIT(2)
+#define SOF_DBG_TEXT		BIT(3)
+#define SOF_DBG_PCI		BIT(4)
+#define SOF_DBG_RETAIN_CTX	BIT(5)	/* prevent DSP D3 on FW exception */
 
 /* global debug state set by SOF_DBG_ flags */
 extern int sof_core_debug;
@@ -58,29 +54,10 @@ extern int sof_core_debug;
 	(IS_ENABLED(CONFIG_SND_SOC_SOF_DEBUG_ENABLE_DEBUGFS_CACHE) || \
 	 IS_ENABLED(CONFIG_SND_SOC_SOF_DEBUG_IPC_FLOOD_TEST))
 
-/* So far the primary core on all DSPs has ID 0 */
-#define SOF_DSP_PRIMARY_CORE 0
-
-/* DSP power state */
-enum sof_dsp_power_states {
-	SOF_DSP_PM_D0,
-	SOF_DSP_PM_D1,
-	SOF_DSP_PM_D2,
-	SOF_DSP_PM_D3_HOT,
-	SOF_DSP_PM_D3,
-	SOF_DSP_PM_D3_COLD,
-};
-
-struct sof_dsp_power_state {
-	u32 state;
-	u32 substate; /* platform-specific */
-};
-
-/* System suspend target state */
-enum sof_system_suspend_state {
-	SOF_SUSPEND_NONE = 0,
-	SOF_SUSPEND_S0IX,
-	SOF_SUSPEND_S3,
+/* DSP D0ix sub-state */
+enum sof_d0_substate {
+	SOF_DSP_D0I0 = 0,	/* DSP default D0 substate */
+	SOF_DSP_D0I3,		/* DSP D0i3(low power) substate*/
 };
 
 struct snd_sof_dev;
@@ -98,14 +75,13 @@ struct snd_sof_pdata;
  */
 struct snd_sof_dsp_ops {
 
-	/* probe/remove/shutdown */
+	/* probe and remove */
 	int (*probe)(struct snd_sof_dev *sof_dev); /* mandatory */
 	int (*remove)(struct snd_sof_dev *sof_dev); /* optional */
-	int (*shutdown)(struct snd_sof_dev *sof_dev); /* optional */
 
 	/* DSP core boot / reset */
 	int (*run)(struct snd_sof_dev *sof_dev); /* mandatory */
-	int (*stall)(struct snd_sof_dev *sof_dev, unsigned int core_mask); /* optional */
+	int (*stall)(struct snd_sof_dev *sof_dev); /* optional */
 	int (*reset)(struct snd_sof_dev *sof_dev); /* optional */
 	int (*core_power_up)(struct snd_sof_dev *sof_dev,
 			     unsigned int core_mask); /* optional */
@@ -178,27 +154,6 @@ struct snd_sof_dsp_ops {
 	snd_pcm_uframes_t (*pcm_pointer)(struct snd_sof_dev *sdev,
 					 struct snd_pcm_substream *substream); /* optional */
 
-#if IS_ENABLED(CONFIG_SND_SOC_SOF_DEBUG_PROBES)
-	/* Except for probe_pointer, all probe ops are mandatory */
-	int (*probe_assign)(struct snd_sof_dev *sdev,
-			struct snd_compr_stream *cstream,
-			struct snd_soc_dai *dai); /* mandatory */
-	int (*probe_free)(struct snd_sof_dev *sdev,
-			struct snd_compr_stream *cstream,
-			struct snd_soc_dai *dai); /* mandatory */
-	int (*probe_set_params)(struct snd_sof_dev *sdev,
-			struct snd_compr_stream *cstream,
-			struct snd_compr_params *params,
-			struct snd_soc_dai *dai); /* mandatory */
-	int (*probe_trigger)(struct snd_sof_dev *sdev,
-			struct snd_compr_stream *cstream, int cmd,
-			struct snd_soc_dai *dai); /* mandatory */
-	int (*probe_pointer)(struct snd_sof_dev *sdev,
-			struct snd_compr_stream *cstream,
-			struct snd_compr_tstamp *tstamp,
-			struct snd_soc_dai *dai); /* optional */
-#endif
-
 	/* host read DSP stream data */
 	void (*ipc_msg_data)(struct snd_sof_dev *sdev,
 			     struct snd_pcm_substream *substream,
@@ -213,20 +168,15 @@ struct snd_sof_dsp_ops {
 	int (*pre_fw_run)(struct snd_sof_dev *sof_dev); /* optional */
 	int (*post_fw_run)(struct snd_sof_dev *sof_dev); /* optional */
 
-	/* parse platform specific extended manifest, optional */
-	int (*parse_platform_ext_manifest)(struct snd_sof_dev *sof_dev,
-					   const struct sof_ext_man_elem_header *hdr);
-
 	/* DSP PM */
-	int (*suspend)(struct snd_sof_dev *sof_dev,
-		       u32 target_state); /* optional */
+	int (*suspend)(struct snd_sof_dev *sof_dev); /* optional */
 	int (*resume)(struct snd_sof_dev *sof_dev); /* optional */
 	int (*runtime_suspend)(struct snd_sof_dev *sof_dev); /* optional */
 	int (*runtime_resume)(struct snd_sof_dev *sof_dev); /* optional */
 	int (*runtime_idle)(struct snd_sof_dev *sof_dev); /* optional */
 	int (*set_hw_params_upon_resume)(struct snd_sof_dev *sdev); /* optional */
 	int (*set_power_state)(struct snd_sof_dev *sdev,
-			       const struct sof_dsp_power_state *target_state); /* optional */
+			       enum sof_d0_substate d0_substate); /* optional */
 
 	/* DSP clocking */
 	int (*set_clk)(struct snd_sof_dev *sof_dev, u32 freq); /* optional */
@@ -299,7 +249,6 @@ enum sof_debugfs_access_type {
 /* FS entry for debug files that can expose DSP memories, registers */
 struct snd_sof_dfsentry {
 	size_t size;
-	size_t buf_data_size;  /* length of buffered data for file read operation */
 	enum sof_dfsentry_type type;
 	/*
 	 * access_type specifies if the
@@ -374,22 +323,18 @@ struct snd_sof_dev {
 	 */
 	struct snd_soc_component_driver plat_drv;
 
-	/* current DSP power state */
-	struct sof_dsp_power_state dsp_power_state;
-	/* mutex to protect the dsp_power_state access */
-	struct mutex power_state_access;
-
-	/* Intended power target of system suspend */
-	enum sof_system_suspend_state system_suspend_target;
+	/* power states related */
+	enum sof_d0_substate d0_substate;
+	/* flag to track if the intended power target of suspend is S0ix */
+	bool s0_suspend;
 
 	/* DSP firmware boot */
 	wait_queue_head_t boot_wait;
 	enum snd_sof_fw_state fw_state;
-	bool first_boot;
+	u32 first_boot;
 
 	/* work queue in case the probe is implemented in two steps */
 	struct work_struct probe_work;
-	bool probe_completed;
 
 	/* DSP HW differentiation */
 	struct snd_sof_pdata *pdata;
@@ -399,7 +344,6 @@ struct snd_sof_dev {
 	struct snd_sof_mailbox dsp_box;		/* DSP initiated IPC */
 	struct snd_sof_mailbox host_box;	/* Host initiated IPC */
 	struct snd_sof_mailbox stream_box;	/* Stream position update */
-	struct snd_sof_mailbox debug_box;	/* Debug info updates */
 	struct snd_sof_ipc_msg *msg;
 	int ipc_irq;
 	u32 next_comp_id; /* monotonic - reset during S3 */
@@ -432,15 +376,16 @@ struct snd_sof_dev {
 	u32 enabled_cores_mask; /* keep track of enabled cores */
 
 	/* FW configuration */
+	struct sof_ipc_dma_buffer_data *info_buffer;
 	struct sof_ipc_window *info_window;
 
 	/* IPC timeouts in ms */
 	int ipc_timeout;
 	int boot_timeout;
 
-#if IS_ENABLED(CONFIG_SND_SOC_SOF_DEBUG_PROBES)
-	unsigned int extractor_stream_tag;
-#endif
+	/* Wait queue for code loading */
+	wait_queue_head_t waitq;
+	int code_loading;
 
 	/* DMA for Trace */
 	struct snd_dma_buffer dmatb;
@@ -448,10 +393,10 @@ struct snd_sof_dev {
 	int dma_trace_pages;
 	wait_queue_head_t trace_sleep;
 	u32 host_offset;
-	bool dtrace_is_supported; /* set with Kconfig or module parameter */
-	bool dtrace_is_enabled;
-	bool dtrace_error;
-	bool dtrace_draining;
+	u32 dtrace_is_supported; /* set with Kconfig or module parameter */
+	u32 dtrace_is_enabled;
+	u32 dtrace_error;
+	u32 dtrace_draining;
 
 	bool msi_enabled;
 
@@ -464,17 +409,16 @@ struct snd_sof_dev {
 
 int snd_sof_device_probe(struct device *dev, struct snd_sof_pdata *plat_data);
 int snd_sof_device_remove(struct device *dev);
-int snd_sof_device_shutdown(struct device *dev);
-bool snd_sof_device_probe_completed(struct device *dev);
 
 int snd_sof_runtime_suspend(struct device *dev);
 int snd_sof_runtime_resume(struct device *dev);
 int snd_sof_runtime_idle(struct device *dev);
 int snd_sof_resume(struct device *dev);
 int snd_sof_suspend(struct device *dev);
-int snd_sof_dsp_power_down_notify(struct snd_sof_dev *sdev);
 int snd_sof_prepare(struct device *dev);
 void snd_sof_complete(struct device *dev);
+int snd_sof_set_d0_substate(struct snd_sof_dev *sdev,
+			    enum sof_d0_substate d0_substate);
 
 void snd_sof_new_platform_drv(struct snd_sof_dev *sdev);
 
@@ -499,7 +443,7 @@ int snd_sof_fw_parse_ext_data(struct snd_sof_dev *sdev, u32 bar, u32 offset);
  */
 struct snd_sof_ipc *snd_sof_ipc_init(struct snd_sof_dev *sdev);
 void snd_sof_ipc_free(struct snd_sof_dev *sdev);
-void snd_sof_ipc_reply(struct snd_sof_dev *sdev, u32 msg_id);
+int snd_sof_ipc_reply(struct snd_sof_dev *sdev, u32 msg_id);
 void snd_sof_ipc_msgs_rx(struct snd_sof_dev *sdev);
 int snd_sof_ipc_stream_pcm_params(struct snd_sof_dev *sdev,
 				  struct sof_ipc_pcm_params *params);
@@ -510,9 +454,6 @@ int snd_sof_ipc_valid(struct snd_sof_dev *sdev);
 int sof_ipc_tx_message(struct snd_sof_ipc *ipc, u32 header,
 		       void *msg_data, size_t msg_bytes, void *reply_data,
 		       size_t reply_bytes);
-int sof_ipc_tx_message_no_pm(struct snd_sof_ipc *ipc, u32 header,
-			     void *msg_data, size_t msg_bytes,
-			     void *reply_data, size_t reply_bytes);
 
 /*
  * Trace/debug
@@ -538,12 +479,11 @@ void snd_sof_get_status(struct snd_sof_dev *sdev, u32 panic_code,
 			void *stack, size_t stack_words);
 int snd_sof_init_trace_ipc(struct snd_sof_dev *sdev);
 void snd_sof_handle_fw_exception(struct snd_sof_dev *sdev);
-int snd_sof_dbg_memory_info_init(struct snd_sof_dev *sdev);
 
 /*
  * Platform specific ops.
  */
-extern struct snd_compress_ops sof_compressed_ops;
+extern struct snd_compr_ops sof_compressed_ops;
 
 /*
  * DSP Architectures.
@@ -593,13 +533,5 @@ int intel_pcm_close(struct snd_sof_dev *sdev,
 		    struct snd_pcm_substream *substream);
 
 int sof_machine_check(struct snd_sof_dev *sdev);
-
-#define sof_dev_dbg_or_err(dev, is_err, fmt, ...)			\
-	do {								\
-		if (is_err)						\
-			dev_err(dev, "error: " fmt, __VA_ARGS__);	\
-		else							\
-			dev_dbg(dev, fmt, __VA_ARGS__);			\
-	} while (0)
 
 #endif

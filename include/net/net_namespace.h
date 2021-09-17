@@ -33,7 +33,6 @@
 #include <net/netns/mpls.h>
 #include <net/netns/can.h>
 #include <net/netns/xdp.h>
-#include <net/netns/bpf.h>
 #include <linux/ns_common.h>
 #include <linux/idr.h>
 #include <linux/skbuff.h>
@@ -59,6 +58,9 @@ struct net {
 	 */
 	refcount_t		passive;	/* To decide when the network
 						 * namespace should be freed.
+						 */
+	refcount_t		count;		/* To decided when the network
+						 *  namespace should be shut down.
 						 */
 	spinlock_t		rules_mod_lock;
 
@@ -148,6 +150,9 @@ struct net {
 #endif
 	struct sock		*nfnl;
 	struct sock		*nfnl_stash;
+#if IS_ENABLED(CONFIG_NETFILTER_NETLINK_ACCT)
+	struct list_head        nfnl_acct_list;
+#endif
 #if IS_ENABLED(CONFIG_NF_CT_NETLINK_TIMEOUT)
 	struct list_head	nfct_timeout_list;
 #endif
@@ -157,16 +162,12 @@ struct net {
 #endif
 	struct net_generic __rcu	*gen;
 
-	/* Used to store attached BPF programs */
-	struct netns_bpf	bpf;
+	struct bpf_prog __rcu	*flow_dissector_prog;
 
 	/* Note : following structs are cache line aligned */
 #ifdef CONFIG_XFRM
 	struct netns_xfrm	xfrm;
 #endif
-
-	u64			net_cookie; /* written once */
-
 #if IS_ENABLED(CONFIG_IP_VS)
 	struct netns_ipvs	*ipvs;
 #endif
@@ -237,7 +238,7 @@ void __put_net(struct net *net);
 
 static inline struct net *get_net(struct net *net)
 {
-	refcount_inc(&net->ns.count);
+	refcount_inc(&net->count);
 	return net;
 }
 
@@ -248,14 +249,14 @@ static inline struct net *maybe_get_net(struct net *net)
 	 * exists.  If the reference count is zero this
 	 * function fails and returns NULL.
 	 */
-	if (!refcount_inc_not_zero(&net->ns.count))
+	if (!refcount_inc_not_zero(&net->count))
 		net = NULL;
 	return net;
 }
 
 static inline void put_net(struct net *net)
 {
-	if (refcount_dec_and_test(&net->ns.count))
+	if (refcount_dec_and_test(&net->count))
 		__put_net(net);
 }
 
@@ -267,7 +268,7 @@ int net_eq(const struct net *net1, const struct net *net2)
 
 static inline int check_net(const struct net *net)
 {
-	return refcount_read(&net->ns.count) != 0;
+	return refcount_read(&net->count) != 0;
 }
 
 void net_drop_ns(void *);

@@ -23,8 +23,6 @@
 
 struct x25_state {
 	x25_hdlc_proto settings;
-	bool up;
-	spinlock_t up_lock; /* Protects "up" */
 };
 
 static int x25_ioctl(struct net_device *dev, struct ifreq *ifr);
@@ -73,12 +71,11 @@ static int x25_data_indication(struct net_device *dev, struct sk_buff *skb)
 {
 	unsigned char *ptr;
 
-	if (skb_cow(skb, 1)) {
-		kfree_skb(skb);
+	if (skb_cow(skb, 1))
 		return NET_RX_DROP;
-	}
 
 	skb_push(skb, 1);
+	skb_reset_network_header(skb);
 
 	ptr  = skb->data;
 	*ptr = X25_IFACE_DATA;
@@ -106,31 +103,16 @@ static void x25_data_transmit(struct net_device *dev, struct sk_buff *skb)
 
 static netdev_tx_t x25_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	hdlc_device *hdlc = dev_to_hdlc(dev);
-	struct x25_state *x25st = state(hdlc);
 	int result;
 
-	/* There should be a pseudo header of 1 byte added by upper layers.
-	 * Check to make sure it is there before reading it.
-	 */
-	if (skb->len < 1) {
-		kfree_skb(skb);
-		return NETDEV_TX_OK;
-	}
 
-	spin_lock_bh(&x25st->up_lock);
-	if (!x25st->up) {
-		spin_unlock_bh(&x25st->up_lock);
-		kfree_skb(skb);
-		return NETDEV_TX_OK;
-	}
-
+	/* X.25 to LAPB */
 	switch (skb->data[0]) {
 	case X25_IFACE_DATA:	/* Data to be transmitted */
 		skb_pull(skb, 1);
+		skb_reset_network_header(skb);
 		if ((result = lapb_data_request(dev, skb)) != LAPB_OK)
 			dev_kfree_skb(skb);
-		spin_unlock_bh(&x25st->up_lock);
 		return NETDEV_TX_OK;
 
 	case X25_IFACE_CONNECT:
@@ -159,7 +141,6 @@ static netdev_tx_t x25_xmit(struct sk_buff *skb, struct net_device *dev)
 		break;
 	}
 
-	spin_unlock_bh(&x25st->up_lock);
 	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
 }
@@ -177,17 +158,16 @@ static int x25_open(struct net_device *dev)
 		.data_transmit = x25_data_transmit,
 	};
 	hdlc_device *hdlc = dev_to_hdlc(dev);
-	struct x25_state *x25st = state(hdlc);
 	struct lapb_parms_struct params;
 	int result;
 
 	result = lapb_register(dev, &cb);
 	if (result != LAPB_OK)
-		return -ENOMEM;
+		return result;
 
 	result = lapb_getparms(dev, &params);
 	if (result != LAPB_OK)
-		return -EINVAL;
+		return result;
 
 	if (state(hdlc)->settings.dce)
 		params.mode = params.mode | LAPB_DCE;
@@ -202,11 +182,7 @@ static int x25_open(struct net_device *dev)
 
 	result = lapb_setparms(dev, &params);
 	if (result != LAPB_OK)
-		return -EINVAL;
-
-	spin_lock_bh(&x25st->up_lock);
-	x25st->up = true;
-	spin_unlock_bh(&x25st->up_lock);
+		return result;
 
 	return 0;
 }
@@ -215,13 +191,6 @@ static int x25_open(struct net_device *dev)
 
 static void x25_close(struct net_device *dev)
 {
-	hdlc_device *hdlc = dev_to_hdlc(dev);
-	struct x25_state *x25st = state(hdlc);
-
-	spin_lock_bh(&x25st->up_lock);
-	x25st->up = false;
-	spin_unlock_bh(&x25st->up_lock);
-
 	lapb_unregister(dev);
 }
 
@@ -230,28 +199,15 @@ static void x25_close(struct net_device *dev)
 static int x25_rx(struct sk_buff *skb)
 {
 	struct net_device *dev = skb->dev;
-	hdlc_device *hdlc = dev_to_hdlc(dev);
-	struct x25_state *x25st = state(hdlc);
 
 	if ((skb = skb_share_check(skb, GFP_ATOMIC)) == NULL) {
 		dev->stats.rx_dropped++;
 		return NET_RX_DROP;
 	}
 
-	spin_lock_bh(&x25st->up_lock);
-	if (!x25st->up) {
-		spin_unlock_bh(&x25st->up_lock);
-		kfree_skb(skb);
-		dev->stats.rx_dropped++;
-		return NET_RX_DROP;
-	}
-
-	if (lapb_data_received(dev, skb) == LAPB_OK) {
-		spin_unlock_bh(&x25st->up_lock);
+	if (lapb_data_received(dev, skb) == LAPB_OK)
 		return NET_RX_SUCCESS;
-	}
 
-	spin_unlock_bh(&x25st->up_lock);
 	dev->stats.rx_errors++;
 	dev_kfree_skb_any(skb);
 	return NET_RX_DROP;
@@ -336,17 +292,6 @@ static int x25_ioctl(struct net_device *dev, struct ifreq *ifr)
 			return result;
 
 		memcpy(&state(hdlc)->settings, &new_settings, size);
-		state(hdlc)->up = false;
-		spin_lock_init(&state(hdlc)->up_lock);
-
-		/* There's no header_ops so hard_header_len should be 0. */
-		dev->hard_header_len = 0;
-		/* When transmitting data:
-		 * first we'll remove a pseudo header of 1 byte,
-		 * then we'll prepend an LAPB header of at most 3 bytes.
-		 */
-		dev->needed_headroom = 3 - 1;
-
 		dev->type = ARPHRD_X25;
 		call_netdevice_notifiers(NETDEV_POST_TYPE_CHANGE, dev);
 		netif_dormant_off(dev);

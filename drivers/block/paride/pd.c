@@ -440,7 +440,7 @@ static void run_fsm(void)
 				pd_claimed = 1;
 				if (!pi_schedule_claimed(pi_current, run_fsm))
 					return;
-				fallthrough;
+				/* fall through */
 			case 1:
 				pd_claimed = 2;
 				pi_current->proto->connect(pi_current);
@@ -465,7 +465,7 @@ static void run_fsm(void)
 				if (stop)
 					return;
 				}
-				fallthrough;
+				/* fall through */
 			case Hold:
 				schedule_fsm();
 				return;
@@ -781,7 +781,7 @@ static int pd_special_command(struct pd_unit *disk,
 	req = blk_mq_rq_to_pdu(rq);
 
 	req->func = func;
-	blk_execute_rq(disk->gd, rq, 0);
+	blk_execute_rq(disk->gd->queue, disk->gd, rq, 0);
 	blk_put_request(rq);
 	return 0;
 }

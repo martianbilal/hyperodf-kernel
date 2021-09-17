@@ -10,7 +10,6 @@
 
 #include "intel_gt_requests.h"
 #include "i915_selftest.h"
-#include "selftest_engine_heartbeat.h"
 
 static int timeline_sync(struct intel_timeline *tl)
 {
@@ -47,10 +46,7 @@ static int pulse_active(struct i915_active *active)
 
 static void pulse_free(struct kref *kref)
 {
-	struct pulse *p = container_of(kref, typeof(*p), kref);
-
-	i915_active_fini(&p->active);
-	kfree(p);
+	kfree(container_of(kref, struct pulse, kref));
 }
 
 static void pulse_put(struct pulse *p)
@@ -156,9 +152,9 @@ static int live_idle_flush(void *arg)
 	/* Check that we can flush the idle barriers */
 
 	for_each_engine(engine, gt, id) {
-		st_engine_heartbeat_disable(engine);
+		intel_engine_pm_get(engine);
 		err = __live_idle_pulse(engine, intel_engine_flush_barriers);
-		st_engine_heartbeat_enable(engine);
+		intel_engine_pm_put(engine);
 		if (err)
 			break;
 	}
@@ -176,9 +172,9 @@ static int live_idle_pulse(void *arg)
 	/* Check that heartbeat pulses flush the idle barriers */
 
 	for_each_engine(engine, gt, id) {
-		st_engine_heartbeat_disable(engine);
+		intel_engine_pm_get(engine);
 		err = __live_idle_pulse(engine, intel_engine_pulse);
-		st_engine_heartbeat_enable(engine);
+		intel_engine_pm_put(engine);
 		if (err && err != -ENODEV)
 			break;
 
@@ -197,7 +193,6 @@ static int cmp_u32(const void *_a, const void *_b)
 
 static int __live_heartbeat_fast(struct intel_engine_cs *engine)
 {
-	const unsigned int error_threshold = max(20000u, jiffies_to_usecs(6));
 	struct intel_context *ce;
 	struct i915_request *rq;
 	ktime_t t0, t1;
@@ -216,17 +211,16 @@ static int __live_heartbeat_fast(struct intel_engine_cs *engine)
 		goto err_pm;
 
 	for (i = 0; i < ARRAY_SIZE(times); i++) {
+		/* Manufacture a tick */
 		do {
-			/* Manufacture a tick */
-			intel_engine_park_heartbeat(engine);
-			GEM_BUG_ON(engine->heartbeat.systole);
-			engine->serial++; /*  pretend we are not idle! */
-			intel_engine_unpark_heartbeat(engine);
+			while (READ_ONCE(engine->heartbeat.systole))
+				flush_delayed_work(&engine->heartbeat.work);
 
+			engine->serial++; /* quick, pretend we are not idle! */
 			flush_delayed_work(&engine->heartbeat.work);
 			if (!delayed_work_pending(&engine->heartbeat.work)) {
-				pr_err("%s: heartbeat %d did not start\n",
-				       engine->name, i);
+				pr_err("%s: heartbeat did not start\n",
+				       engine->name);
 				err = -EINVAL;
 				goto err_pm;
 			}
@@ -255,18 +249,12 @@ static int __live_heartbeat_fast(struct intel_engine_cs *engine)
 		times[0],
 		times[ARRAY_SIZE(times) - 1]);
 
-	/*
-	 * Ideally, the upper bound on min work delay would be something like
-	 * 2 * 2 (worst), +1 for scheduling, +1 for slack. In practice, we
-	 * are, even with system_wq_highpri, at the mercy of the CPU scheduler
-	 * and may be stuck behind some slow work for many millisecond. Such
-	 * as our very own display workers.
-	 */
-	if (times[ARRAY_SIZE(times) / 2] > error_threshold) {
+	/* Min work delay is 2 * 2 (worst), +1 for scheduling, +1 for slack */
+	if (times[ARRAY_SIZE(times) / 2] > jiffies_to_usecs(6)) {
 		pr_err("%s: Heartbeat delay was %uus, expected less than %dus\n",
 		       engine->name,
 		       times[ARRAY_SIZE(times) / 2],
-		       error_threshold);
+		       jiffies_to_usecs(6));
 		err = -EINVAL;
 	}
 
@@ -376,27 +364,11 @@ int intel_heartbeat_live_selftests(struct drm_i915_private *i915)
 	if (intel_gt_is_wedged(&i915->gt))
 		return 0;
 
-	saved_hangcheck = i915->params.enable_hangcheck;
-	i915->params.enable_hangcheck = INT_MAX;
+	saved_hangcheck = i915_modparams.enable_hangcheck;
+	i915_modparams.enable_hangcheck = INT_MAX;
 
 	err = intel_gt_live_subtests(tests, &i915->gt);
 
-	i915->params.enable_hangcheck = saved_hangcheck;
+	i915_modparams.enable_hangcheck = saved_hangcheck;
 	return err;
-}
-
-void st_engine_heartbeat_disable(struct intel_engine_cs *engine)
-{
-	engine->props.heartbeat_interval_ms = 0;
-
-	intel_engine_pm_get(engine);
-	intel_engine_park_heartbeat(engine);
-}
-
-void st_engine_heartbeat_enable(struct intel_engine_cs *engine)
-{
-	intel_engine_pm_put(engine);
-
-	engine->props.heartbeat_interval_ms =
-		engine->defaults.heartbeat_interval_ms;
 }

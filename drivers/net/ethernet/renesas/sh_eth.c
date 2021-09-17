@@ -45,15 +45,6 @@
 #define SH_ETH_OFFSET_DEFAULTS			\
 	[0 ... SH_ETH_MAX_REGISTER_OFFSET - 1] = SH_ETH_OFFSET_INVALID
 
-/* use some intentionally tricky logic here to initialize the whole struct to
- * 0xffff, but then override certain fields, requiring us to indicate that we
- * "know" that there are overrides in this structure, and we'll need to disable
- * that warning from W=1 builds. GCC has supported this option since 4.2.X, but
- * the macros available to do this only define GCC 8.
- */
-__diag_push();
-__diag_ignore(GCC, 8, "-Woverride-init",
-	      "logic to initialize all and then override some is OK");
 static const u16 sh_eth_offset_gigabit[SH_ETH_MAX_REGISTER_OFFSET] = {
 	SH_ETH_OFFSET_DEFAULTS,
 
@@ -149,6 +140,69 @@ static const u16 sh_eth_offset_gigabit[SH_ETH_MAX_REGISTER_OFFSET] = {
 	[RXALCR1]	= 0x00ac,
 	[FWNLCR1]	= 0x00b0,
 	[FWALCR1]	= 0x00b4,
+};
+
+static const u16 sh_eth_offset_fast_rz[SH_ETH_MAX_REGISTER_OFFSET] = {
+	SH_ETH_OFFSET_DEFAULTS,
+
+	[EDSR]		= 0x0000,
+	[EDMR]		= 0x0400,
+	[EDTRR]		= 0x0408,
+	[EDRRR]		= 0x0410,
+	[EESR]		= 0x0428,
+	[EESIPR]	= 0x0430,
+	[TDLAR]		= 0x0010,
+	[TDFAR]		= 0x0014,
+	[TDFXR]		= 0x0018,
+	[TDFFR]		= 0x001c,
+	[RDLAR]		= 0x0030,
+	[RDFAR]		= 0x0034,
+	[RDFXR]		= 0x0038,
+	[RDFFR]		= 0x003c,
+	[TRSCER]	= 0x0438,
+	[RMFCR]		= 0x0440,
+	[TFTR]		= 0x0448,
+	[FDR]		= 0x0450,
+	[RMCR]		= 0x0458,
+	[RPADIR]	= 0x0460,
+	[FCFTR]		= 0x0468,
+	[CSMR]		= 0x04E4,
+
+	[ECMR]		= 0x0500,
+	[RFLR]		= 0x0508,
+	[ECSR]		= 0x0510,
+	[ECSIPR]	= 0x0518,
+	[PIR]		= 0x0520,
+	[APR]		= 0x0554,
+	[MPR]		= 0x0558,
+	[PFTCR]		= 0x055c,
+	[PFRCR]		= 0x0560,
+	[TPAUSER]	= 0x0564,
+	[MAHR]		= 0x05c0,
+	[MALR]		= 0x05c8,
+	[CEFCR]		= 0x0740,
+	[FRECR]		= 0x0748,
+	[TSFRCR]	= 0x0750,
+	[TLFRCR]	= 0x0758,
+	[RFCR]		= 0x0760,
+	[MAFCR]		= 0x0778,
+
+	[ARSTR]		= 0x0000,
+	[TSU_CTRST]	= 0x0004,
+	[TSU_FWSLC]	= 0x0038,
+	[TSU_VTAG0]	= 0x0058,
+	[TSU_ADSBSY]	= 0x0060,
+	[TSU_TEN]	= 0x0064,
+	[TSU_POST1]	= 0x0070,
+	[TSU_POST2]	= 0x0074,
+	[TSU_POST3]	= 0x0078,
+	[TSU_POST4]	= 0x007c,
+	[TSU_ADRH0]	= 0x0100,
+
+	[TXNLCR0]	= 0x0080,
+	[TXALCR0]	= 0x0084,
+	[RXNLCR0]	= 0x0088,
+	[RXALCR0]	= 0x008C,
 };
 
 static const u16 sh_eth_offset_fast_rcar[SH_ETH_MAX_REGISTER_OFFSET] = {
@@ -341,7 +395,6 @@ static const u16 sh_eth_offset_fast_sh3_sh2[SH_ETH_MAX_REGISTER_OFFSET] = {
 
 	[TSU_ADRH0]	= 0x0100,
 };
-__diag_pop();
 
 static void sh_eth_rcv_snd_disable(struct net_device *ndev);
 static struct net_device_stats *sh_eth_get_stats(struct net_device *ndev);
@@ -516,9 +569,6 @@ static void sh_eth_set_rate_gether(struct net_device *ndev)
 {
 	struct sh_eth_private *mdp = netdev_priv(ndev);
 
-	if (WARN_ON(!mdp->cd->gecmr))
-		return;
-
 	switch (mdp->speed) {
 	case 10: /* 10BASE */
 		sh_eth_write(ndev, GECMR_10, GECMR);
@@ -540,7 +590,7 @@ static struct sh_eth_cpu_data r7s72100_data = {
 	.chip_reset	= sh_eth_chip_reset,
 	.set_duplex	= sh_eth_set_duplex,
 
-	.register_type	= SH_ETH_REG_GIGABIT,
+	.register_type	= SH_ETH_REG_FAST_RZ,
 
 	.edtrr_trns	= EDTRR_TRNS_GETHER,
 	.ecsr_value	= ECSR_ICD,
@@ -559,8 +609,6 @@ static struct sh_eth_cpu_data r7s72100_data = {
 			  EESR_RFE | EESR_RDE | EESR_RFRMER | EESR_TFE |
 			  EESR_TDE,
 	.fdr_value	= 0x0000070f,
-
-	.trscer_err_mask = DESC_I_RINT8 | DESC_I_RINT5,
 
 	.no_psr		= 1,
 	.apr		= 1,
@@ -615,7 +663,6 @@ static struct sh_eth_cpu_data r8a7740_data = {
 	.apr		= 1,
 	.mpr		= 1,
 	.tpauser	= 1,
-	.gecmr		= 1,
 	.bculr		= 1,
 	.hw_swap	= 1,
 	.rpadir		= 1,
@@ -741,7 +788,6 @@ static struct sh_eth_cpu_data r8a77980_data = {
 	.apr		= 1,
 	.mpr		= 1,
 	.tpauser	= 1,
-	.gecmr		= 1,
 	.bculr		= 1,
 	.hw_swap	= 1,
 	.nbst		= 1,
@@ -781,8 +827,6 @@ static struct sh_eth_cpu_data r7s9210_data = {
 			  EESR_RDE | EESR_RFRMER | EESR_TFE | EESR_TDE,
 
 	.fdr_value	= 0x0000070f,
-
-	.trscer_err_mask = DESC_I_RINT8 | DESC_I_RINT5,
 
 	.apr		= 1,
 	.mpr		= 1,
@@ -913,9 +957,6 @@ static void sh_eth_set_rate_giga(struct net_device *ndev)
 {
 	struct sh_eth_private *mdp = netdev_priv(ndev);
 
-	if (WARN_ON(!mdp->cd->gecmr))
-		return;
-
 	switch (mdp->speed) {
 	case 10: /* 10BASE */
 		sh_eth_write(ndev, 0x00000000, GECMR);
@@ -961,7 +1002,6 @@ static struct sh_eth_cpu_data sh7757_data_giga = {
 	.apr		= 1,
 	.mpr		= 1,
 	.tpauser	= 1,
-	.gecmr		= 1,
 	.bculr		= 1,
 	.hw_swap	= 1,
 	.rpadir		= 1,
@@ -1002,7 +1042,6 @@ static struct sh_eth_cpu_data sh7734_data = {
 	.apr		= 1,
 	.mpr		= 1,
 	.tpauser	= 1,
-	.gecmr		= 1,
 	.bculr		= 1,
 	.hw_swap	= 1,
 	.no_trimd	= 1,
@@ -1044,7 +1083,6 @@ static struct sh_eth_cpu_data sh7763_data = {
 	.apr		= 1,
 	.mpr		= 1,
 	.tpauser	= 1,
-	.gecmr		= 1,
 	.bculr		= 1,
 	.hw_swap	= 1,
 	.no_trimd	= 1,
@@ -1093,9 +1131,6 @@ static struct sh_eth_cpu_data sh771x_data = {
 			  EESIPR_CEEFIP | EESIPR_CELFIP |
 			  EESIPR_RRFIP | EESIPR_RTLFIP | EESIPR_RTSFIP |
 			  EESIPR_PREIP | EESIPR_CERFIP,
-
-	.trscer_err_mask = DESC_I_RINT8,
-
 	.tsu		= 1,
 	.dual_port	= 1,
 };
@@ -1219,7 +1254,7 @@ static void sh_mdc_ctrl(struct mdiobb_ctrl *ctrl, int bit)
 }
 
 /* mdio bus control struct */
-static const struct mdiobb_ops bb_ops = {
+static struct mdiobb_ops bb_ops = {
 	.owner = THIS_MODULE,
 	.set_mdc = sh_mdc_ctrl,
 	.set_mdio_dir = sh_mmd_ctrl,
@@ -2105,13 +2140,11 @@ static size_t __sh_eth_get_regs(struct net_device *ndev, u32 *buf)
 	add_reg(EESR);
 	add_reg(EESIPR);
 	add_reg(TDLAR);
-	if (!cd->no_xdfar)
-		add_reg(TDFAR);
+	add_reg(TDFAR);
 	add_reg(TDFXR);
 	add_reg(TDFFR);
 	add_reg(RDLAR);
-	if (!cd->no_xdfar)
-		add_reg(RDFAR);
+	add_reg(RDFAR);
 	add_reg(RDFXR);
 	add_reg(RDFFR);
 	add_reg(TRSCER);
@@ -2146,26 +2179,21 @@ static size_t __sh_eth_get_regs(struct net_device *ndev, u32 *buf)
 	if (cd->tpauser)
 		add_reg(TPAUSER);
 	add_reg(TPAUSECR);
-	if (cd->gecmr)
-		add_reg(GECMR);
+	add_reg(GECMR);
 	if (cd->bculr)
 		add_reg(BCULR);
 	add_reg(MAHR);
 	add_reg(MALR);
-	if (!cd->no_tx_cntrs) {
-		add_reg(TROCR);
-		add_reg(CDCR);
-		add_reg(LCCR);
-		add_reg(CNDCR);
-	}
+	add_reg(TROCR);
+	add_reg(CDCR);
+	add_reg(LCCR);
+	add_reg(CNDCR);
 	add_reg(CEFCR);
 	add_reg(FRECR);
 	add_reg(TSFRCR);
 	add_reg(TLFRCR);
-	if (cd->cexcr) {
-		add_reg(CERCR);
-		add_reg(CEECR);
-	}
+	add_reg(CERCR);
+	add_reg(CEECR);
 	add_reg(MAFCR);
 	if (cd->rtrate)
 		add_reg(RTRATE);
@@ -2489,8 +2517,7 @@ static void sh_eth_tx_timeout(struct net_device *ndev, unsigned int txqueue)
 }
 
 /* Packet transmit function */
-static netdev_tx_t sh_eth_start_xmit(struct sk_buff *skb,
-				     struct net_device *ndev)
+static int sh_eth_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
 	struct sh_eth_private *mdp = netdev_priv(ndev);
 	struct sh_eth_txdesc *txdesc;
@@ -2613,9 +2640,9 @@ static int sh_eth_close(struct net_device *ndev)
 	/* Free all the skbuffs in the Rx queue and the DMA buffer. */
 	sh_eth_ring_free(ndev);
 
-	mdp->is_opened = 0;
+	pm_runtime_put_sync(&mdp->pdev->dev);
 
-	pm_runtime_put(&mdp->pdev->dev);
+	mdp->is_opened = 0;
 
 	return 0;
 }
@@ -3041,28 +3068,6 @@ static int sh_mdio_release(struct sh_eth_private *mdp)
 	return 0;
 }
 
-static int sh_mdiobb_read(struct mii_bus *bus, int phy, int reg)
-{
-	int res;
-
-	pm_runtime_get_sync(bus->parent);
-	res = mdiobb_read(bus, phy, reg);
-	pm_runtime_put(bus->parent);
-
-	return res;
-}
-
-static int sh_mdiobb_write(struct mii_bus *bus, int phy, int reg, u16 val)
-{
-	int res;
-
-	pm_runtime_get_sync(bus->parent);
-	res = mdiobb_write(bus, phy, reg, val);
-	pm_runtime_put(bus->parent);
-
-	return res;
-}
-
 /* MDIO bus init function */
 static int sh_mdio_init(struct sh_eth_private *mdp,
 			struct sh_eth_plat_data *pd)
@@ -3086,10 +3091,6 @@ static int sh_mdio_init(struct sh_eth_private *mdp,
 	mdp->mii_bus = alloc_mdio_bitbang(&bitbang->ctrl);
 	if (!mdp->mii_bus)
 		return -ENOMEM;
-
-	/* Wrap accessors with Runtime PM-aware ops */
-	mdp->mii_bus->read = sh_mdiobb_read;
-	mdp->mii_bus->write = sh_mdiobb_write;
 
 	/* Hook up MII support for ethtool */
 	mdp->mii_bus->name = "sh_mii";
@@ -3119,6 +3120,9 @@ static const u16 *sh_eth_get_register_offset(int register_type)
 	switch (register_type) {
 	case SH_ETH_REG_GIGABIT:
 		reg_offset = sh_eth_offset_gigabit;
+		break;
+	case SH_ETH_REG_FAST_RZ:
+		reg_offset = sh_eth_offset_fast_rz;
 		break;
 	case SH_ETH_REG_FAST_RCAR:
 		reg_offset = sh_eth_offset_fast_rcar;

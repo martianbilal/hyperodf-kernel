@@ -30,7 +30,7 @@ struct uniphier_gpio_priv {
 	struct irq_domain *domain;
 	void __iomem *regs;
 	spinlock_t lock;
-	u32 saved_vals[];
+	u32 saved_vals[0];
 };
 
 static unsigned int uniphier_gpio_bank_to_reg(unsigned int bank)

@@ -437,8 +437,9 @@ static irqreturn_t jz4780_i2c_irq(int irqno, void *dev_id)
 	unsigned short intst;
 	unsigned short intmsk;
 	struct jz4780_i2c *i2c = dev_id;
+	unsigned long flags;
 
-	spin_lock(&i2c->lock);
+	spin_lock_irqsave(&i2c->lock, flags);
 	intmsk = jz4780_i2c_readw(i2c, JZ4780_I2C_INTM);
 	intst = jz4780_i2c_readw(i2c, JZ4780_I2C_INTST);
 
@@ -525,8 +526,8 @@ static irqreturn_t jz4780_i2c_irq(int irqno, void *dev_id)
 				i2c_sta = jz4780_i2c_readw(i2c, JZ4780_I2C_STA);
 				data = *i2c->wbuf;
 				data &= ~JZ4780_I2C_DC_READ;
-				if ((i2c->wt_len == 1) && (!i2c->stop_hold) &&
-						(i2c->cdata->version >= ID_X1000))
+				if ((!i2c->stop_hold) && (i2c->cdata->version >=
+						ID_X1000))
 					data |= X1000_I2C_DC_STOP;
 				jz4780_i2c_writew(i2c, JZ4780_I2C_DC, data);
 				i2c->wbuf++;
@@ -550,7 +551,7 @@ static irqreturn_t jz4780_i2c_irq(int irqno, void *dev_id)
 	}
 
 done:
-	spin_unlock(&i2c->lock);
+	spin_unlock_irqrestore(&i2c->lock, flags);
 	return IRQ_HANDLED;
 }
 
@@ -751,7 +752,6 @@ static const struct ingenic_i2c_config x1000_i2c_config = {
 };
 
 static const struct of_device_id jz4780_i2c_of_matches[] = {
-	{ .compatible = "ingenic,jz4770-i2c", .data = &jz4780_i2c_config },
 	{ .compatible = "ingenic,jz4780-i2c", .data = &jz4780_i2c_config },
 	{ .compatible = "ingenic,x1000-i2c", .data = &x1000_i2c_config },
 	{ /* sentinel */ }
@@ -763,6 +763,7 @@ static int jz4780_i2c_probe(struct platform_device *pdev)
 	int ret = 0;
 	unsigned int clk_freq = 0;
 	unsigned short tmp;
+	struct resource *r;
 	struct jz4780_i2c *i2c;
 
 	i2c = devm_kzalloc(&pdev->dev, sizeof(struct jz4780_i2c), GFP_KERNEL);
@@ -786,7 +787,8 @@ static int jz4780_i2c_probe(struct platform_device *pdev)
 	init_completion(&i2c->trans_waitq);
 	spin_lock_init(&i2c->lock);
 
-	i2c->iomem = devm_platform_ioremap_resource(pdev, 0);
+	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	i2c->iomem = devm_ioremap_resource(&pdev->dev, r);
 	if (IS_ERR(i2c->iomem))
 		return PTR_ERR(i2c->iomem);
 
@@ -825,10 +827,7 @@ static int jz4780_i2c_probe(struct platform_device *pdev)
 
 	jz4780_i2c_writew(i2c, JZ4780_I2C_INTM, 0x0);
 
-	ret = platform_get_irq(pdev, 0);
-	if (ret < 0)
-		goto err;
-	i2c->irq = ret;
+	i2c->irq = platform_get_irq(pdev, 0);
 	ret = devm_request_irq(&pdev->dev, i2c->irq, jz4780_i2c_irq, 0,
 			       dev_name(&pdev->dev), i2c);
 	if (ret)
@@ -859,7 +858,7 @@ static struct platform_driver jz4780_i2c_driver = {
 	.remove		= jz4780_i2c_remove,
 	.driver		= {
 		.name	= "jz4780-i2c",
-		.of_match_table = jz4780_i2c_of_matches,
+		.of_match_table = of_match_ptr(jz4780_i2c_of_matches),
 	},
 };
 

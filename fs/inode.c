@@ -108,7 +108,7 @@ long get_nr_dirty_inodes(void)
  */
 #ifdef CONFIG_SYSCTL
 int proc_nr_inodes(struct ctl_table *table, int write,
-		   void *buffer, size_t *lenp, loff_t *ppos)
+		   void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	inodes_stat.nr_inodes = get_nr_inodes();
 	inodes_stat.nr_unused = get_nr_inodes_unused();
@@ -142,7 +142,6 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	atomic_set(&inode->i_count, 1);
 	inode->i_op = &empty_iops;
 	inode->i_fop = &no_open_fops;
-	inode->i_ino = 0;
 	inode->__i_nlink = 1;
 	inode->i_opflags = 0;
 	if (sb->s_xattr)
@@ -156,6 +155,7 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	inode->i_bytes = 0;
 	inode->i_generation = 0;
 	inode->i_pipe = NULL;
+	inode->i_bdev = NULL;
 	inode->i_cdev = NULL;
 	inode->i_link = NULL;
 	inode->i_dir_seq = 0;
@@ -181,8 +181,6 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	mapping->a_ops = &empty_aops;
 	mapping->host = inode;
 	mapping->flags = 0;
-	if (sb->s_type->fs_flags & FS_THP_SUPPORT)
-		__set_bit(AS_THP_SUPPORT, &mapping->flags);
 	mapping->wb_err = 0;
 	atomic_set(&mapping->i_mmap_writable, 0);
 #ifdef CONFIG_READ_ONLY_THP_FOR_FS
@@ -499,7 +497,7 @@ void __insert_inode_hash(struct inode *inode, unsigned long hashval)
 
 	spin_lock(&inode_hash_lock);
 	spin_lock(&inode->i_lock);
-	hlist_add_head_rcu(&inode->i_hash, b);
+	hlist_add_head(&inode->i_hash, b);
 	spin_unlock(&inode->i_lock);
 	spin_unlock(&inode_hash_lock);
 }
@@ -515,7 +513,7 @@ void __remove_inode_hash(struct inode *inode)
 {
 	spin_lock(&inode_hash_lock);
 	spin_lock(&inode->i_lock);
-	hlist_del_init_rcu(&inode->i_hash);
+	hlist_del_init(&inode->i_hash);
 	spin_unlock(&inode->i_lock);
 	spin_unlock(&inode_hash_lock);
 }
@@ -580,6 +578,8 @@ static void evict(struct inode *inode)
 		truncate_inode_pages_final(&inode->i_data);
 		clear_inode(inode);
 	}
+	if (S_ISBLK(inode->i_mode) && inode->i_bdev)
+		bd_forget(inode);
 	if (S_ISCHR(inode->i_mode) && inode->i_cdev)
 		cd_forget(inode);
 
@@ -1107,7 +1107,7 @@ again:
 	 */
 	spin_lock(&inode->i_lock);
 	inode->i_state |= I_NEW;
-	hlist_add_head_rcu(&inode->i_hash, head);
+	hlist_add_head(&inode->i_hash, head);
 	spin_unlock(&inode->i_lock);
 	if (!creating)
 		inode_sb_list_add(inode);
@@ -1201,7 +1201,7 @@ again:
 			inode->i_ino = ino;
 			spin_lock(&inode->i_lock);
 			inode->i_state = I_NEW;
-			hlist_add_head_rcu(&inode->i_hash, head);
+			hlist_add_head(&inode->i_hash, head);
 			spin_unlock(&inode->i_lock);
 			inode_sb_list_add(inode);
 			spin_unlock(&inode_hash_lock);
@@ -1244,10 +1244,15 @@ static int test_inode_iunique(struct super_block *sb, unsigned long ino)
 	struct hlist_head *b = inode_hashtable + hash(sb, ino);
 	struct inode *inode;
 
-	hlist_for_each_entry_rcu(inode, b, i_hash) {
-		if (inode->i_ino == ino && inode->i_sb == sb)
+	spin_lock(&inode_hash_lock);
+	hlist_for_each_entry(inode, b, i_hash) {
+		if (inode->i_ino == ino && inode->i_sb == sb) {
+			spin_unlock(&inode_hash_lock);
 			return 0;
+		}
 	}
+	spin_unlock(&inode_hash_lock);
+
 	return 1;
 }
 
@@ -1276,7 +1281,6 @@ ino_t iunique(struct super_block *sb, ino_t max_reserved)
 	static unsigned int counter;
 	ino_t res;
 
-	rcu_read_lock();
 	spin_lock(&iunique_lock);
 	do {
 		if (counter <= max_reserved)
@@ -1284,7 +1288,6 @@ ino_t iunique(struct super_block *sb, ino_t max_reserved)
 		res = counter++;
 	} while (!test_inode_iunique(sb, res));
 	spin_unlock(&iunique_lock);
-	rcu_read_unlock();
 
 	return res;
 }
@@ -1453,84 +1456,6 @@ out:
 }
 EXPORT_SYMBOL(find_inode_nowait);
 
-/**
- * find_inode_rcu - find an inode in the inode cache
- * @sb:		Super block of file system to search
- * @hashval:	Key to hash
- * @test:	Function to test match on an inode
- * @data:	Data for test function
- *
- * Search for the inode specified by @hashval and @data in the inode cache,
- * where the helper function @test will return 0 if the inode does not match
- * and 1 if it does.  The @test function must be responsible for taking the
- * i_lock spin_lock and checking i_state for an inode being freed or being
- * initialized.
- *
- * If successful, this will return the inode for which the @test function
- * returned 1 and NULL otherwise.
- *
- * The @test function is not permitted to take a ref on any inode presented.
- * It is also not permitted to sleep.
- *
- * The caller must hold the RCU read lock.
- */
-struct inode *find_inode_rcu(struct super_block *sb, unsigned long hashval,
-			     int (*test)(struct inode *, void *), void *data)
-{
-	struct hlist_head *head = inode_hashtable + hash(sb, hashval);
-	struct inode *inode;
-
-	RCU_LOCKDEP_WARN(!rcu_read_lock_held(),
-			 "suspicious find_inode_rcu() usage");
-
-	hlist_for_each_entry_rcu(inode, head, i_hash) {
-		if (inode->i_sb == sb &&
-		    !(READ_ONCE(inode->i_state) & (I_FREEING | I_WILL_FREE)) &&
-		    test(inode, data))
-			return inode;
-	}
-	return NULL;
-}
-EXPORT_SYMBOL(find_inode_rcu);
-
-/**
- * find_inode_by_ino_rcu - Find an inode in the inode cache
- * @sb:		Super block of file system to search
- * @ino:	The inode number to match
- *
- * Search for the inode specified by @hashval and @data in the inode cache,
- * where the helper function @test will return 0 if the inode does not match
- * and 1 if it does.  The @test function must be responsible for taking the
- * i_lock spin_lock and checking i_state for an inode being freed or being
- * initialized.
- *
- * If successful, this will return the inode for which the @test function
- * returned 1 and NULL otherwise.
- *
- * The @test function is not permitted to take a ref on any inode presented.
- * It is also not permitted to sleep.
- *
- * The caller must hold the RCU read lock.
- */
-struct inode *find_inode_by_ino_rcu(struct super_block *sb,
-				    unsigned long ino)
-{
-	struct hlist_head *head = inode_hashtable + hash(sb, ino);
-	struct inode *inode;
-
-	RCU_LOCKDEP_WARN(!rcu_read_lock_held(),
-			 "suspicious find_inode_by_ino_rcu() usage");
-
-	hlist_for_each_entry_rcu(inode, head, i_hash) {
-		if (inode->i_ino == ino &&
-		    inode->i_sb == sb &&
-		    !(READ_ONCE(inode->i_state) & (I_FREEING | I_WILL_FREE)))
-		    return inode;
-	}
-	return NULL;
-}
-EXPORT_SYMBOL(find_inode_by_ino_rcu);
-
 int insert_inode_locked(struct inode *inode)
 {
 	struct super_block *sb = inode->i_sb;
@@ -1555,7 +1480,7 @@ int insert_inode_locked(struct inode *inode)
 		if (likely(!old)) {
 			spin_lock(&inode->i_lock);
 			inode->i_state |= I_NEW | I_CREATING;
-			hlist_add_head_rcu(&inode->i_hash, head);
+			hlist_add_head(&inode->i_hash, head);
 			spin_unlock(&inode->i_lock);
 			spin_unlock(&inode_hash_lock);
 			return 0;
@@ -1615,7 +1540,6 @@ static void iput_final(struct inode *inode)
 {
 	struct super_block *sb = inode->i_sb;
 	const struct super_operations *op = inode->i_sb->s_op;
-	unsigned long state;
 	int drop;
 
 	WARN_ON(inode->i_state & I_NEW);
@@ -1625,28 +1549,22 @@ static void iput_final(struct inode *inode)
 	else
 		drop = generic_drop_inode(inode);
 
-	if (!drop &&
-	    !(inode->i_state & I_DONTCACHE) &&
-	    (sb->s_flags & SB_ACTIVE)) {
+	if (!drop && (sb->s_flags & SB_ACTIVE)) {
 		inode_add_lru(inode);
 		spin_unlock(&inode->i_lock);
 		return;
 	}
 
-	state = inode->i_state;
 	if (!drop) {
-		WRITE_ONCE(inode->i_state, state | I_WILL_FREE);
+		inode->i_state |= I_WILL_FREE;
 		spin_unlock(&inode->i_lock);
-
 		write_inode_now(inode, 1);
-
 		spin_lock(&inode->i_lock);
-		state = inode->i_state;
-		WARN_ON(state & I_NEW);
-		state &= ~I_WILL_FREE;
+		WARN_ON(inode->i_state & I_NEW);
+		inode->i_state &= ~I_WILL_FREE;
 	}
 
-	WRITE_ONCE(inode->i_state, state | I_FREEING);
+	inode->i_state |= I_FREEING;
 	if (!list_empty(&inode->i_lru))
 		inode_lru_list_del(inode);
 	spin_unlock(&inode->i_lock);
@@ -1688,14 +1606,14 @@ EXPORT_SYMBOL(iput);
  *	@inode:  inode owning the block number being requested
  *	@block: pointer containing the block to find
  *
- *	Replaces the value in ``*block`` with the block number on the device holding
+ *	Replaces the value in *block with the block number on the device holding
  *	corresponding to the requested block number in the file.
  *	That is, asked for block 4 of inode 1 the function will replace the
- *	4 in ``*block``, with disk block relative to the disk start that holds that
+ *	4 in *block, with disk block relative to the disk start that holds that
  *	block of the file.
  *
  *	Returns -EINVAL in case of error, 0 otherwise. If mapping falls into a
- *	hole, returns 0 and ``*block`` is also set to 0.
+ *	hole, returns 0 and *block is also set to 0.
  */
 int bmap(struct inode *inode, sector_t *block)
 {
@@ -1744,26 +1662,24 @@ static int relatime_need_update(struct vfsmount *mnt, struct inode *inode,
 
 int generic_update_time(struct inode *inode, struct timespec64 *time, int flags)
 {
-	int dirty_flags = 0;
+	int iflags = I_DIRTY_TIME;
+	bool dirty = false;
 
-	if (flags & (S_ATIME | S_CTIME | S_MTIME)) {
-		if (flags & S_ATIME)
-			inode->i_atime = *time;
-		if (flags & S_CTIME)
-			inode->i_ctime = *time;
-		if (flags & S_MTIME)
-			inode->i_mtime = *time;
+	if (flags & S_ATIME)
+		inode->i_atime = *time;
+	if (flags & S_VERSION)
+		dirty = inode_maybe_inc_iversion(inode, false);
+	if (flags & S_CTIME)
+		inode->i_ctime = *time;
+	if (flags & S_MTIME)
+		inode->i_mtime = *time;
+	if ((flags & (S_ATIME | S_CTIME | S_MTIME)) &&
+	    !(inode->i_sb->s_flags & SB_LAZYTIME))
+		dirty = true;
 
-		if (inode->i_sb->s_flags & SB_LAZYTIME)
-			dirty_flags |= I_DIRTY_TIME;
-		else
-			dirty_flags |= I_DIRTY_SYNC;
-	}
-
-	if ((flags & S_VERSION) && inode_maybe_inc_iversion(inode, false))
-		dirty_flags |= I_DIRTY_SYNC;
-
-	__mark_inode_dirty(inode, dirty_flags);
+	if (dirty)
+		iflags |= I_DIRTY_SYNC;
+	__mark_inode_dirty(inode, iflags);
 	return 0;
 }
 EXPORT_SYMBOL(generic_update_time);
@@ -1780,7 +1696,7 @@ static int update_time(struct inode *inode, struct timespec64 *time, int flags)
 }
 
 /**
- *	atime_needs_update	-	update the access time
+ *	touch_atime	-	update the access time
  *	@path: the &struct path to update
  *	@inode: inode to update
  *
@@ -1799,7 +1715,7 @@ bool atime_needs_update(const struct path *path, struct inode *inode)
 	/* Atime updates will likely cause i_uid and i_gid to be written
 	 * back improprely if their true value is unknown to the vfs.
 	 */
-	if (HAS_UNMAPPED_ID(mnt_user_ns(mnt), inode))
+	if (HAS_UNMAPPED_ID(inode))
 		return false;
 
 	if (IS_NOATIME(inode))
@@ -1906,8 +1822,7 @@ int dentry_needs_remove_privs(struct dentry *dentry)
 	return mask;
 }
 
-static int __remove_privs(struct user_namespace *mnt_userns,
-			  struct dentry *dentry, int kill)
+static int __remove_privs(struct dentry *dentry, int kill)
 {
 	struct iattr newattrs;
 
@@ -1916,7 +1831,7 @@ static int __remove_privs(struct user_namespace *mnt_userns,
 	 * Note we call this on write, so notify_change will not
 	 * encounter any conflicting delegations:
 	 */
-	return notify_change(mnt_userns, dentry, &newattrs, NULL);
+	return notify_change(dentry, &newattrs, NULL);
 }
 
 /*
@@ -1943,7 +1858,7 @@ int file_remove_privs(struct file *file)
 	if (kill < 0)
 		return kill;
 	if (kill)
-		error = __remove_privs(file_mnt_user_ns(file), dentry, kill);
+		error = __remove_privs(dentry, kill);
 	if (!error)
 		inode_has_no_xattr(inode);
 
@@ -2134,21 +2049,14 @@ EXPORT_SYMBOL(init_special_inode);
 
 /**
  * inode_init_owner - Init uid,gid,mode for new inode according to posix standards
- * @mnt_userns:	User namespace of the mount the inode was created from
  * @inode: New inode
  * @dir: Directory inode
  * @mode: mode of the new inode
- *
- * If the inode has been created through an idmapped mount the user namespace of
- * the vfsmount must be passed through @mnt_userns. This function will then take
- * care to map the inode according to @mnt_userns before checking permissions
- * and initializing i_uid and i_gid. On non-idmapped mounts or if permission
- * checking is to be performed on the raw inode simply passs init_user_ns.
  */
-void inode_init_owner(struct user_namespace *mnt_userns, struct inode *inode,
-		      const struct inode *dir, umode_t mode)
+void inode_init_owner(struct inode *inode, const struct inode *dir,
+			umode_t mode)
 {
-	inode->i_uid = fsuid_into_mnt(mnt_userns);
+	inode->i_uid = current_fsuid();
 	if (dir && dir->i_mode & S_ISGID) {
 		inode->i_gid = dir->i_gid;
 
@@ -2156,41 +2064,31 @@ void inode_init_owner(struct user_namespace *mnt_userns, struct inode *inode,
 		if (S_ISDIR(mode))
 			mode |= S_ISGID;
 		else if ((mode & (S_ISGID | S_IXGRP)) == (S_ISGID | S_IXGRP) &&
-			 !in_group_p(i_gid_into_mnt(mnt_userns, dir)) &&
-			 !capable_wrt_inode_uidgid(mnt_userns, dir, CAP_FSETID))
+			 !in_group_p(inode->i_gid) &&
+			 !capable_wrt_inode_uidgid(dir, CAP_FSETID))
 			mode &= ~S_ISGID;
 	} else
-		inode->i_gid = fsgid_into_mnt(mnt_userns);
+		inode->i_gid = current_fsgid();
 	inode->i_mode = mode;
 }
 EXPORT_SYMBOL(inode_init_owner);
 
 /**
  * inode_owner_or_capable - check current task permissions to inode
- * @mnt_userns:	user namespace of the mount the inode was found from
  * @inode: inode being checked
  *
  * Return true if current either has CAP_FOWNER in a namespace with the
  * inode owner uid mapped, or owns the file.
- *
- * If the inode has been found through an idmapped mount the user namespace of
- * the vfsmount must be passed through @mnt_userns. This function will then take
- * care to map the inode according to @mnt_userns before checking permissions.
- * On non-idmapped mounts or if permission checking is to be performed on the
- * raw inode simply passs init_user_ns.
  */
-bool inode_owner_or_capable(struct user_namespace *mnt_userns,
-			    const struct inode *inode)
+bool inode_owner_or_capable(const struct inode *inode)
 {
-	kuid_t i_uid;
 	struct user_namespace *ns;
 
-	i_uid = i_uid_into_mnt(mnt_userns, inode);
-	if (uid_eq(current_fsuid(), i_uid))
+	if (uid_eq(current_fsuid(), inode->i_uid))
 		return true;
 
 	ns = current_user_ns();
-	if (kuid_has_mapping(ns, i_uid) && ns_capable(ns, CAP_FOWNER))
+	if (kuid_has_mapping(ns, inode->i_uid) && ns_capable(ns, CAP_FOWNER))
 		return true;
 	return false;
 }

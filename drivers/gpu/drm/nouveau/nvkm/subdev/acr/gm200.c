@@ -32,17 +32,6 @@
 #include <nvfw/acr.h>
 #include <nvfw/flcn.h>
 
-const struct nvkm_acr_func
-gm200_acr = {
-};
-
-int
-gm200_acr_nofw(struct nvkm_acr *acr, int ver, const struct nvkm_acr_fwif *fwif)
-{
-	nvkm_warn(&acr->subdev, "firmware unavailable\n");
-	return 0;
-}
-
 int
 gm200_acr_init(struct nvkm_acr *acr)
 {
@@ -262,7 +251,7 @@ gm200_acr_hsfw_boot(struct nvkm_acr *acr, struct nvkm_acr_hsf *hsf,
 	hsf->func->bld(acr, hsf);
 
 	/* Boot the falcon. */
-	nvkm_mc_intr_mask(device, falcon->owner->type, falcon->owner->inst, false);
+	nvkm_mc_intr_mask(device, falcon->owner->index, false);
 
 	nvkm_falcon_wr32(falcon, 0x040, 0xdeada5a5);
 	nvkm_falcon_set_start_addr(falcon, hsf->imem_tag << 8);
@@ -279,7 +268,7 @@ gm200_acr_hsfw_boot(struct nvkm_acr *acr, struct nvkm_acr_hsf *hsf,
 		return -EIO;
 
 	nvkm_falcon_clear_interrupt(falcon, intr_clear);
-	nvkm_mc_intr_mask(device, falcon->owner->type, falcon->owner->inst, true);
+	nvkm_mc_intr_mask(device, falcon->owner->index, true);
 	return ret;
 }
 
@@ -436,7 +425,7 @@ gm200_acr_load_fwif[] = {
 };
 
 static const struct nvkm_acr_func
-gm200_acr_0 = {
+gm200_acr = {
 	.load = gm200_acr_load_fwif,
 	.unload = gm200_acr_unload_fwif,
 	.wpr_parse = gm200_acr_wpr_parse,
@@ -446,8 +435,6 @@ gm200_acr_0 = {
 	.wpr_patch = gm200_acr_wpr_patch,
 	.wpr_check = gm200_acr_wpr_check,
 	.init = gm200_acr_init,
-	.bootstrap_falcons = BIT_ULL(NVKM_ACR_LSF_FECS) |
-			     BIT_ULL(NVKM_ACR_LSF_GPCCS),
 };
 
 static int
@@ -472,14 +459,12 @@ gm200_acr_load(struct nvkm_acr *acr, int ver, const struct nvkm_acr_fwif *fwif)
 
 static const struct nvkm_acr_fwif
 gm200_acr_fwif[] = {
-	{  0, gm200_acr_load, &gm200_acr_0 },
-	{ -1, gm200_acr_nofw, &gm200_acr },
+	{ 0, gm200_acr_load, &gm200_acr },
 	{}
 };
 
 int
-gm200_acr_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
-	      struct nvkm_acr **pacr)
+gm200_acr_new(struct nvkm_device *device, int index, struct nvkm_acr **pacr)
 {
-	return nvkm_acr_new_(gm200_acr_fwif, device, type, inst, pacr);
+	return nvkm_acr_new_(gm200_acr_fwif, device, index, pacr);
 }

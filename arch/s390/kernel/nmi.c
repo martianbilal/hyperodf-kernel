@@ -131,11 +131,12 @@ static notrace void s390_handle_damage(void)
 NOKPROBE_SYMBOL(s390_handle_damage);
 
 /*
- * Main machine check handler function. Will be called with interrupts disabled
- * and machine checks enabled.
+ * Main machine check handler function. Will be called with interrupts enabled
+ * or disabled and machine checks enabled or disabled.
  */
-void __s390_handle_mcck(void)
+void s390_handle_mcck(void)
 {
+	unsigned long flags;
 	struct mcck_struct mcck;
 
 	/*
@@ -143,10 +144,13 @@ void __s390_handle_mcck(void)
 	 * machine checks. Afterwards delete the old state and enable machine
 	 * checks again.
 	 */
+	local_irq_save(flags);
 	local_mcck_disable();
 	mcck = *this_cpu_ptr(&cpu_mcck);
 	memset(this_cpu_ptr(&cpu_mcck), 0, sizeof(mcck));
+	clear_cpu_flag(CIF_MCCK_PENDING);
 	local_mcck_enable();
+	local_irq_restore(flags);
 
 	if (mcck.channel_report)
 		crw_handle_channel_report();
@@ -178,13 +182,8 @@ void __s390_handle_mcck(void)
 		do_exit(SIGSEGV);
 	}
 }
+EXPORT_SYMBOL_GPL(s390_handle_mcck);
 
-void noinstr s390_handle_mcck(void)
-{
-	trace_hardirqs_off();
-	__s390_handle_mcck();
-	trace_hardirqs_on();
-}
 /*
  * returns 0 if all required registers are available
  * returns 1 otherwise
@@ -334,7 +333,7 @@ NOKPROBE_SYMBOL(s390_backup_mcck_info);
 /*
  * machine check handler.
  */
-int notrace s390_do_machine_check(struct pt_regs *regs)
+void notrace s390_do_machine_check(struct pt_regs *regs)
 {
 	static int ipd_count;
 	static DEFINE_SPINLOCK(ipd_lock);
@@ -343,12 +342,8 @@ int notrace s390_do_machine_check(struct pt_regs *regs)
 	unsigned long long tmp;
 	union mci mci;
 	unsigned long mcck_dam_code;
-	int mcck_pending = 0;
 
 	nmi_enter();
-
-	if (user_mode(regs))
-		update_timer_mcck();
 	inc_irq_stat(NMI_NMI);
 	mci.val = S390_lowcore.mcck_interruption_code;
 	mcck = this_cpu_ptr(&cpu_mcck);
@@ -405,7 +400,7 @@ int notrace s390_do_machine_check(struct pt_regs *regs)
 		 */
 		mcck->kill_task = 1;
 		mcck->mcck_code = mci.val;
-		mcck_pending = 1;
+		set_cpu_flag(CIF_MCCK_PENDING);
 	}
 
 	/*
@@ -425,7 +420,8 @@ int notrace s390_do_machine_check(struct pt_regs *regs)
 			mcck->stp_queue |= stp_sync_check();
 		if (S390_lowcore.external_damage_code & (1U << ED_STP_ISLAND))
 			mcck->stp_queue |= stp_island_check();
-		mcck_pending = 1;
+		if (mcck->stp_queue)
+			set_cpu_flag(CIF_MCCK_PENDING);
 	}
 
 	/*
@@ -446,12 +442,12 @@ int notrace s390_do_machine_check(struct pt_regs *regs)
 	if (mci.cp) {
 		/* Channel report word pending */
 		mcck->channel_report = 1;
-		mcck_pending = 1;
+		set_cpu_flag(CIF_MCCK_PENDING);
 	}
 	if (mci.w) {
 		/* Warning pending */
 		mcck->warning = 1;
-		mcck_pending = 1;
+		set_cpu_flag(CIF_MCCK_PENDING);
 	}
 
 	/*
@@ -466,17 +462,7 @@ int notrace s390_do_machine_check(struct pt_regs *regs)
 		*((long *)(regs->gprs[15] + __SF_SIE_REASON)) = -EINTR;
 	}
 	clear_cpu_flag(CIF_MCCK_GUEST);
-
-	if (user_mode(regs) && mcck_pending) {
-		nmi_exit();
-		return 1;
-	}
-
-	if (mcck_pending)
-		schedule_mcck_handler();
-
 	nmi_exit();
-	return 0;
 }
 NOKPROBE_SYMBOL(s390_do_machine_check);
 

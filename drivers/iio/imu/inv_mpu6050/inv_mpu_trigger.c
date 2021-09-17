@@ -3,13 +3,11 @@
 * Copyright (C) 2012 Invensense, Inc.
 */
 
-#include <linux/pm_runtime.h>
 #include "inv_mpu_iio.h"
 
-static unsigned int inv_scan_query_mpu6050(struct iio_dev *indio_dev)
+static void inv_scan_query_mpu6050(struct iio_dev *indio_dev)
 {
 	struct inv_mpu6050_state  *st = iio_priv(indio_dev);
-	unsigned int mask;
 
 	st->chip_config.gyro_fifo_enable =
 		test_bit(INV_MPU6050_SCAN_GYRO_X,
@@ -29,28 +27,17 @@ static unsigned int inv_scan_query_mpu6050(struct iio_dev *indio_dev)
 
 	st->chip_config.temp_fifo_enable =
 		test_bit(INV_MPU6050_SCAN_TEMP, indio_dev->active_scan_mask);
-
-	mask = 0;
-	if (st->chip_config.gyro_fifo_enable)
-		mask |= INV_MPU6050_SENSOR_GYRO;
-	if (st->chip_config.accl_fifo_enable)
-		mask |= INV_MPU6050_SENSOR_ACCL;
-	if (st->chip_config.temp_fifo_enable)
-		mask |= INV_MPU6050_SENSOR_TEMP;
-
-	return mask;
 }
 
-static unsigned int inv_scan_query_mpu9x50(struct iio_dev *indio_dev)
+static void inv_scan_query_mpu9x50(struct iio_dev *indio_dev)
 {
 	struct inv_mpu6050_state *st = iio_priv(indio_dev);
-	unsigned int mask;
 
-	mask = inv_scan_query_mpu6050(indio_dev);
+	inv_scan_query_mpu6050(indio_dev);
 
 	/* no magnetometer if i2c auxiliary bus is used */
 	if (st->magn_disabled)
-		return mask;
+		return;
 
 	st->chip_config.magn_fifo_enable =
 		test_bit(INV_MPU9X50_SCAN_MAGN_X,
@@ -59,13 +46,9 @@ static unsigned int inv_scan_query_mpu9x50(struct iio_dev *indio_dev)
 			 indio_dev->active_scan_mask) ||
 		test_bit(INV_MPU9X50_SCAN_MAGN_Z,
 			 indio_dev->active_scan_mask);
-	if (st->chip_config.magn_fifo_enable)
-		mask |= INV_MPU6050_SENSOR_MAGN;
-
-	return mask;
 }
 
-static unsigned int inv_scan_query(struct iio_dev *indio_dev)
+static void inv_scan_query(struct iio_dev *indio_dev)
 {
 	struct inv_mpu6050_state *st = iio_priv(indio_dev);
 
@@ -101,54 +84,6 @@ static unsigned int inv_compute_skip_samples(const struct inv_mpu6050_state *st)
 	return skip_samples;
 }
 
-int inv_mpu6050_prepare_fifo(struct inv_mpu6050_state *st, bool enable)
-{
-	uint8_t d;
-	int ret;
-
-	if (enable) {
-		st->it_timestamp = 0;
-		/* reset FIFO */
-		d = st->chip_config.user_ctrl | INV_MPU6050_BIT_FIFO_RST;
-		ret = regmap_write(st->map, st->reg->user_ctrl, d);
-		if (ret)
-			return ret;
-		/* enable sensor output to FIFO */
-		d = 0;
-		if (st->chip_config.gyro_fifo_enable)
-			d |= INV_MPU6050_BITS_GYRO_OUT;
-		if (st->chip_config.accl_fifo_enable)
-			d |= INV_MPU6050_BIT_ACCEL_OUT;
-		if (st->chip_config.temp_fifo_enable)
-			d |= INV_MPU6050_BIT_TEMP_OUT;
-		if (st->chip_config.magn_fifo_enable)
-			d |= INV_MPU6050_BIT_SLAVE_0;
-		ret = regmap_write(st->map, st->reg->fifo_en, d);
-		if (ret)
-			return ret;
-		/* enable FIFO reading */
-		d = st->chip_config.user_ctrl | INV_MPU6050_BIT_FIFO_EN;
-		ret = regmap_write(st->map, st->reg->user_ctrl, d);
-		if (ret)
-			return ret;
-		/* enable interrupt */
-		ret = regmap_write(st->map, st->reg->int_enable,
-				   INV_MPU6050_BIT_DATA_RDY_EN);
-	} else {
-		ret = regmap_write(st->map, st->reg->int_enable, 0);
-		if (ret)
-			return ret;
-		ret = regmap_write(st->map, st->reg->fifo_en, 0);
-		if (ret)
-			return ret;
-		/* restore user_ctrl for disabling FIFO reading */
-		ret = regmap_write(st->map, st->reg->user_ctrl,
-				   st->chip_config.user_ctrl);
-	}
-
-	return ret;
-}
-
 /**
  *  inv_mpu6050_set_enable() - enable chip functions.
  *  @indio_dev:	Device driver instance.
@@ -157,43 +92,84 @@ int inv_mpu6050_prepare_fifo(struct inv_mpu6050_state *st, bool enable)
 static int inv_mpu6050_set_enable(struct iio_dev *indio_dev, bool enable)
 {
 	struct inv_mpu6050_state *st = iio_priv(indio_dev);
-	struct device *pdev = regmap_get_device(st->map);
-	unsigned int scan;
+	uint8_t d;
 	int result;
 
 	if (enable) {
-		scan = inv_scan_query(indio_dev);
-		result = pm_runtime_get_sync(pdev);
-		if (result < 0) {
-			pm_runtime_put_noidle(pdev);
+		result = inv_mpu6050_set_power_itg(st, true);
+		if (result)
 			return result;
+		inv_scan_query(indio_dev);
+		if (st->chip_config.gyro_fifo_enable) {
+			result = inv_mpu6050_switch_engine(st, true,
+					INV_MPU6050_BIT_PWR_GYRO_STBY);
+			if (result)
+				goto error_power_off;
 		}
-		/*
-		 * In case autosuspend didn't trigger, turn off first not
-		 * required sensors.
-		 */
-		result = inv_mpu6050_switch_engine(st, false, ~scan);
-		if (result)
-			goto error_power_off;
-		result = inv_mpu6050_switch_engine(st, true, scan);
-		if (result)
-			goto error_power_off;
+		if (st->chip_config.accl_fifo_enable) {
+			result = inv_mpu6050_switch_engine(st, true,
+					INV_MPU6050_BIT_PWR_ACCL_STBY);
+			if (result)
+				goto error_gyro_off;
+		}
+		if (st->chip_config.magn_fifo_enable) {
+			d = st->chip_config.user_ctrl |
+					INV_MPU6050_BIT_I2C_MST_EN;
+			result = regmap_write(st->map, st->reg->user_ctrl, d);
+			if (result)
+				goto error_accl_off;
+			st->chip_config.user_ctrl = d;
+		}
 		st->skip_samples = inv_compute_skip_samples(st);
-		result = inv_mpu6050_prepare_fifo(st, true);
+		result = inv_reset_fifo(indio_dev);
 		if (result)
-			goto error_power_off;
+			goto error_magn_off;
 	} else {
-		result = inv_mpu6050_prepare_fifo(st, false);
+		result = regmap_write(st->map, st->reg->fifo_en, 0);
+		if (result)
+			goto error_magn_off;
+
+		result = regmap_write(st->map, st->reg->int_enable, 0);
+		if (result)
+			goto error_magn_off;
+
+		d = st->chip_config.user_ctrl & ~INV_MPU6050_BIT_I2C_MST_EN;
+		result = regmap_write(st->map, st->reg->user_ctrl, d);
+		if (result)
+			goto error_magn_off;
+		st->chip_config.user_ctrl = d;
+
+		result = inv_mpu6050_switch_engine(st, false,
+					INV_MPU6050_BIT_PWR_ACCL_STBY);
+		if (result)
+			goto error_accl_off;
+
+		result = inv_mpu6050_switch_engine(st, false,
+					INV_MPU6050_BIT_PWR_GYRO_STBY);
+		if (result)
+			goto error_gyro_off;
+
+		result = inv_mpu6050_set_power_itg(st, false);
 		if (result)
 			goto error_power_off;
-		pm_runtime_mark_last_busy(pdev);
-		pm_runtime_put_autosuspend(pdev);
 	}
 
 	return 0;
 
+error_magn_off:
+	/* always restore user_ctrl to disable fifo properly */
+	st->chip_config.user_ctrl &= ~INV_MPU6050_BIT_I2C_MST_EN;
+	regmap_write(st->map, st->reg->user_ctrl, st->chip_config.user_ctrl);
+error_accl_off:
+	if (st->chip_config.accl_fifo_enable)
+		inv_mpu6050_switch_engine(st, false,
+					  INV_MPU6050_BIT_PWR_ACCL_STBY);
+error_gyro_off:
+	if (st->chip_config.gyro_fifo_enable)
+		inv_mpu6050_switch_engine(st, false,
+					  INV_MPU6050_BIT_PWR_GYRO_STBY);
 error_power_off:
-	pm_runtime_put_autosuspend(pdev);
+	inv_mpu6050_set_power_itg(st, false);
 	return result;
 }
 

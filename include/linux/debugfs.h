@@ -35,12 +35,6 @@ struct debugfs_regset32 {
 	const struct debugfs_reg32 *regs;
 	int nregs;
 	void __iomem *base;
-	struct device *dev;	/* Optional device for Runtime PM */
-};
-
-struct debugfs_u32_array {
-	u32 *array;
-	u32 n_elements;
 };
 
 extern struct dentry *arch_debugfs_dir;
@@ -73,10 +67,10 @@ struct dentry *debugfs_create_file_unsafe(const char *name, umode_t mode,
 				   struct dentry *parent, void *data,
 				   const struct file_operations *fops);
 
-void debugfs_create_file_size(const char *name, umode_t mode,
-			      struct dentry *parent, void *data,
-			      const struct file_operations *fops,
-			      loff_t file_size);
+struct dentry *debugfs_create_file_size(const char *name, umode_t mode,
+					struct dentry *parent, void *data,
+					const struct file_operations *fops,
+					loff_t file_size);
 
 struct dentry *debugfs_create_dir(const char *name, struct dentry *parent);
 
@@ -108,8 +102,8 @@ void debugfs_create_u8(const char *name, umode_t mode, struct dentry *parent,
 		       u8 *value);
 void debugfs_create_u16(const char *name, umode_t mode, struct dentry *parent,
 			u16 *value);
-void debugfs_create_u32(const char *name, umode_t mode, struct dentry *parent,
-			u32 *value);
+struct dentry *debugfs_create_u32(const char *name, umode_t mode,
+				  struct dentry *parent, u32 *value);
 void debugfs_create_u64(const char *name, umode_t mode, struct dentry *parent,
 			u64 *value);
 struct dentry *debugfs_create_ulong(const char *name, umode_t mode,
@@ -141,12 +135,12 @@ void debugfs_print_regs32(struct seq_file *s, const struct debugfs_reg32 *regs,
 			  int nregs, void __iomem *base, char *prefix);
 
 void debugfs_create_u32_array(const char *name, umode_t mode,
-			      struct dentry *parent,
-			      struct debugfs_u32_array *array);
+			      struct dentry *parent, u32 *array, u32 elements);
 
-void debugfs_create_devm_seqfile(struct device *dev, const char *name,
-				 struct dentry *parent,
-				 int (*read_fn)(struct seq_file *s, void *data));
+struct dentry *debugfs_create_devm_seqfile(struct device *dev, const char *name,
+					   struct dentry *parent,
+					   int (*read_fn)(struct seq_file *s,
+							  void *data));
 
 bool debugfs_initialized(void);
 
@@ -187,11 +181,13 @@ static inline struct dentry *debugfs_create_file_unsafe(const char *name,
 	return ERR_PTR(-ENODEV);
 }
 
-static inline void debugfs_create_file_size(const char *name, umode_t mode,
-					    struct dentry *parent, void *data,
-					    const struct file_operations *fops,
-					    loff_t file_size)
-{ }
+static inline struct dentry *debugfs_create_file_size(const char *name, umode_t mode,
+					struct dentry *parent, void *data,
+					const struct file_operations *fops,
+					loff_t file_size)
+{
+	return ERR_PTR(-ENODEV);
+}
 
 static inline struct dentry *debugfs_create_dir(const char *name,
 						struct dentry *parent)
@@ -255,8 +251,12 @@ static inline void debugfs_create_u8(const char *name, umode_t mode,
 static inline void debugfs_create_u16(const char *name, umode_t mode,
 				      struct dentry *parent, u16 *value) { }
 
-static inline void debugfs_create_u32(const char *name, umode_t mode,
-				      struct dentry *parent, u32 *value) { }
+static inline struct dentry *debugfs_create_u32(const char *name, umode_t mode,
+						struct dentry *parent,
+						u32 *value)
+{
+	return ERR_PTR(-ENODEV);
+}
 
 static inline void debugfs_create_u64(const char *name, umode_t mode,
 				      struct dentry *parent, u64 *value) { }
@@ -321,17 +321,18 @@ static inline bool debugfs_initialized(void)
 }
 
 static inline void debugfs_create_u32_array(const char *name, umode_t mode,
-					    struct dentry *parent,
-					    struct debugfs_u32_array *array)
+					    struct dentry *parent, u32 *array,
+					    u32 elements)
 {
 }
 
-static inline void debugfs_create_devm_seqfile(struct device *dev,
-					       const char *name,
-					       struct dentry *parent,
-					       int (*read_fn)(struct seq_file *s,
-							      void *data))
+static inline struct dentry *debugfs_create_devm_seqfile(struct device *dev,
+							 const char *name,
+							 struct dentry *parent,
+					   int (*read_fn)(struct seq_file *s,
+							  void *data))
 {
+	return ERR_PTR(-ENODEV);
 }
 
 static inline ssize_t debugfs_read_file_bool(struct file *file,

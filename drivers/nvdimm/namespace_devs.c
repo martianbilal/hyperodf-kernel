@@ -10,7 +10,6 @@
 #include <linux/nd.h>
 #include "nd-core.h"
 #include "pmem.h"
-#include "pfn.h"
 #include "nd.h"
 
 static void namespace_io_release(struct device *dev)
@@ -542,11 +541,6 @@ static void space_valid(struct nd_region *nd_region, struct nvdimm_drvdata *ndd,
 {
 	bool is_reserve = strcmp(label_id->id, "pmem-reserve") == 0;
 	bool is_pmem = strncmp(label_id->id, "pmem", 4) == 0;
-	unsigned long align;
-
-	align = nd_region->align / nd_region->ndr_mappings;
-	valid->start = ALIGN(valid->start, align);
-	valid->end = ALIGN_DOWN(valid->end + 1, align) - 1;
 
 	if (valid->start >= valid->end)
 		goto invalid;
@@ -986,10 +980,10 @@ static ssize_t __size_store(struct device *dev, unsigned long long val)
 		return -ENXIO;
 	}
 
-	div_u64_rem(val, nd_region->align, &remainder);
+	div_u64_rem(val, PAGE_SIZE * nd_region->ndr_mappings, &remainder);
 	if (remainder) {
 		dev_dbg(dev, "%llu is not %ldK aligned\n", val,
-				nd_region->align / SZ_1K);
+				(PAGE_SIZE * nd_region->ndr_mappings) / SZ_1K);
 		return -EINVAL;
 	}
 
@@ -1309,7 +1303,7 @@ static ssize_t resource_show(struct device *dev,
 		return -ENXIO;
 	return sprintf(buf, "%#llx\n", (unsigned long long) res->start);
 }
-static DEVICE_ATTR_ADMIN_RO(resource);
+static DEVICE_ATTR(resource, 0400, resource_show, NULL);
 
 static const unsigned long blk_lbasize_supported[] = { 512, 520, 528,
 	4096, 4104, 4160, 4224, 0 };
@@ -1635,11 +1629,11 @@ static umode_t namespace_visible(struct kobject *kobj,
 		return a->mode;
 	}
 
-	/* base is_namespace_io() attributes */
-	if (a == &dev_attr_nstype.attr || a == &dev_attr_size.attr ||
-	    a == &dev_attr_holder.attr || a == &dev_attr_holder_class.attr ||
-	    a == &dev_attr_force_raw.attr || a == &dev_attr_mode.attr ||
-	    a == &dev_attr_resource.attr)
+	if (a == &dev_attr_nstype.attr || a == &dev_attr_size.attr
+			|| a == &dev_attr_holder.attr
+			|| a == &dev_attr_holder_class.attr
+			|| a == &dev_attr_force_raw.attr
+			|| a == &dev_attr_mode.attr)
 		return a->mode;
 
 	return 0;
@@ -1743,22 +1737,6 @@ struct nd_namespace_common *nvdimm_namespace_common_probe(struct device *dev)
 		dev_dbg(&ndns->dev, "%pa, too small must be at least %#x\n",
 				&size, ND_MIN_NAMESPACE_SIZE);
 		return ERR_PTR(-ENODEV);
-	}
-
-	/*
-	 * Note, alignment validation for fsdax and devdax mode
-	 * namespaces happens in nd_pfn_validate() where infoblock
-	 * padding parameters can be applied.
-	 */
-	if (pmem_should_map_pages(dev)) {
-		struct nd_namespace_io *nsio = to_nd_namespace_io(&ndns->dev);
-		struct resource *res = &nsio->res;
-
-		if (!IS_ALIGNED(res->start | (res->end + 1),
-					memremap_compat_align())) {
-			dev_err(&ndns->dev, "%pr misaligned, unable to map\n", res);
-			return ERR_PTR(-EOPNOTSUPP);
-		}
 	}
 
 	if (is_namespace_pmem(&ndns->dev)) {
@@ -2543,7 +2521,7 @@ static int init_active_labels(struct nd_region *nd_region)
 		if (!ndd) {
 			if (test_bit(NDD_LOCKED, &nvdimm->flags))
 				/* fail, label data may be unreadable */;
-			else if (test_bit(NDD_LABELING, &nvdimm->flags))
+			else if (test_bit(NDD_ALIASING, &nvdimm->flags))
 				/* fail, labels needed to disambiguate dpa */;
 			else
 				return 0;

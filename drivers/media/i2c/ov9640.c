@@ -17,7 +17,6 @@
  * Copyright (C) 2008, Guennadi Liakhovetski <kernel@pengutronix.de>
  */
 
-#include <linux/clk.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/i2c.h>
@@ -27,6 +26,7 @@
 #include <linux/videodev2.h>
 
 #include <media/v4l2-async.h>
+#include <media/v4l2-clk.h>
 #include <media/v4l2-common.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
@@ -333,13 +333,13 @@ static int ov9640_s_power(struct v4l2_subdev *sd, int on)
 	if (on) {
 		gpiod_set_value(priv->gpio_power, 1);
 		usleep_range(1000, 2000);
-		ret = clk_prepare_enable(priv->clk);
+		ret = v4l2_clk_enable(priv->clk);
 		usleep_range(1000, 2000);
 		gpiod_set_value(priv->gpio_reset, 0);
 	} else {
 		gpiod_set_value(priv->gpio_reset, 1);
 		usleep_range(1000, 2000);
-		clk_disable_unprepare(priv->clk);
+		v4l2_clk_disable(priv->clk);
 		usleep_range(1000, 2000);
 		gpiod_set_value(priv->gpio_power, 0);
 	}
@@ -538,7 +538,7 @@ static int ov9640_set_fmt(struct v4l2_subdev *sd,
 		break;
 	default:
 		mf->code = MEDIA_BUS_FMT_UYVY8_2X8;
-		fallthrough;
+		/* fall through */
 	case MEDIA_BUS_FMT_UYVY8_2X8:
 		mf->colorspace = V4L2_COLORSPACE_JPEG;
 		break;
@@ -648,9 +648,8 @@ static const struct v4l2_subdev_core_ops ov9640_core_ops = {
 };
 
 /* Request bus settings on camera side */
-static int ov9640_get_mbus_config(struct v4l2_subdev *sd,
-				  unsigned int pad,
-				  struct v4l2_mbus_config *cfg)
+static int ov9640_g_mbus_config(struct v4l2_subdev *sd,
+				struct v4l2_mbus_config *cfg)
 {
 	cfg->flags = V4L2_MBUS_PCLK_SAMPLE_RISING | V4L2_MBUS_MASTER |
 		V4L2_MBUS_VSYNC_ACTIVE_HIGH | V4L2_MBUS_HSYNC_ACTIVE_HIGH |
@@ -662,13 +661,13 @@ static int ov9640_get_mbus_config(struct v4l2_subdev *sd,
 
 static const struct v4l2_subdev_video_ops ov9640_video_ops = {
 	.s_stream	= ov9640_s_stream,
+	.g_mbus_config	= ov9640_g_mbus_config,
 };
 
 static const struct v4l2_subdev_pad_ops ov9640_pad_ops = {
 	.enum_mbus_code = ov9640_enum_mbus_code,
 	.get_selection	= ov9640_get_selection,
 	.set_fmt	= ov9640_set_fmt,
-	.get_mbus_config = ov9640_get_mbus_config,
 };
 
 static const struct v4l2_subdev_ops ov9640_subdev_ops = {
@@ -719,7 +718,7 @@ static int ov9640_probe(struct i2c_client *client,
 
 	priv->subdev.ctrl_handler = &priv->hdl;
 
-	priv->clk = devm_clk_get(&client->dev, "mclk");
+	priv->clk = v4l2_clk_get(&client->dev, "mclk");
 	if (IS_ERR(priv->clk)) {
 		ret = PTR_ERR(priv->clk);
 		goto ectrlinit;
@@ -727,15 +726,17 @@ static int ov9640_probe(struct i2c_client *client,
 
 	ret = ov9640_video_probe(client);
 	if (ret)
-		goto ectrlinit;
+		goto eprobe;
 
 	priv->subdev.dev = &client->dev;
 	ret = v4l2_async_register_subdev(&priv->subdev);
 	if (ret)
-		goto ectrlinit;
+		goto eprobe;
 
 	return 0;
 
+eprobe:
+	v4l2_clk_put(priv->clk);
 ectrlinit:
 	v4l2_ctrl_handler_free(&priv->hdl);
 
@@ -747,6 +748,7 @@ static int ov9640_remove(struct i2c_client *client)
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov9640_priv *priv = to_ov9640_sensor(sd);
 
+	v4l2_clk_put(priv->clk);
 	v4l2_async_unregister_subdev(&priv->subdev);
 	v4l2_ctrl_handler_free(&priv->hdl);
 
@@ -770,6 +772,6 @@ static struct i2c_driver ov9640_i2c_driver = {
 
 module_i2c_driver(ov9640_i2c_driver);
 
-MODULE_DESCRIPTION("OmniVision OV96xx CMOS Image Sensor driver");
+MODULE_DESCRIPTION("SoC Camera driver for OmniVision OV96xx");
 MODULE_AUTHOR("Marek Vasut <marek.vasut@gmail.com>");
 MODULE_LICENSE("GPL v2");

@@ -41,6 +41,7 @@ enum mod_hdcp_trans_input_result {
 struct mod_hdcp_transition_input_hdcp1 {
 	uint8_t bksv_read;
 	uint8_t bksv_validation;
+	uint8_t add_topology;
 	uint8_t create_session;
 	uint8_t an_write;
 	uint8_t aksv_write;
@@ -70,6 +71,7 @@ struct mod_hdcp_transition_input_hdcp1 {
 struct mod_hdcp_transition_input_hdcp2 {
 	uint8_t hdcp2version_read;
 	uint8_t hdcp2_capable_check;
+	uint8_t add_topology;
 	uint8_t create_session;
 	uint8_t ake_init_prepare;
 	uint8_t ake_init_write;
@@ -165,9 +167,9 @@ struct mod_hdcp_auth_counters {
 /* contains values per connection */
 struct mod_hdcp_connection {
 	struct mod_hdcp_link link;
+	struct mod_hdcp_display displays[MAX_NUM_OF_DISPLAYS];
 	uint8_t is_repeater;
 	uint8_t is_km_stored;
-	uint8_t is_hdcp1_revoked;
 	uint8_t is_hdcp2_revoked;
 	struct mod_hdcp_trace trace;
 	uint8_t hdcp1_retry_count;
@@ -200,8 +202,6 @@ struct mod_hdcp {
 	struct mod_hdcp_config config;
 	/* per connection */
 	struct mod_hdcp_connection connection;
-	/* per displays */
-	struct mod_hdcp_display displays[MAX_NUM_OF_DISPLAYS];
 	/* per authentication attempt */
 	struct mod_hdcp_authentication auth;
 	/* per state in an authentication */
@@ -327,10 +327,10 @@ void mod_hdcp_dump_binary_message(uint8_t *msg, uint32_t msg_size,
 /* TODO: add adjustment log */
 
 /* psp functions */
-enum mod_hdcp_status mod_hdcp_add_display_to_topology(
-		struct mod_hdcp *hdcp, struct mod_hdcp_display *display);
-enum mod_hdcp_status mod_hdcp_remove_display_from_topology(
-		struct mod_hdcp *hdcp, uint8_t index);
+enum mod_hdcp_status mod_hdcp_add_display_topology(
+		struct mod_hdcp *hdcp);
+enum mod_hdcp_status mod_hdcp_remove_display_topology(
+		struct mod_hdcp *hdcp);
 enum mod_hdcp_status mod_hdcp_hdcp1_create_session(struct mod_hdcp *hdcp);
 enum mod_hdcp_status mod_hdcp_hdcp1_destroy_session(struct mod_hdcp *hdcp);
 enum mod_hdcp_status mod_hdcp_hdcp1_validate_rx(struct mod_hdcp *hdcp);
@@ -357,6 +357,8 @@ enum mod_hdcp_status mod_hdcp_hdcp2_prepare_stream_management(
 		struct mod_hdcp *hdcp);
 enum mod_hdcp_status mod_hdcp_hdcp2_validate_stream_ready(
 		struct mod_hdcp *hdcp);
+enum mod_hdcp_status mod_hdcp_hdcp2_get_link_encryption_status(struct mod_hdcp *hdcp,
+							       enum mod_hdcp_encryption_status *encryption_status);
 
 /* ddc functions */
 enum mod_hdcp_status mod_hdcp_read_bksv(struct mod_hdcp *hdcp);
@@ -386,18 +388,17 @@ enum mod_hdcp_status mod_hdcp_write_eks(struct mod_hdcp *hdcp);
 enum mod_hdcp_status mod_hdcp_write_repeater_auth_ack(struct mod_hdcp *hdcp);
 enum mod_hdcp_status mod_hdcp_write_stream_manage(struct mod_hdcp *hdcp);
 enum mod_hdcp_status mod_hdcp_write_content_type(struct mod_hdcp *hdcp);
-enum mod_hdcp_status mod_hdcp_clear_cp_irq_status(struct mod_hdcp *hdcp);
 
 /* hdcp version helpers */
 static inline uint8_t is_dp_hdcp(struct mod_hdcp *hdcp)
 {
-	return (hdcp->connection.link.mode == MOD_HDCP_MODE_DP);
+	return (hdcp->connection.link.mode == MOD_HDCP_MODE_DP ||
+			hdcp->connection.link.mode == MOD_HDCP_MODE_DP_MST);
 }
 
 static inline uint8_t is_dp_mst_hdcp(struct mod_hdcp *hdcp)
 {
-	return (hdcp->connection.link.mode == MOD_HDCP_MODE_DP &&
-			hdcp->connection.link.dp.mst_enabled);
+	return (hdcp->connection.link.mode == MOD_HDCP_MODE_DP_MST);
 }
 
 static inline uint8_t is_hdmi_dvi_sl_hdcp(struct mod_hdcp *hdcp)
@@ -502,6 +503,11 @@ static inline uint8_t is_display_active(struct mod_hdcp_display *display)
 	return display->state >= MOD_HDCP_DISPLAY_ACTIVE;
 }
 
+static inline uint8_t is_display_added(struct mod_hdcp_display *display)
+{
+	return display->state >= MOD_HDCP_DISPLAY_ACTIVE_AND_ADDED;
+}
+
 static inline uint8_t is_display_encryption_enabled(struct mod_hdcp_display *display)
 {
 	return display->state >= MOD_HDCP_DISPLAY_ENCRYPTION_ENABLED;
@@ -509,24 +515,35 @@ static inline uint8_t is_display_encryption_enabled(struct mod_hdcp_display *dis
 
 static inline uint8_t get_active_display_count(struct mod_hdcp *hdcp)
 {
-	uint8_t active_count = 0;
+	uint8_t added_count = 0;
 	uint8_t i;
 
 	for (i = 0; i < MAX_NUM_OF_DISPLAYS; i++)
-		if (is_display_active(&hdcp->displays[i]))
-			active_count++;
-	return active_count;
+		if (is_display_active(&hdcp->connection.displays[i]))
+			added_count++;
+	return added_count;
 }
 
-static inline struct mod_hdcp_display *get_first_active_display(
+static inline uint8_t get_added_display_count(struct mod_hdcp *hdcp)
+{
+	uint8_t added_count = 0;
+	uint8_t i;
+
+	for (i = 0; i < MAX_NUM_OF_DISPLAYS; i++)
+		if (is_display_added(&hdcp->connection.displays[i]))
+			added_count++;
+	return added_count;
+}
+
+static inline struct mod_hdcp_display *get_first_added_display(
 		struct mod_hdcp *hdcp)
 {
 	uint8_t i;
 	struct mod_hdcp_display *display = NULL;
 
 	for (i = 0; i < MAX_NUM_OF_DISPLAYS; i++)
-		if (is_display_active(&hdcp->displays[i])) {
-			display = &hdcp->displays[i];
+		if (is_display_added(&hdcp->connection.displays[i])) {
+			display = &hdcp->connection.displays[i];
 			break;
 		}
 	return display;
@@ -539,9 +556,9 @@ static inline struct mod_hdcp_display *get_active_display_at_index(
 	struct mod_hdcp_display *display = NULL;
 
 	for (i = 0; i < MAX_NUM_OF_DISPLAYS; i++)
-		if (hdcp->displays[i].index == index &&
-				is_display_active(&hdcp->displays[i])) {
-			display = &hdcp->displays[i];
+		if (hdcp->connection.displays[i].index == index &&
+				is_display_active(&hdcp->connection.displays[i])) {
+			display = &hdcp->connection.displays[i];
 			break;
 		}
 	return display;
@@ -554,8 +571,8 @@ static inline struct mod_hdcp_display *get_empty_display_container(
 	struct mod_hdcp_display *display = NULL;
 
 	for (i = 0; i < MAX_NUM_OF_DISPLAYS; i++)
-		if (!is_display_active(&hdcp->displays[i])) {
-			display = &hdcp->displays[i];
+		if (!is_display_active(&hdcp->connection.displays[i])) {
+			display = &hdcp->connection.displays[i];
 			break;
 		}
 	return display;

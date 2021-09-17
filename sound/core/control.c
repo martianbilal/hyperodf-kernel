@@ -150,14 +150,14 @@ void snd_ctl_notify(struct snd_card *card, unsigned int mask,
 		return;
 	if (card->shutdown)
 		return;
-	read_lock_irqsave(&card->ctl_files_rwlock, flags);
+	read_lock(&card->ctl_files_rwlock);
 #if IS_ENABLED(CONFIG_SND_MIXER_OSS)
 	card->mixer_oss_change_count++;
 #endif
 	list_for_each_entry(ctl, &card->ctl_files, list) {
 		if (!ctl->subscribed)
 			continue;
-		spin_lock(&ctl->read_lock);
+		spin_lock_irqsave(&ctl->read_lock, flags);
 		list_for_each_entry(ev, &ctl->events, list) {
 			if (ev->id.numid == id->numid) {
 				ev->mask |= mask;
@@ -174,10 +174,10 @@ void snd_ctl_notify(struct snd_card *card, unsigned int mask,
 		}
 	_found:
 		wake_up(&ctl->change_sleep);
-		spin_unlock(&ctl->read_lock);
+		spin_unlock_irqrestore(&ctl->read_lock, flags);
 		kill_fasync(&ctl->fasync, SIGIO, POLL_IN);
 	}
-	read_unlock_irqrestore(&card->ctl_files_rwlock, flags);
+	read_unlock(&card->ctl_files_rwlock);
 }
 EXPORT_SYMBOL(snd_ctl_notify);
 
@@ -261,7 +261,7 @@ struct snd_kcontrol *snd_ctl_new1(const struct snd_kcontrol_new *ncontrol,
 	kctl->id.device = ncontrol->device;
 	kctl->id.subdevice = ncontrol->subdevice;
 	if (ncontrol->name) {
-		strscpy(kctl->id.name, ncontrol->name, sizeof(kctl->id.name));
+		strlcpy(kctl->id.name, ncontrol->name, sizeof(kctl->id.name));
 		if (strcmp(ncontrol->name, kctl->id.name) != 0)
 			pr_warn("ALSA: Control name '%s' truncated to '%s'\n",
 				ncontrol->name, kctl->id.name);
@@ -701,12 +701,12 @@ static int snd_ctl_card_info(struct snd_card *card, struct snd_ctl_file * ctl,
 		return -ENOMEM;
 	down_read(&snd_ioctl_rwsem);
 	info->card = card->number;
-	strscpy(info->id, card->id, sizeof(info->id));
-	strscpy(info->driver, card->driver, sizeof(info->driver));
-	strscpy(info->name, card->shortname, sizeof(info->name));
-	strscpy(info->longname, card->longname, sizeof(info->longname));
-	strscpy(info->mixername, card->mixername, sizeof(info->mixername));
-	strscpy(info->components, card->components, sizeof(info->components));
+	strlcpy(info->id, card->id, sizeof(info->id));
+	strlcpy(info->driver, card->driver, sizeof(info->driver));
+	strlcpy(info->name, card->shortname, sizeof(info->name));
+	strlcpy(info->longname, card->longname, sizeof(info->longname));
+	strlcpy(info->mixername, card->mixername, sizeof(info->mixername));
+	strlcpy(info->components, card->components, sizeof(info->components));
 	up_read(&snd_ioctl_rwsem);
 	if (copy_to_user(arg, info, sizeof(struct snd_ctl_card_info))) {
 		kfree(info);
@@ -717,19 +717,22 @@ static int snd_ctl_card_info(struct snd_card *card, struct snd_ctl_file * ctl,
 }
 
 static int snd_ctl_elem_list(struct snd_card *card,
-			     struct snd_ctl_elem_list *list)
+			     struct snd_ctl_elem_list __user *_list)
 {
+	struct snd_ctl_elem_list list;
 	struct snd_kcontrol *kctl;
 	struct snd_ctl_elem_id id;
 	unsigned int offset, space, jidx;
 	int err = 0;
 
-	offset = list->offset;
-	space = list->space;
+	if (copy_from_user(&list, _list, sizeof(list)))
+		return -EFAULT;
+	offset = list.offset;
+	space = list.space;
 
 	down_read(&card->controls_rwsem);
-	list->count = card->controls_count;
-	list->used = 0;
+	list.count = card->controls_count;
+	list.used = 0;
 	if (space > 0) {
 		list_for_each_entry(kctl, &card->controls, list) {
 			if (offset >= kctl->count) {
@@ -738,12 +741,12 @@ static int snd_ctl_elem_list(struct snd_card *card,
 			}
 			for (jidx = offset; jidx < kctl->count; jidx++) {
 				snd_ctl_build_ioff(&id, kctl, jidx);
-				if (copy_to_user(list->pids + list->used, &id,
+				if (copy_to_user(list.pids + list.used, &id,
 						 sizeof(id))) {
 					err = -EFAULT;
 					goto out;
 				}
-				list->used++;
+				list.used++;
 				if (!--space)
 					goto out;
 			}
@@ -752,24 +755,9 @@ static int snd_ctl_elem_list(struct snd_card *card,
 	}
  out:
 	up_read(&card->controls_rwsem);
+	if (!err && copy_to_user(_list, &list, sizeof(list)))
+		err = -EFAULT;
 	return err;
-}
-
-static int snd_ctl_elem_list_user(struct snd_card *card,
-				  struct snd_ctl_elem_list __user *_list)
-{
-	struct snd_ctl_elem_list list;
-	int err;
-
-	if (copy_from_user(&list, _list, sizeof(list)))
-		return -EFAULT;
-	err = snd_ctl_elem_list(card, &list);
-	if (err)
-		return err;
-	if (copy_to_user(_list, &list, sizeof(list)))
-		return -EFAULT;
-
-	return 0;
 }
 
 /* Check whether the given kctl info is valid */
@@ -836,7 +824,7 @@ static void fill_remaining_elem_value(struct snd_ctl_elem_value *control,
 {
 	size_t offset = value_sizes[info->type] * info->count;
 
-	offset = DIV_ROUND_UP(offset, sizeof(u32));
+	offset = (offset + sizeof(u32) - 1) / sizeof(u32);
 	memset32((u32 *)control->value.bytes.data + offset, pattern,
 		 sizeof(control->value) / sizeof(u32) - offset);
 }
@@ -928,7 +916,7 @@ static int sanity_check_elem_value(struct snd_card *card,
 
 	/* check whether the remaining area kept untouched */
 	offset = value_sizes[info->type] * info->count;
-	offset = DIV_ROUND_UP(offset, sizeof(u32));
+	offset = (offset + sizeof(u32) - 1) / sizeof(u32);
 	p = (u32 *)control->value.bytes.data + offset;
 	for (; offset < sizeof(control->value) / sizeof(u32); offset++, p++) {
 		if (*p != pattern) {
@@ -1539,7 +1527,7 @@ static int snd_ctl_elem_add(struct snd_ctl_file *file,
 
  unlock:
 	up_write(&card->controls_rwsem);
-	return err;
+	return 0;
 }
 
 static int snd_ctl_elem_add_user(struct snd_ctl_file *file,
@@ -1715,7 +1703,7 @@ static long snd_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 	case SNDRV_CTL_IOCTL_CARD_INFO:
 		return snd_ctl_card_info(card, ctl, cmd, argp);
 	case SNDRV_CTL_IOCTL_ELEM_LIST:
-		return snd_ctl_elem_list_user(card, argp);
+		return snd_ctl_elem_list(card, argp);
 	case SNDRV_CTL_IOCTL_ELEM_INFO:
 		return snd_ctl_elem_info_user(ctl, argp);
 	case SNDRV_CTL_IOCTL_ELEM_READ:
@@ -1925,8 +1913,8 @@ EXPORT_SYMBOL(snd_ctl_unregister_ioctl);
 
 #ifdef CONFIG_COMPAT
 /**
- * snd_ctl_unregister_ioctl_compat - de-register the device-specific compat
- * 32bit control-ioctls
+ * snd_ctl_unregister_ioctl - de-register the device-specific compat 32bit
+ * control-ioctls
  * @fcn: ioctl callback function to unregister
  */
 int snd_ctl_unregister_ioctl_compat(snd_kctl_ioctl_func_t fcn)
@@ -1951,9 +1939,8 @@ int snd_ctl_get_preferred_subdevice(struct snd_card *card, int type)
 {
 	struct snd_ctl_file *kctl;
 	int subdevice = -1;
-	unsigned long flags;
 
-	read_lock_irqsave(&card->ctl_files_rwlock, flags);
+	read_lock(&card->ctl_files_rwlock);
 	list_for_each_entry(kctl, &card->ctl_files, list) {
 		if (kctl->pid == task_pid(current)) {
 			subdevice = kctl->preferred_subdevice[type];
@@ -1961,7 +1948,7 @@ int snd_ctl_get_preferred_subdevice(struct snd_card *card, int type)
 				break;
 		}
 	}
-	read_unlock_irqrestore(&card->ctl_files_rwlock, flags);
+	read_unlock(&card->ctl_files_rwlock);
 	return subdevice;
 }
 EXPORT_SYMBOL_GPL(snd_ctl_get_preferred_subdevice);
@@ -2010,14 +1997,13 @@ static int snd_ctl_dev_disconnect(struct snd_device *device)
 {
 	struct snd_card *card = device->device_data;
 	struct snd_ctl_file *ctl;
-	unsigned long flags;
 
-	read_lock_irqsave(&card->ctl_files_rwlock, flags);
+	read_lock(&card->ctl_files_rwlock);
 	list_for_each_entry(ctl, &card->ctl_files, list) {
 		wake_up(&ctl->change_sleep);
 		kill_fasync(&ctl->fasync, SIGIO, POLL_ERR);
 	}
-	read_unlock_irqrestore(&card->ctl_files_rwlock, flags);
+	read_unlock(&card->ctl_files_rwlock);
 
 	return snd_unregister_device(&card->ctl_dev);
 }
@@ -2137,7 +2123,7 @@ int snd_ctl_enum_info(struct snd_ctl_elem_info *info, unsigned int channels,
 	WARN(strlen(names[info->value.enumerated.item]) >= sizeof(info->value.enumerated.name),
 	     "ALSA: too long item name '%s'\n",
 	     names[info->value.enumerated.item]);
-	strscpy(info->value.enumerated.name,
+	strlcpy(info->value.enumerated.name,
 		names[info->value.enumerated.item],
 		sizeof(info->value.enumerated.name));
 	return 0;

@@ -14,13 +14,13 @@
 #include <linux/sched.h>
 #include <linux/sched/hotplug.h>
 #include <linux/mm_types.h>
-#include <linux/pgtable.h>
 
 #include <asm/cacheflush.h>
 #include <asm/cpufeature.h>
 #include <asm/proc-fns.h>
 #include <asm-generic/mm_hooks.h>
 #include <asm/cputype.h>
+#include <asm/pgtable.h>
 #include <asm/sysreg.h>
 #include <asm/tlbflush.h>
 
@@ -36,17 +36,15 @@ static inline void contextidr_thread_switch(struct task_struct *next)
 }
 
 /*
- * Set TTBR0 to reserved_pg_dir. No translations will be possible via TTBR0.
+ * Set TTBR0 to empty_zero_page. No translations will be possible via TTBR0.
  */
 static inline void cpu_set_reserved_ttbr0(void)
 {
-	unsigned long ttbr = phys_to_ttbr(__pa_symbol(reserved_pg_dir));
+	unsigned long ttbr = phys_to_ttbr(__pa_symbol(empty_zero_page));
 
 	write_sysreg(ttbr, ttbr0_el1);
 	isb();
 }
-
-void cpu_do_switch_mm(phys_addr_t pgd_phys, struct mm_struct *mm);
 
 static inline void cpu_switch_mm(pgd_t *pgd, struct mm_struct *mm)
 {
@@ -63,16 +61,34 @@ static inline void cpu_switch_mm(pgd_t *pgd, struct mm_struct *mm)
 extern u64 idmap_t0sz;
 extern u64 idmap_ptrs_per_pgd;
 
+static inline bool __cpu_uses_extended_idmap(void)
+{
+	if (IS_ENABLED(CONFIG_ARM64_VA_BITS_52))
+		return false;
+
+	return unlikely(idmap_t0sz != TCR_T0SZ(VA_BITS));
+}
+
 /*
- * Ensure TCR.T0SZ is set to the provided value.
+ * True if the extended ID map requires an extra level of translation table
+ * to be configured.
+ */
+static inline bool __cpu_uses_extended_idmap_level(void)
+{
+	return ARM64_HW_PGTABLE_LEVELS(64 - idmap_t0sz) > CONFIG_PGTABLE_LEVELS;
+}
+
+/*
+ * Set TCR.T0SZ to its default value (based on VA_BITS)
  */
 static inline void __cpu_set_tcr_t0sz(unsigned long t0sz)
 {
-	unsigned long tcr = read_sysreg(tcr_el1);
+	unsigned long tcr;
 
-	if ((tcr & TCR_T0SZ_MASK) >> TCR_T0SZ_OFFSET == t0sz)
+	if (!__cpu_uses_extended_idmap())
 		return;
 
+	tcr = read_sysreg(tcr_el1);
 	tcr &= ~TCR_T0SZ_MASK;
 	tcr |= t0sz << TCR_T0SZ_OFFSET;
 	write_sysreg(tcr, tcr_el1);
@@ -156,16 +172,10 @@ static inline void cpu_replace_ttbr1(pgd_t *pgdp)
  * Setting a reserved TTBR0 or EPD0 would work, but it all gets ugly when you
  * take CPU migration into account.
  */
-void check_and_switch_context(struct mm_struct *mm);
+#define destroy_context(mm)		do { } while(0)
+void check_and_switch_context(struct mm_struct *mm, unsigned int cpu);
 
-#define init_new_context(tsk, mm) init_new_context(tsk, mm)
-static inline int
-init_new_context(struct task_struct *tsk, struct mm_struct *mm)
-{
-	atomic64_set(&mm->context.id, 0);
-	refcount_set(&mm->context.pinned, 0);
-	return 0;
-}
+#define init_new_context(tsk,mm)	({ atomic64_set(&(mm)->context.id, 0); 0; })
 
 #ifdef CONFIG_ARM64_SW_TTBR0_PAN
 static inline void update_saved_ttbr0(struct task_struct *tsk,
@@ -177,7 +187,7 @@ static inline void update_saved_ttbr0(struct task_struct *tsk,
 		return;
 
 	if (mm == &init_mm)
-		ttbr = __pa_symbol(reserved_pg_dir);
+		ttbr = __pa_symbol(empty_zero_page);
 	else
 		ttbr = virt_to_phys(mm->pgd) | ASID(mm) << 48;
 
@@ -190,7 +200,6 @@ static inline void update_saved_ttbr0(struct task_struct *tsk,
 }
 #endif
 
-#define enter_lazy_tlb enter_lazy_tlb
 static inline void
 enter_lazy_tlb(struct mm_struct *mm, struct task_struct *tsk)
 {
@@ -203,6 +212,8 @@ enter_lazy_tlb(struct mm_struct *mm, struct task_struct *tsk)
 
 static inline void __switch_mm(struct mm_struct *next)
 {
+	unsigned int cpu = smp_processor_id();
+
 	/*
 	 * init_mm.pgd does not contain any user mappings and it is always
 	 * active for kernel addresses in TTBR1. Just set the reserved TTBR0.
@@ -212,7 +223,7 @@ static inline void __switch_mm(struct mm_struct *next)
 		return;
 	}
 
-	check_and_switch_context(next);
+	check_and_switch_context(next, cpu);
 }
 
 static inline void
@@ -231,13 +242,11 @@ switch_mm(struct mm_struct *prev, struct mm_struct *next,
 	update_saved_ttbr0(tsk, next);
 }
 
+#define deactivate_mm(tsk,mm)	do { } while (0)
+#define activate_mm(prev,next)	switch_mm(prev, next, current)
+
 void verify_cpu_asid_bits(void);
 void post_ttbr_update_workaround(void);
-
-unsigned long arm64_mm_context_get(struct mm_struct *mm);
-void arm64_mm_context_put(struct mm_struct *mm);
-
-#include <asm-generic/mmu_context.h>
 
 #endif /* !__ASSEMBLY__ */
 

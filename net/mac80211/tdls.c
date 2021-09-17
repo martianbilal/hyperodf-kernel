@@ -226,11 +226,12 @@ static void ieee80211_tdls_add_link_ie(struct ieee80211_sub_if_data *sdata,
 static void
 ieee80211_tdls_add_aid(struct ieee80211_sub_if_data *sdata, struct sk_buff *skb)
 {
+	struct ieee80211_if_managed *ifmgd = &sdata->u.mgd;
 	u8 *pos = skb_put(skb, 4);
 
 	*pos++ = WLAN_EID_AID;
 	*pos++ = 2; /* len */
-	put_unaligned_le16(sdata->vif.bss_conf.aid, pos);
+	put_unaligned_le16(ifmgd->aid, pos);
 }
 
 /* translate numbering in the WMM parameter IE to the mac80211 notation */
@@ -239,7 +240,7 @@ static enum ieee80211_ac_numbers ieee80211_ac_from_wmm(int ac)
 	switch (ac) {
 	default:
 		WARN_ON_ONCE(1);
-		fallthrough;
+		/* fall through */
 	case 0:
 		return IEEE80211_AC_BE;
 	case 1:
@@ -952,7 +953,7 @@ ieee80211_tdls_prep_mgmt_packet(struct wiphy *wiphy, struct net_device *dev,
 			set_sta_flag(sta, WLAN_STA_TDLS_INITIATOR);
 			sta->sta.tdls_initiator = false;
 		}
-		fallthrough;
+		/* fall-through */
 	case WLAN_TDLS_SETUP_CONFIRM:
 	case WLAN_TDLS_DISCOVERY_REQUEST:
 		initiator = true;
@@ -967,7 +968,7 @@ ieee80211_tdls_prep_mgmt_packet(struct wiphy *wiphy, struct net_device *dev,
 			clear_sta_flag(sta, WLAN_STA_TDLS_INITIATOR);
 			sta->sta.tdls_initiator = true;
 		}
-		fallthrough;
+		/* fall-through */
 	case WLAN_PUB_ACTION_TDLS_DISCOVER_RES:
 		initiator = false;
 		break;
@@ -1054,7 +1055,7 @@ ieee80211_tdls_prep_mgmt_packet(struct wiphy *wiphy, struct net_device *dev,
 
 	/* disable bottom halves when entering the Tx path */
 	local_bh_disable();
-	__ieee80211_subif_start_xmit(skb, dev, flags, 0, NULL);
+	__ieee80211_subif_start_xmit(skb, dev, flags, 0);
 	local_bh_enable();
 
 	return ret;
@@ -1222,7 +1223,7 @@ int ieee80211_tdls_mgmt(struct wiphy *wiphy, struct net_device *dev,
 		 * by the AP.
 		 */
 		drv_mgd_protect_tdls_discover(sdata->local, sdata);
-		fallthrough;
+		/* fall-through */
 	case WLAN_TDLS_SETUP_CONFIRM:
 	case WLAN_PUB_ACTION_TDLS_DISCOVER_RES:
 		/* no special handling */
@@ -1565,10 +1566,6 @@ ieee80211_tdls_channel_switch(struct wiphy *wiphy, struct net_device *dev,
 	struct sk_buff *skb = NULL;
 	u32 ch_sw_tm_ie;
 	int ret;
-
-	if (chandef->chan->freq_offset)
-		/* this may work, but is untested */
-		return -EOPNOTSUPP;
 
 	mutex_lock(&local->sta_mtx);
 	sta = sta_info_get(sdata, addr);
@@ -1927,7 +1924,7 @@ ieee80211_process_tdls_channel_switch(struct ieee80211_sub_if_data *sdata,
 	struct ieee80211_tdls_data *tf = (void *)skb->data;
 	struct wiphy *wiphy = sdata->local->hw.wiphy;
 
-	lockdep_assert_wiphy(wiphy);
+	ASSERT_RTNL();
 
 	/* make sure the driver supports it */
 	if (!(wiphy->features & NL80211_FEATURE_TDLS_CHANNEL_SWITCH))
@@ -1979,7 +1976,7 @@ void ieee80211_tdls_chsw_work(struct work_struct *wk)
 	struct sk_buff *skb;
 	struct ieee80211_tdls_data *tf;
 
-	wiphy_lock(local->hw.wiphy);
+	rtnl_lock();
 	while ((skb = skb_dequeue(&local->skb_queue_tdls_chsw))) {
 		tf = (struct ieee80211_tdls_data *)skb->data;
 		list_for_each_entry(sdata, &local->interfaces, list) {
@@ -1994,7 +1991,7 @@ void ieee80211_tdls_chsw_work(struct work_struct *wk)
 
 		kfree_skb(skb);
 	}
-	wiphy_unlock(local->hw.wiphy);
+	rtnl_unlock();
 }
 
 void ieee80211_tdls_handle_disconnect(struct ieee80211_sub_if_data *sdata,

@@ -28,6 +28,7 @@
 #include <linux/platform_device.h>
 
 #include <asm/page.h>
+#include <asm/pgtable.h>
 #include <asm/irq.h>
 #include <asm/delay.h>
 
@@ -58,7 +59,6 @@ static int snirm710_probe(struct platform_device *dev)
 	struct NCR_700_Host_Parameters *hostdata;
 	struct Scsi_Host *host;
 	struct  resource *res;
-	int rc;
 
 	res = platform_get_resource(dev, IORESOURCE_MEM, 0);
 	if (!res)
@@ -84,9 +84,7 @@ static int snirm710_probe(struct platform_device *dev)
 		goto out_kfree;
 	host->this_id = 7;
 	host->base = base;
-	host->irq = rc = platform_get_irq(dev, 0);
-	if (rc < 0)
-		goto out_put_host;
+	host->irq = platform_get_irq(dev, 0);
 	if(request_irq(host->irq, NCR_700_intr, IRQF_SHARED, "snirm710", host)) {
 		printk(KERN_ERR "snirm710: request_irq failed!\n");
 		goto out_put_host;
@@ -127,4 +125,16 @@ static struct platform_driver snirm710_driver = {
 		.name	= "snirm_53c710",
 	},
 };
-module_platform_driver(snirm710_driver);
+
+static int __init snirm710_init(void)
+{
+	return platform_driver_register(&snirm710_driver);
+}
+
+static void __exit snirm710_exit(void)
+{
+	platform_driver_unregister(&snirm710_driver);
+}
+
+module_init(snirm710_init);
+module_exit(snirm710_exit);

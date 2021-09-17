@@ -71,7 +71,7 @@ struct recent_entry {
 	u_int8_t		ttl;
 	u_int8_t		index;
 	u_int16_t		nstamps;
-	unsigned long		stamps[];
+	unsigned long		stamps[0];
 };
 
 struct recent_table {
@@ -82,7 +82,7 @@ struct recent_table {
 	unsigned int		entries;
 	u8			nstamps_max_mask;
 	struct list_head	lru_list;
-	struct list_head	iphash[];
+	struct list_head	iphash[0];
 };
 
 struct recent_net {
@@ -152,8 +152,7 @@ static void recent_entry_remove(struct recent_table *t, struct recent_entry *e)
 /*
  * Drop entries with timestamps older then 'time'.
  */
-static void recent_entry_reap(struct recent_table *t, unsigned long time,
-			      struct recent_entry *working, bool update)
+static void recent_entry_reap(struct recent_table *t, unsigned long time)
 {
 	struct recent_entry *e;
 
@@ -161,12 +160,6 @@ static void recent_entry_reap(struct recent_table *t, unsigned long time,
 	 * The head of the LRU list is always the oldest entry.
 	 */
 	e = list_entry(t->lru_list.next, struct recent_entry, lru_list);
-
-	/*
-	 * Do not reap the entry which are going to be updated.
-	 */
-	if (e == working && update)
-		return;
 
 	/*
 	 * The last time stamp is the most recent.
@@ -310,8 +303,7 @@ recent_mt(const struct sk_buff *skb, struct xt_action_param *par)
 
 		/* info->seconds must be non-zero */
 		if (info->check_set & XT_RECENT_REAP)
-			recent_entry_reap(t, time, e,
-				info->check_set & XT_RECENT_UPDATE && ret);
+			recent_entry_reap(t, time);
 	}
 
 	if (info->check_set & XT_RECENT_SET ||
@@ -648,7 +640,7 @@ static void __net_exit recent_proc_net_exit(struct net *net)
 	struct recent_table *t;
 
 	/* recent_net_exit() is called before recent_mt_destroy(). Make sure
-	 * that the parent xt_recent proc entry is empty before trying to
+	 * that the parent xt_recent proc entry is is empty before trying to
 	 * remove it.
 	 */
 	spin_lock_bh(&recent_lock);

@@ -22,7 +22,7 @@
 #include <linux/rcupdate.h>
 #include <linux/crypto.h>
 #include <crypto/hash.h>
-#include <crypto/sha1.h>
+#include <crypto/sha.h>
 #include <linux/capability.h>
 #include <linux/tpm.h>
 #include <linux/tpm_command.h>
@@ -68,7 +68,7 @@ static int TSS_sha1(const unsigned char *data, unsigned int datalen,
 	}
 
 	ret = crypto_shash_digest(&sdesc->shash, data, datalen, digest);
-	kfree_sensitive(sdesc);
+	kzfree(sdesc);
 	return ret;
 }
 
@@ -112,7 +112,7 @@ static int TSS_rawhmac(unsigned char *digest, const unsigned char *key,
 	if (!ret)
 		ret = crypto_shash_final(&sdesc->shash, digest);
 out:
-	kfree_sensitive(sdesc);
+	kzfree(sdesc);
 	return ret;
 }
 
@@ -166,7 +166,7 @@ int TSS_authhmac(unsigned char *digest, const unsigned char *key,
 				  paramdigest, TPM_NONCE_SIZE, h1,
 				  TPM_NONCE_SIZE, h2, 1, &c, 0, 0);
 out:
-	kfree_sensitive(sdesc);
+	kzfree(sdesc);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(TSS_authhmac);
@@ -251,7 +251,7 @@ int TSS_checkhmac1(unsigned char *buffer,
 	if (memcmp(testhmac, authdata, SHA1_DIGEST_SIZE))
 		ret = -EINVAL;
 out:
-	kfree_sensitive(sdesc);
+	kzfree(sdesc);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(TSS_checkhmac1);
@@ -353,7 +353,7 @@ static int TSS_checkhmac2(unsigned char *buffer,
 	if (memcmp(testhmac2, authdata2, SHA1_DIGEST_SIZE))
 		ret = -EINVAL;
 out:
-	kfree_sensitive(sdesc);
+	kzfree(sdesc);
 	return ret;
 }
 
@@ -403,11 +403,8 @@ static int osap(struct tpm_buf *tb, struct osapsess *s,
 	int ret;
 
 	ret = tpm_get_random(chip, ononce, TPM_NONCE_SIZE);
-	if (ret < 0)
-		return ret;
-
 	if (ret != TPM_NONCE_SIZE)
-		return -EIO;
+		return ret;
 
 	tpm_buf_reset(tb, TPM_TAG_RQU_COMMAND, TPM_ORD_OSAP);
 	tpm_buf_append_u16(tb, type);
@@ -499,14 +496,8 @@ static int tpm_seal(struct tpm_buf *tb, uint16_t keytype,
 		goto out;
 
 	ret = tpm_get_random(chip, td->nonceodd, TPM_NONCE_SIZE);
-	if (ret < 0)
+	if (ret != TPM_NONCE_SIZE)
 		goto out;
-
-	if (ret != TPM_NONCE_SIZE) {
-		ret = -EIO;
-		goto out;
-	}
-
 	ordinal = htonl(TPM_ORD_SEAL);
 	datsize = htonl(datalen);
 	pcrsize = htonl(pcrinfosize);
@@ -572,7 +563,7 @@ static int tpm_seal(struct tpm_buf *tb, uint16_t keytype,
 		*bloblen = storedsize;
 	}
 out:
-	kfree_sensitive(td);
+	kzfree(td);
 	return ret;
 }
 
@@ -610,12 +601,9 @@ static int tpm_unseal(struct tpm_buf *tb,
 
 	ordinal = htonl(TPM_ORD_UNSEAL);
 	ret = tpm_get_random(chip, nonceodd, TPM_NONCE_SIZE);
-	if (ret < 0)
-		return ret;
-
 	if (ret != TPM_NONCE_SIZE) {
 		pr_info("trusted_key: tpm_get_random failed (%d)\n", ret);
-		return -EIO;
+		return ret;
 	}
 	ret = TSS_authhmac(authdata1, keyauth, TPM_NONCE_SIZE,
 			   enonce1, nonceodd, cont, sizeof(uint32_t),
@@ -793,37 +781,17 @@ static int getoptions(char *c, struct trusted_key_payload *pay,
 				return -EINVAL;
 			break;
 		case Opt_blobauth:
-			/*
-			 * TPM 1.2 authorizations are sha1 hashes passed in as
-			 * hex strings.  TPM 2.0 authorizations are simple
-			 * passwords (although it can take a hash as well)
-			 */
-			opt->blobauth_len = strlen(args[0].from);
-
-			if (opt->blobauth_len == 2 * TPM_DIGEST_SIZE) {
-				res = hex2bin(opt->blobauth, args[0].from,
-					      TPM_DIGEST_SIZE);
-				if (res < 0)
-					return -EINVAL;
-
-				opt->blobauth_len = TPM_DIGEST_SIZE;
-				break;
-			}
-
-			if (tpm2 && opt->blobauth_len <= sizeof(opt->blobauth)) {
-				memcpy(opt->blobauth, args[0].from,
-				       opt->blobauth_len);
-				break;
-			}
-
-			return -EINVAL;
-
+			if (strlen(args[0].from) != 2 * SHA1_DIGEST_SIZE)
+				return -EINVAL;
+			res = hex2bin(opt->blobauth, args[0].from,
+				      SHA1_DIGEST_SIZE);
+			if (res < 0)
+				return -EINVAL;
 			break;
-
 		case Opt_migratable:
 			if (*args[0].from == '0')
 				pay->migratable = 0;
-			else if (*args[0].from != '1')
+			else
 				return -EINVAL;
 			break;
 		case Opt_pcrlock:
@@ -1045,12 +1013,8 @@ static int trusted_instantiate(struct key *key,
 	case Opt_new:
 		key_len = payload->key_len;
 		ret = tpm_get_random(chip, payload->key, key_len);
-		if (ret < 0)
-			goto out;
-
 		if (ret != key_len) {
 			pr_info("trusted_key: key_create failed (%d)\n", ret);
-			ret = -EIO;
 			goto out;
 		}
 		if (tpm2)
@@ -1067,12 +1031,12 @@ static int trusted_instantiate(struct key *key,
 	if (!ret && options->pcrlock)
 		ret = pcrlock(options->pcrlock);
 out:
-	kfree_sensitive(datablob);
-	kfree_sensitive(options);
+	kzfree(datablob);
+	kzfree(options);
 	if (!ret)
 		rcu_assign_keypointer(key, payload);
 	else
-		kfree_sensitive(payload);
+		kzfree(payload);
 	return ret;
 }
 
@@ -1081,7 +1045,7 @@ static void trusted_rcu_free(struct rcu_head *rcu)
 	struct trusted_key_payload *p;
 
 	p = container_of(rcu, struct trusted_key_payload, rcu);
-	kfree_sensitive(p);
+	kzfree(p);
 }
 
 /*
@@ -1123,13 +1087,13 @@ static int trusted_update(struct key *key, struct key_preparsed_payload *prep)
 	ret = datablob_parse(datablob, new_p, new_o);
 	if (ret != Opt_update) {
 		ret = -EINVAL;
-		kfree_sensitive(new_p);
+		kzfree(new_p);
 		goto out;
 	}
 
 	if (!new_o->keyhandle) {
 		ret = -EINVAL;
-		kfree_sensitive(new_p);
+		kzfree(new_p);
 		goto out;
 	}
 
@@ -1143,22 +1107,22 @@ static int trusted_update(struct key *key, struct key_preparsed_payload *prep)
 	ret = key_seal(new_p, new_o);
 	if (ret < 0) {
 		pr_info("trusted_key: key_seal failed (%d)\n", ret);
-		kfree_sensitive(new_p);
+		kzfree(new_p);
 		goto out;
 	}
 	if (new_o->pcrlock) {
 		ret = pcrlock(new_o->pcrlock);
 		if (ret < 0) {
 			pr_info("trusted_key: pcrlock failed (%d)\n", ret);
-			kfree_sensitive(new_p);
+			kzfree(new_p);
 			goto out;
 		}
 	}
 	rcu_assign_keypointer(key, new_p);
 	call_rcu(&p->rcu, trusted_rcu_free);
 out:
-	kfree_sensitive(datablob);
-	kfree_sensitive(new_o);
+	kzfree(datablob);
+	kzfree(new_o);
 	return ret;
 }
 
@@ -1190,7 +1154,7 @@ static long trusted_read(const struct key *key, char *buffer,
  */
 static void trusted_destroy(struct key *key)
 {
-	kfree_sensitive(key->payload.data[0]);
+	kzfree(key->payload.data[0]);
 }
 
 struct key_type key_type_trusted = {

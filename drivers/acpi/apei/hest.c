@@ -49,12 +49,6 @@ static const int hest_esrc_len_tab[ACPI_HEST_TYPE_RESERVED] = {
 	[ACPI_HEST_TYPE_IA32_DEFERRED_CHECK] = -1,
 };
 
-static inline bool is_generic_error(struct acpi_hest_header *hest_hdr)
-{
-	return hest_hdr->type == ACPI_HEST_TYPE_GENERIC_ERROR ||
-	       hest_hdr->type == ACPI_HEST_TYPE_GENERIC_ERROR_V2;
-}
-
 static int hest_esrc_len(struct acpi_hest_header *hest_hdr)
 {
 	u16 hest_type = hest_hdr->type;
@@ -147,7 +141,8 @@ static int __init hest_parse_ghes_count(struct acpi_hest_header *hest_hdr, void 
 {
 	int *count = data;
 
-	if (is_generic_error(hest_hdr))
+	if (hest_hdr->type == ACPI_HEST_TYPE_GENERIC_ERROR ||
+	    hest_hdr->type == ACPI_HEST_TYPE_GENERIC_ERROR_V2)
 		(*count)++;
 	return 0;
 }
@@ -158,7 +153,8 @@ static int __init hest_parse_ghes(struct acpi_hest_header *hest_hdr, void *data)
 	struct ghes_arr *ghes_arr = data;
 	int rc, i;
 
-	if (!is_generic_error(hest_hdr))
+	if (hest_hdr->type != ACPI_HEST_TYPE_GENERIC_ERROR &&
+	    hest_hdr->type != ACPI_HEST_TYPE_GENERIC_ERROR_V2)
 		return 0;
 
 	if (!((struct acpi_hest_generic *)hest_hdr)->enabled)
@@ -231,7 +227,7 @@ __setup("hest_disable", setup_hest_disable);
 void __init acpi_hest_init(void)
 {
 	acpi_status status;
-	int rc;
+	int rc = -ENODEV;
 	unsigned int ghes_count = 0;
 
 	if (hest_disable) {
@@ -247,8 +243,8 @@ void __init acpi_hest_init(void)
 	} else if (ACPI_FAILURE(status)) {
 		const char *msg = acpi_format_exception(status);
 		pr_err(HEST_PFX "Failed to get table, %s\n", msg);
-		hest_disable = HEST_DISABLED;
-		return;
+		rc = -EINVAL;
+		goto err;
 	}
 
 	rc = apei_hest_parse(hest_parse_cmc, NULL);
@@ -270,5 +266,4 @@ void __init acpi_hest_init(void)
 	return;
 err:
 	hest_disable = HEST_DISABLED;
-	acpi_put_table((struct acpi_table_header *)hest_tab);
 }

@@ -373,7 +373,7 @@ static int azx_get_sync_time(ktime_t *device,
 	u32 wallclk_ctr, wallclk_cycles;
 	bool direction;
 	u32 dma_select;
-	u32 timeout;
+	u32 timeout = 200;
 	u32 retry_count = 0;
 
 	runtime = substream->runtime;
@@ -609,6 +609,13 @@ static int azx_pcm_open(struct snd_pcm_substream *substream)
 				     20,
 				     178000000);
 
+	/* by some reason, the playback stream stalls on PulseAudio with
+	 * tsched=1 when a capture stream triggers.  Until we figure out the
+	 * real cause, disable tsched mode by telling the PCM info flag.
+	 */
+	if (chip->driver_caps & AZX_DCAPS_AMD_WORKAROUND)
+		runtime->hw.info |= SNDRV_PCM_INFO_BATCH;
+
 	if (chip->align_buffer_size)
 		/* constrain buffer sizes to be multiple of 128
 		   bytes. This is more efficient in terms of memory
@@ -728,7 +735,7 @@ int snd_hda_attach_pcm_stream(struct hda_bus *_bus, struct hda_codec *codec,
 			  &pcm);
 	if (err < 0)
 		return err;
-	strscpy(pcm->name, cpcm->name, sizeof(pcm->name));
+	strlcpy(pcm->name, cpcm->name, sizeof(pcm->name));
 	apcm = kzalloc(sizeof(*apcm), GFP_KERNEL);
 	if (apcm == NULL) {
 		snd_device_free(chip->card, pcm);
@@ -1195,8 +1202,15 @@ int azx_bus_init(struct azx *chip, const char *model)
 	if (chip->driver_caps & AZX_DCAPS_4K_BDLE_BOUNDARY)
 		bus->core.align_bdle_4k = true;
 
-	/* enable sync_write flag for stable communication as default */
-	bus->core.sync_write = 1;
+	/* AMD chipsets often cause the communication stalls upon certain
+	 * sequence like the pin-detection.  It seems that forcing the synced
+	 * access works around the stall.  Grrr...
+	 */
+	if (chip->driver_caps & AZX_DCAPS_SYNC_WRITE) {
+		dev_dbg(chip->card->dev, "Enable sync_write for stable communication\n");
+		bus->core.sync_write = 1;
+		bus->allow_bus_reset = 1;
+	}
 
 	return 0;
 }

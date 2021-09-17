@@ -11,7 +11,8 @@
  * Joe Taylor <joe@tensilica.com, joetylr@yahoo.com>
  */
 
-#include <linux/dma-map-ops.h>
+#include <linux/dma-contiguous.h>
+#include <linux/dma-noncoherent.h>
 #include <linux/dma-direct.h>
 #include <linux/gfp.h>
 #include <linux/highmem.h>
@@ -87,12 +88,18 @@ void arch_dma_prep_coherent(struct page *page, size_t size)
 
 /*
  * Memory caching is platform-dependent in noMMU xtensa configurations.
- * This function should be implemented in platform code in order to enable
- * coherent DMA memory operations when CONFIG_MMU is not enabled.
+ * The following two functions should be implemented in platform code
+ * in order to enable coherent DMA memory operations when CONFIG_MMU is not
+ * enabled.
  */
 #ifdef CONFIG_MMU
-void *arch_dma_set_uncached(void *p, size_t size)
+void *uncached_kernel_address(void *p)
 {
 	return p + XCHAL_KSEG_BYPASS_VADDR - XCHAL_KSEG_CACHED_VADDR;
+}
+
+void *cached_kernel_address(void *p)
+{
+	return p + XCHAL_KSEG_CACHED_VADDR - XCHAL_KSEG_BYPASS_VADDR;
 }
 #endif /* CONFIG_MMU */

@@ -36,7 +36,6 @@
 #include <linux/jiffies.h>
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
-#include <linux/msdos_partition.h>
 #include <scsi/scsicam.h>
 
 #include <asm/dma.h>
@@ -2237,7 +2236,7 @@ static bool __init blogic_inquiry(struct blogic_adapter *adapter)
 					"INQUIRE INSTALLED DEVICES ID 0 TO 7");
 		for (tgt_id = 0; tgt_id < 8; tgt_id++)
 			adapter->tgt_flags[tgt_id].tgt_exists =
-				installed_devs0to7[tgt_id] != 0;
+				(installed_devs0to7[tgt_id] != 0 ? true : false);
 	}
 	/*
 	   Issue the Inquire Setup Information command.
@@ -2635,7 +2634,7 @@ static int blogic_resultcode(struct blogic_adapter *adapter,
 	case BLOGIC_BAD_CMD_PARAM:
 		blogic_warn("BusLogic Driver Protocol Error 0x%02X\n",
 				adapter, adapter_status);
-		fallthrough;
+		/* fall through */
 	case BLOGIC_DATA_UNDERRUN:
 	case BLOGIC_DATA_OVERRUN:
 	case BLOGIC_NOEXPECT_BUSFREE:
@@ -3078,11 +3077,11 @@ static int blogic_qcmd_lck(struct scsi_cmnd *command,
 		ccb->opcode = BLOGIC_INITIATOR_CCB_SG;
 		ccb->datalen = count * sizeof(struct blogic_sg_seg);
 		if (blogic_multimaster_type(adapter))
-			ccb->data = (unsigned int) ccb->dma_handle +
+			ccb->data = (void *)((unsigned int) ccb->dma_handle +
 					((unsigned long) &ccb->sglist -
-					(unsigned long) ccb);
+					(unsigned long) ccb));
 		else
-			ccb->data = virt_to_32bit_virt(ccb->sglist);
+			ccb->data = ccb->sglist;
 
 		scsi_for_each_sg(command, sg, count, i) {
 			ccb->sglist[i].segbytes = sg_dma_len(sg);
@@ -3411,10 +3410,9 @@ static int blogic_diskparam(struct scsi_device *sdev, struct block_device *dev,
 	   a partition table entry whose end_head matches one of the
 	   standard BusLogic geometry translations (64/32, 128/32, or 255/63).
 	 */
-	if (*(unsigned short *) (buf + 64) == MSDOS_LABEL_MAGIC) {
-		struct msdos_partition *part1_entry =
-				(struct msdos_partition *)buf;
-		struct msdos_partition *part_entry = part1_entry;
+	if (*(unsigned short *) (buf + 64) == 0xAA55) {
+		struct partition *part1_entry = (struct partition *) buf;
+		struct partition *part_entry = part1_entry;
 		int saved_cyl = diskparam->cylinders, part_no;
 		unsigned char part_end_head = 0, part_end_sector = 0;
 
@@ -3654,7 +3652,7 @@ static bool __init blogic_parse(char **str, char *keyword)
   selected host adapter.
 
   The BusLogic Driver Probing Options are described in
-  <file:Documentation/scsi/BusLogic.rst>.
+  <file:Documentation/scsi/BusLogic.txt>.
 */
 
 static int __init blogic_parseopts(char *options)

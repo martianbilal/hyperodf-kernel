@@ -15,6 +15,8 @@
 #include <asm/barrier.h>
 #include <asm/cmpxchg.h>
 
+#define ATOMIC_INIT(i)  { (i) }
+
 static inline int atomic_read(const atomic_t *v)
 {
 	int c;
@@ -44,6 +46,12 @@ static inline int atomic_fetch_add(int i, atomic_t *v)
 
 static inline void atomic_add(int i, atomic_t *v)
 {
+#ifdef CONFIG_HAVE_MARCH_Z196_FEATURES
+	if (__builtin_constant_p(i) && (i > -129) && (i < 128)) {
+		__atomic_add_const(i, &v->counter);
+		return;
+	}
+#endif
 	__atomic_add(i, &v->counter);
 }
 
@@ -105,6 +113,12 @@ static inline s64 atomic64_fetch_add(s64 i, atomic64_t *v)
 
 static inline void atomic64_add(s64 i, atomic64_t *v)
 {
+#ifdef CONFIG_HAVE_MARCH_Z196_FEATURES
+	if (__builtin_constant_p(i) && (i > -129) && (i < 128)) {
+		__atomic64_add_const(i, (long *)&v->counter);
+		return;
+	}
+#endif
 	__atomic64_add(i, (long *)&v->counter);
 }
 

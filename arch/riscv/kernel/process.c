@@ -10,7 +10,6 @@
 #include <linux/cpu.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
-#include <linux/sched/debug.h>
 #include <linux/sched/task_stack.h>
 #include <linux/tick.h>
 #include <linux/ptrace.h>
@@ -19,18 +18,9 @@
 #include <asm/unistd.h>
 #include <asm/processor.h>
 #include <asm/csr.h>
-#include <asm/stacktrace.h>
 #include <asm/string.h>
 #include <asm/switch_to.h>
 #include <asm/thread_info.h>
-
-register unsigned long gp_in_global __asm__("gp");
-
-#if defined(CONFIG_STACKPROTECTOR) && !defined(CONFIG_STACKPROTECTOR_PER_TASK)
-#include <linux/stackprotector.h>
-unsigned long __stack_chk_guard __read_mostly;
-EXPORT_SYMBOL(__stack_chk_guard);
-#endif
 
 extern asmlinkage void ret_from_fork(void);
 extern asmlinkage void ret_from_kernel_thread(void);
@@ -38,19 +28,14 @@ extern asmlinkage void ret_from_kernel_thread(void);
 void arch_cpu_idle(void)
 {
 	wait_for_interrupt();
-	raw_local_irq_enable();
+	local_irq_enable();
 }
 
-void __show_regs(struct pt_regs *regs)
+void show_regs(struct pt_regs *regs)
 {
 	show_regs_print_info(KERN_DEFAULT);
 
-	if (!user_mode(regs)) {
-		pr_cont("epc : %pS\n", (void *)regs->epc);
-		pr_cont(" ra : %pS\n", (void *)regs->ra);
-	}
-
-	pr_cont("epc : " REG_FMT " ra : " REG_FMT " sp : " REG_FMT "\n",
+	pr_cont("epc: " REG_FMT " ra : " REG_FMT " sp : " REG_FMT "\n",
 		regs->epc, regs->ra, regs->sp);
 	pr_cont(" gp : " REG_FMT " tp : " REG_FMT " t0 : " REG_FMT "\n",
 		regs->gp, regs->tp, regs->t0);
@@ -76,12 +61,6 @@ void __show_regs(struct pt_regs *regs)
 	pr_cont("status: " REG_FMT " badaddr: " REG_FMT " cause: " REG_FMT "\n",
 		regs->status, regs->badaddr, regs->cause);
 }
-void show_regs(struct pt_regs *regs)
-{
-	__show_regs(regs);
-	if (!user_mode(regs))
-		dump_backtrace(regs, NULL, KERN_DEFAULT);
-}
 
 void start_thread(struct pt_regs *regs, unsigned long pc,
 	unsigned long sp)
@@ -97,6 +76,7 @@ void start_thread(struct pt_regs *regs, unsigned long pc,
 	}
 	regs->epc = pc;
 	regs->sp = sp;
+	set_fs(USER_DS);
 }
 
 void flush_thread(void)
@@ -119,16 +99,17 @@ int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 	return 0;
 }
 
-int copy_thread(unsigned long clone_flags, unsigned long usp, unsigned long arg,
-		struct task_struct *p, unsigned long tls)
+int copy_thread_tls(unsigned long clone_flags, unsigned long usp,
+	unsigned long arg, struct task_struct *p, unsigned long tls)
 {
 	struct pt_regs *childregs = task_pt_regs(p);
 
 	/* p->thread holds context to be restored by __switch_to() */
-	if (unlikely(p->flags & (PF_KTHREAD | PF_IO_WORKER))) {
+	if (unlikely(p->flags & PF_KTHREAD)) {
 		/* Kernel thread */
+		const register unsigned long gp __asm__ ("gp");
 		memset(childregs, 0, sizeof(struct pt_regs));
-		childregs->gp = gp_in_global;
+		childregs->gp = gp;
 		/* Supervisor/Machine, irqs on: */
 		childregs->status = SR_PP | SR_PIE;
 

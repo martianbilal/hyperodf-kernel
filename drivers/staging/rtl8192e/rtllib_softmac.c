@@ -1352,8 +1352,9 @@ rtllib_association_req(struct rtllib_network *beacon,
 		rtllib_WMM_Info(ieee, &tag);
 	}
 
-	if (wps_ie_len && ieee->wps_ie)
+	if (wps_ie_len && ieee->wps_ie) {
 		skb_put_data(skb, ieee->wps_ie, wps_ie_len);
+	}
 
 	if (turbo_info_len) {
 		tag = skb_put(skb, turbo_info_len);
@@ -2043,9 +2044,9 @@ static short rtllib_sta_ps_sleep(struct rtllib_device *ieee, u64 *time)
 
 }
 
-static inline void rtllib_sta_ps(struct tasklet_struct *t)
+static inline void rtllib_sta_ps(unsigned long data)
 {
-	struct rtllib_device *ieee = from_tasklet(ieee, t, ps_task);
+	struct rtllib_device *ieee = (struct rtllib_device *)data;
 	u64 time;
 	short sleep;
 	unsigned long flags, flags2;
@@ -3027,7 +3028,7 @@ void rtllib_softmac_init(struct rtllib_device *ieee)
 	spin_lock_init(&ieee->mgmt_tx_lock);
 	spin_lock_init(&ieee->beacon_lock);
 
-	tasklet_setup(&ieee->ps_task, rtllib_sta_ps);
+	tasklet_init(&ieee->ps_task, rtllib_sta_ps, (unsigned long)ieee);
 
 }
 

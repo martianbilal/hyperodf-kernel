@@ -276,6 +276,7 @@ static int st_nci_hci_apdu_reader_event_received(struct nci_dev *ndev,
 						   u8 event,
 						   struct sk_buff *skb)
 {
+	int r = 0;
 	struct st_nci_info *info = nci_get_drvdata(ndev);
 
 	pr_debug("apdu reader gate event: %x\n", event);
@@ -297,7 +298,7 @@ static int st_nci_hci_apdu_reader_event_received(struct nci_dev *ndev,
 	}
 
 	kfree_skb(skb);
-	return 0;
+	return r;
 }
 
 /*
@@ -330,7 +331,8 @@ static int st_nci_hci_connectivity_event_received(struct nci_dev *ndev,
 		    skb->data[0] != NFC_EVT_TRANSACTION_AID_TAG)
 			return -EPROTO;
 
-		transaction = devm_kzalloc(dev, skb->len - 2, GFP_KERNEL);
+		transaction = (struct nfc_evt_transaction *)devm_kzalloc(dev,
+					    skb->len - 2, GFP_KERNEL);
 		if (!transaction)
 			return -ENOMEM;
 

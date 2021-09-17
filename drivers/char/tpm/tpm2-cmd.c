@@ -615,7 +615,7 @@ out:
 	return rc;
 }
 
-int tpm2_get_cc_attrs_tbl(struct tpm_chip *chip)
+static int tpm2_get_cc_attrs_tbl(struct tpm_chip *chip)
 {
 	struct tpm_buf buf;
 	u32 nr_commands;
@@ -656,7 +656,6 @@ int tpm2_get_cc_attrs_tbl(struct tpm_chip *chip)
 
 	if (nr_commands !=
 	    be32_to_cpup((__be32 *)&buf.data[TPM_HEADER_SIZE + 5])) {
-		rc = -EFAULT;
 		tpm_buf_destroy(&buf);
 		goto out;
 	}
@@ -682,7 +681,6 @@ out:
 		rc = -ENODEV;
 	return rc;
 }
-EXPORT_SYMBOL_GPL(tpm2_get_cc_attrs_tbl);
 
 /**
  * tpm2_startup - turn on the TPM

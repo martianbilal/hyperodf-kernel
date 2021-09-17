@@ -122,9 +122,6 @@ struct snd_card {
 
 	size_t total_pcm_alloc_bytes;	/* total amount of allocated buffers */
 	struct mutex memory_mutex;	/* protection for the above */
-#ifdef CONFIG_SND_DEBUG
-	struct dentry *debugfs_root;    /* debugfs root for card */
-#endif
 
 #ifdef CONFIG_PM
 	unsigned int power_state;	/* power state */
@@ -183,9 +180,6 @@ static inline struct device *snd_card_get_device_link(struct snd_card *card)
 extern int snd_major;
 extern int snd_ecards_limit;
 extern struct class *sound_class;
-#ifdef CONFIG_SND_DEBUG
-extern struct dentry *sound_debugfs_root;
-#endif
 
 void snd_request_card(int card);
 
@@ -272,7 +266,6 @@ void snd_device_disconnect(struct snd_card *card, void *device_data);
 void snd_device_disconnect_all(struct snd_card *card);
 void snd_device_free(struct snd_card *card, void *device_data);
 void snd_device_free_all(struct snd_card *card);
-int snd_device_get_state(struct snd_card *card, void *device_data);
 
 /* isadma.c */
 
@@ -338,8 +331,7 @@ void __snd_printk(unsigned int level, const char *file, int line,
 #define snd_BUG()		WARN(1, "BUG?\n")
 
 /**
- * snd_printd_ratelimit - Suppress high rates of output when
- * 			  CONFIG_SND_DEBUG is enabled.
+ * Suppress high rates of output when CONFIG_SND_DEBUG is enabled.
  */
 #define snd_printd_ratelimit() printk_ratelimit()
 

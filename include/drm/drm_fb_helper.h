@@ -100,10 +100,10 @@ struct drm_fb_helper_funcs {
  * @funcs: driver callbacks for fb helper
  * @fbdev: emulated fbdev device info struct
  * @pseudo_palette: fake palette of 16 colors
- * @damage_clip: clip rectangle used with deferred_io to accumulate damage to
- *                the screen buffer
- * @damage_lock: spinlock protecting @damage_clip
- * @damage_work: worker used to flush the framebuffer
+ * @dirty_clip: clip rectangle used with deferred_io to accumulate damage to
+ *              the screen buffer
+ * @dirty_lock: spinlock protecting @dirty_clip
+ * @dirty_work: worker used to flush the framebuffer
  * @resume_work: worker used during resume if the console lock is already taken
  *
  * This is the main structure used by the fbdev helpers. Drivers supporting
@@ -131,9 +131,9 @@ struct drm_fb_helper {
 	const struct drm_fb_helper_funcs *funcs;
 	struct fb_info *fbdev;
 	u32 pseudo_palette[17];
-	struct drm_clip_rect damage_clip;
-	spinlock_t damage_lock;
-	struct work_struct damage_work;
+	struct drm_clip_rect dirty_clip;
+	spinlock_t dirty_lock;
+	struct work_struct dirty_work;
 	struct work_struct resume_work;
 
 	/**
@@ -213,7 +213,8 @@ drm_fb_helper_from_client(struct drm_client_dev *client)
 #ifdef CONFIG_DRM_FBDEV_EMULATION
 void drm_fb_helper_prepare(struct drm_device *dev, struct drm_fb_helper *helper,
 			   const struct drm_fb_helper_funcs *funcs);
-int drm_fb_helper_init(struct drm_device *dev, struct drm_fb_helper *helper);
+int drm_fb_helper_init(struct drm_device *dev,
+		       struct drm_fb_helper *helper, int max_conn);
 void drm_fb_helper_fini(struct drm_fb_helper *helper);
 int drm_fb_helper_blank(int blank, struct fb_info *info);
 int drm_fb_helper_pan_display(struct fb_var_screeninfo *var,
@@ -269,8 +270,7 @@ int drm_fb_helper_debug_leave(struct fb_info *info);
 void drm_fb_helper_lastclose(struct drm_device *dev);
 void drm_fb_helper_output_poll_changed(struct drm_device *dev);
 
-void drm_fbdev_generic_setup(struct drm_device *dev,
-			     unsigned int preferred_bpp);
+int drm_fbdev_generic_setup(struct drm_device *dev, unsigned int preferred_bpp);
 #else
 static inline void drm_fb_helper_prepare(struct drm_device *dev,
 					struct drm_fb_helper *helper,
@@ -279,7 +279,8 @@ static inline void drm_fb_helper_prepare(struct drm_device *dev,
 }
 
 static inline int drm_fb_helper_init(struct drm_device *dev,
-		       struct drm_fb_helper *helper)
+		       struct drm_fb_helper *helper,
+		       int max_conn)
 {
 	/* So drivers can use it to free the struct */
 	helper->dev = dev;
@@ -444,12 +445,34 @@ static inline void drm_fb_helper_output_poll_changed(struct drm_device *dev)
 {
 }
 
-static inline void
+static inline int
 drm_fbdev_generic_setup(struct drm_device *dev, unsigned int preferred_bpp)
 {
+	return 0;
 }
 
 #endif
+
+/* TODO: There's a todo entry to remove these three */
+static inline int
+drm_fb_helper_single_add_all_connectors(struct drm_fb_helper *fb_helper)
+{
+	return 0;
+}
+
+static inline int
+drm_fb_helper_add_one_connector(struct drm_fb_helper *fb_helper,
+				struct drm_connector *connector)
+{
+	return 0;
+}
+
+static inline int
+drm_fb_helper_remove_one_connector(struct drm_fb_helper *fb_helper,
+				   struct drm_connector *connector)
+{
+	return 0;
+}
 
 /**
  * drm_fb_helper_remove_conflicting_framebuffers - remove firmware-configured framebuffers

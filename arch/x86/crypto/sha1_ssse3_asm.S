@@ -467,6 +467,8 @@ W_PRECALC_SSSE3
  */
 SHA1_VECTOR_ASM     sha1_transform_ssse3
 
+#ifdef CONFIG_AS_AVX
+
 .macro W_PRECALC_AVX
 
 .purgem W_PRECALC_00_15
@@ -551,3 +553,5 @@ W_PRECALC_AVX
  *				       const u8 *data, int blocks);
  */
 SHA1_VECTOR_ASM     sha1_transform_avx
+
+#endif

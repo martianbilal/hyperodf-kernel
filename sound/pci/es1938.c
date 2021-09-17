@@ -52,6 +52,10 @@
 MODULE_AUTHOR("Jaromir Koutek <miri@punknet.cz>");
 MODULE_DESCRIPTION("ESS Solo-1");
 MODULE_LICENSE("GPL");
+MODULE_SUPPORTED_DEVICE("{{ESS,ES1938},"
+                "{ESS,ES1946},"
+                "{ESS,ES1969},"
+		"{TerraTec,128i PCI}}");
 
 #if IS_REACHABLE(CONFIG_GAMEPORT)
 #define SUPPORT_JOYSTICK 1
@@ -1556,7 +1560,8 @@ static int snd_es1938_create(struct snd_card *card,
 	if ((err = pci_enable_device(pci)) < 0)
 		return err;
         /* check, if we can restrict PCI DMA transfers to 24 bits */
-	if (dma_set_mask_and_coherent(&pci->dev, DMA_BIT_MASK(24))) {
+	if (dma_set_mask(&pci->dev, DMA_BIT_MASK(24)) < 0 ||
+	    dma_set_coherent_mask(&pci->dev, DMA_BIT_MASK(24)) < 0) {
 		dev_err(card->dev,
 			"architecture does not support 24bit PCI busmaster DMA\n");
 		pci_disable_device(pci);
@@ -1614,8 +1619,7 @@ static int snd_es1938_create(struct snd_card *card,
 static irqreturn_t snd_es1938_interrupt(int irq, void *dev_id)
 {
 	struct es1938 *chip = dev_id;
-	unsigned char status;
-	__always_unused unsigned char audiostatus;
+	unsigned char status, audiostatus;
 	int handled = 0;
 
 	status = inb(SLIO_REG(chip, IRQCONTROL));

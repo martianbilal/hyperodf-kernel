@@ -51,6 +51,8 @@ static void falconide_release_lock(void)
 static void falconide_get_lock(irq_handler_t handler, void *data)
 {
 	if (falconide_intr_lock == 0) {
+		if (in_interrupt() > 0)
+			panic("Falcon IDE hasn't ST-DMA lock in interrupt");
 		stdma_lock(handler, data);
 		falconide_intr_lock = 1;
 	}
@@ -164,7 +166,6 @@ static int __init falconide_init(struct platform_device *pdev)
 	if (rc)
 		goto err_free;
 
-	platform_set_drvdata(pdev, host);
 	return 0;
 err_free:
 	ide_host_free(host);
@@ -175,7 +176,7 @@ err:
 
 static int falconide_remove(struct platform_device *pdev)
 {
-	struct ide_host *host = platform_get_drvdata(pdev);
+	struct ide_host *host = dev_get_drvdata(&pdev->dev);
 
 	ide_host_remove(host);
 

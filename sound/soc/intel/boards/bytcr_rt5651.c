@@ -143,7 +143,7 @@ static int byt_rt5651_prepare_and_enable_pll1(struct snd_soc_dai *codec_dai,
 
 	/* Configure the PLL before selecting it */
 	if (!(byt_rt5651_quirk & BYT_RT5651_MCLK_EN)) {
-		clk_id = RT5651_PLL1_S_BCLK1;
+		clk_id = RT5651_PLL1_S_BCLK1,
 		clk_freq = rate * bclk_ratio;
 	} else {
 		clk_id = RT5651_PLL1_S_MCLK;
@@ -347,8 +347,8 @@ static struct snd_soc_jack_pin bytcr_jack_pins[] = {
 static int byt_rt5651_aif1_hw_params(struct snd_pcm_substream *substream,
 					struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
-	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_dai *codec_dai = rtd->codec_dai;
 	snd_pcm_format_t format = params_format(params);
 	int rate = params_rate(params);
 	int bclk_ratio;
@@ -434,19 +434,6 @@ static const struct dmi_system_id byt_rt5651_quirk_table[] = {
 					BYT_RT5651_IN2_MAP |
 					BYT_RT5651_SSP0_AIF1 |
 					BYT_RT5651_MONO_SPEAKER),
-	},
-	{
-		/* Jumper EZpad 7 */
-		.callback = byt_rt5651_quirk_cb,
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Jumper"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "EZpad"),
-			/* Jumper12x.WJ2012.bsBKRCP05 with the version dropped */
-			DMI_MATCH(DMI_BIOS_VERSION, "Jumper12x.WJ2012.bsBKRCP"),
-		},
-		.driver_data = (void *)(BYT_RT5651_DEFAULT_QUIRKS |
-					BYT_RT5651_IN2_MAP |
-					BYT_RT5651_JD_NOT_INV),
 	},
 	{
 		/* KIANO SlimNote 14.2 */
@@ -553,7 +540,7 @@ static int byt_rt5651_add_codec_device_props(struct device *i2c_dev)
 static int byt_rt5651_init(struct snd_soc_pcm_runtime *runtime)
 {
 	struct snd_soc_card *card = runtime->card;
-	struct snd_soc_component *codec = asoc_rtd_to_codec(runtime, 0)->component;
+	struct snd_soc_component *codec = runtime->codec_dai->component;
 	struct byt_rt5651_private *priv = snd_soc_card_get_drvdata(card);
 	const struct snd_soc_dapm_route *custom_map;
 	int num_routes;
@@ -614,6 +601,8 @@ static int byt_rt5651_init(struct snd_soc_pcm_runtime *runtime)
 		dev_err(card->dev, "unable to add card controls\n");
 		return ret;
 	}
+	snd_soc_dapm_ignore_suspend(&card->dapm, "Headphone");
+	snd_soc_dapm_ignore_suspend(&card->dapm, "Speaker");
 
 	if (byt_rt5651_quirk & BYT_RT5651_MCLK_EN) {
 		/*
@@ -696,7 +685,7 @@ static int byt_rt5651_codec_fixup(struct snd_soc_pcm_runtime *rtd,
 	 * with explicit setting to I2S 2ch. The word length is set with
 	 * dai_set_tdm_slot() since there is no other API exposed
 	 */
-	ret = snd_soc_dai_set_fmt(asoc_rtd_to_cpu(rtd, 0),
+	ret = snd_soc_dai_set_fmt(rtd->cpu_dai,
 				  SND_SOC_DAIFMT_I2S     |
 				  SND_SOC_DAIFMT_NB_NF   |
 				  SND_SOC_DAIFMT_CBS_CFS
@@ -707,7 +696,7 @@ static int byt_rt5651_codec_fixup(struct snd_soc_pcm_runtime *rtd,
 		return ret;
 	}
 
-	ret = snd_soc_dai_set_tdm_slot(asoc_rtd_to_cpu(rtd, 0), 0x3, 0x3, 2, bits);
+	ret = snd_soc_dai_set_tdm_slot(rtd->cpu_dai, 0x3, 0x3, 2, bits);
 	if (ret < 0) {
 		dev_err(rtd->dev, "can't set I2S config, err %d\n", ret);
 		return ret;
@@ -786,6 +775,7 @@ static struct snd_soc_dai_link byt_rt5651_dais[] = {
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
 						| SND_SOC_DAIFMT_CBS_CFS,
 		.be_hw_params_fixup = byt_rt5651_codec_fixup,
+		.ignore_suspend = 1,
 		.nonatomic = true,
 		.dpcm_playback = 1,
 		.dpcm_capture = 1,
@@ -840,16 +830,8 @@ static int byt_rt5651_resume(struct snd_soc_card *card)
 	return 0;
 }
 
-/* use space before codec name to simplify card ID, and simplify driver name */
-#define SOF_CARD_NAME "bytcht rt5651" /* card name will be 'sof-bytcht rt5651' */
-#define SOF_DRIVER_NAME "SOF"
-
-#define CARD_NAME "bytcr-rt5651"
-#define DRIVER_NAME NULL /* card name will be used for driver name */
-
 static struct snd_soc_card byt_rt5651_card = {
-	.name = CARD_NAME,
-	.driver_name = DRIVER_NAME,
+	.name = "bytcr-rt5651",
 	.owner = THIS_MODULE,
 	.dai_link = byt_rt5651_dais,
 	.num_links = ARRAY_SIZE(byt_rt5651_dais),
@@ -887,7 +869,6 @@ static int snd_byt_rt5651_mc_probe(struct platform_device *pdev)
 	const char *platform_name;
 	struct acpi_device *adev;
 	struct device *codec_dev;
-	bool sof_parent;
 	bool is_bytcr = false;
 	int ret_val = 0;
 	int dai_index = 0;
@@ -989,8 +970,8 @@ static int snd_byt_rt5651_mc_probe(struct platform_device *pdev)
 	dmi_check_system(byt_rt5651_quirk_table);
 
 	if (quirk_override != -1) {
-		dev_info(&pdev->dev, "Overriding quirk 0x%lx => 0x%x\n",
-			 byt_rt5651_quirk, quirk_override);
+		dev_info(&pdev->dev, "Overriding quirk 0x%x => 0x%x\n",
+			 (unsigned int)byt_rt5651_quirk, quirk_override);
 		byt_rt5651_quirk = quirk_override;
 	}
 
@@ -1021,7 +1002,7 @@ static int snd_byt_rt5651_mc_probe(struct platform_device *pdev)
 			default:
 				dev_err(&pdev->dev, "Failed to get ext-amp-enable GPIO: %d\n",
 					ret_val);
-				fallthrough;
+				/* fall through */
 			case -EPROBE_DEFER:
 				put_device(codec_dev);
 				return ret_val;
@@ -1041,7 +1022,7 @@ static int snd_byt_rt5651_mc_probe(struct platform_device *pdev)
 			default:
 				dev_err(&pdev->dev, "Failed to get hp-detect GPIO: %d\n",
 					ret_val);
-				fallthrough;
+				/* fall through */
 			case -EPROBE_DEFER:
 				put_device(codec_dev);
 				return ret_val;
@@ -1104,21 +1085,6 @@ static int snd_byt_rt5651_mc_probe(struct platform_device *pdev)
 							platform_name);
 	if (ret_val)
 		return ret_val;
-
-	sof_parent = snd_soc_acpi_sof_parent(&pdev->dev);
-
-	/* set card and driver name */
-	if (sof_parent) {
-		byt_rt5651_card.name = SOF_CARD_NAME;
-		byt_rt5651_card.driver_name = SOF_DRIVER_NAME;
-	} else {
-		byt_rt5651_card.name = CARD_NAME;
-		byt_rt5651_card.driver_name = DRIVER_NAME;
-	}
-
-	/* set pm ops */
-	if (sof_parent)
-		pdev->dev.driver->pm = &snd_soc_pm_ops;
 
 	ret_val = devm_snd_soc_register_card(&pdev->dev, &byt_rt5651_card);
 

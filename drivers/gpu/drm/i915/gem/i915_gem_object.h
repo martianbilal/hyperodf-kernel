@@ -11,6 +11,8 @@
 #include <drm/drm_file.h>
 #include <drm/drm_device.h>
 
+#include <drm/i915_drm.h>
+
 #include "display/intel_frontbuffer.h"
 #include "i915_gem_object_types.h"
 #include "i915_gem_gtt.h"
@@ -37,6 +39,9 @@ void __i915_gem_object_release_shmem(struct drm_i915_gem_object *obj,
 				     bool needs_clflush);
 
 int i915_gem_object_attach_phys(struct drm_i915_gem_object *obj, int align);
+
+void i915_gem_close_object(struct drm_gem_object *gem, struct drm_file *file);
+void i915_gem_free_object(struct drm_gem_object *obj);
 
 void i915_gem_flush_free_objects(struct drm_i915_private *i915);
 
@@ -107,44 +112,20 @@ i915_gem_object_put(struct drm_i915_gem_object *obj)
 
 #define assert_object_held(obj) dma_resv_assert_held((obj)->base.resv)
 
-static inline int __i915_gem_object_lock(struct drm_i915_gem_object *obj,
-					 struct i915_gem_ww_ctx *ww,
-					 bool intr)
+static inline void i915_gem_object_lock(struct drm_i915_gem_object *obj)
 {
-	int ret;
-
-	if (intr)
-		ret = dma_resv_lock_interruptible(obj->base.resv, ww ? &ww->ctx : NULL);
-	else
-		ret = dma_resv_lock(obj->base.resv, ww ? &ww->ctx : NULL);
-
-	if (!ret && ww)
-		list_add_tail(&obj->obj_link, &ww->obj_list);
-	if (ret == -EALREADY)
-		ret = 0;
-
-	if (ret == -EDEADLK)
-		ww->contended = obj;
-
-	return ret;
-}
-
-static inline int i915_gem_object_lock(struct drm_i915_gem_object *obj,
-				       struct i915_gem_ww_ctx *ww)
-{
-	return __i915_gem_object_lock(obj, ww, ww && ww->intr);
-}
-
-static inline int i915_gem_object_lock_interruptible(struct drm_i915_gem_object *obj,
-						     struct i915_gem_ww_ctx *ww)
-{
-	WARN_ON(ww && !ww->intr);
-	return __i915_gem_object_lock(obj, ww, true);
+	dma_resv_lock(obj->base.resv, NULL);
 }
 
 static inline bool i915_gem_object_trylock(struct drm_i915_gem_object *obj)
 {
 	return dma_resv_trylock(obj->base.resv);
+}
+
+static inline int
+i915_gem_object_lock_interruptible(struct drm_i915_gem_object *obj)
+{
+	return dma_resv_lock_interruptible(obj->base.resv, NULL);
 }
 
 static inline void i915_gem_object_unlock(struct drm_i915_gem_object *obj)
@@ -188,24 +169,6 @@ i915_gem_object_set_volatile(struct drm_i915_gem_object *obj)
 }
 
 static inline bool
-i915_gem_object_has_tiling_quirk(struct drm_i915_gem_object *obj)
-{
-	return test_bit(I915_TILING_QUIRK_BIT, &obj->flags);
-}
-
-static inline void
-i915_gem_object_set_tiling_quirk(struct drm_i915_gem_object *obj)
-{
-	set_bit(I915_TILING_QUIRK_BIT, &obj->flags);
-}
-
-static inline void
-i915_gem_object_clear_tiling_quirk(struct drm_i915_gem_object *obj)
-{
-	clear_bit(I915_TILING_QUIRK_BIT, &obj->flags);
-}
-
-static inline bool
 i915_gem_object_type_has(const struct drm_i915_gem_object *obj,
 			 unsigned long flags)
 {
@@ -216,12 +179,6 @@ static inline bool
 i915_gem_object_has_struct_page(const struct drm_i915_gem_object *obj)
 {
 	return i915_gem_object_type_has(obj, I915_GEM_OBJECT_HAS_STRUCT_PAGE);
-}
-
-static inline bool
-i915_gem_object_has_iomem(const struct drm_i915_gem_object *obj)
-{
-	return i915_gem_object_type_has(obj, I915_GEM_OBJECT_HAS_IOMEM);
 }
 
 static inline bool
@@ -237,9 +194,9 @@ i915_gem_object_is_proxy(const struct drm_i915_gem_object *obj)
 }
 
 static inline bool
-i915_gem_object_never_mmap(const struct drm_i915_gem_object *obj)
+i915_gem_object_never_bind_ggtt(const struct drm_i915_gem_object *obj)
 {
-	return i915_gem_object_type_has(obj, I915_GEM_OBJECT_NO_MMAP);
+	return i915_gem_object_type_has(obj, I915_GEM_OBJECT_NO_GGTT);
 }
 
 static inline bool
@@ -296,26 +253,8 @@ int i915_gem_object_set_tiling(struct drm_i915_gem_object *obj,
 			       unsigned int tiling, unsigned int stride);
 
 struct scatterlist *
-__i915_gem_object_get_sg(struct drm_i915_gem_object *obj,
-			 struct i915_gem_object_page_iter *iter,
-			 unsigned int n,
-			 unsigned int *offset);
-
-static inline struct scatterlist *
 i915_gem_object_get_sg(struct drm_i915_gem_object *obj,
-		       unsigned int n,
-		       unsigned int *offset)
-{
-	return __i915_gem_object_get_sg(obj, &obj->mm.get_page, n, offset);
-}
-
-static inline struct scatterlist *
-i915_gem_object_get_sg_dma(struct drm_i915_gem_object *obj,
-			   unsigned int n,
-			   unsigned int *offset)
-{
-	return __i915_gem_object_get_sg(obj, &obj->mm.get_dma_page, n, offset);
-}
+		       unsigned int n, unsigned int *offset);
 
 struct page *
 i915_gem_object_get_page(struct drm_i915_gem_object *obj,
@@ -408,6 +347,14 @@ int __i915_gem_object_put_pages(struct drm_i915_gem_object *obj);
 void i915_gem_object_truncate(struct drm_i915_gem_object *obj);
 void i915_gem_object_writeback(struct drm_i915_gem_object *obj);
 
+enum i915_map_type {
+	I915_MAP_WB = 0,
+	I915_MAP_WC,
+#define I915_MAP_OVERRIDE BIT(31)
+	I915_MAP_FORCE_WB = I915_MAP_WB | I915_MAP_OVERRIDE,
+	I915_MAP_FORCE_WC = I915_MAP_WC | I915_MAP_OVERRIDE,
+};
+
 /**
  * i915_gem_object_pin_map - return a contiguous mapping of the entire object
  * @obj: the object to map into kernel address space
@@ -449,7 +396,9 @@ static inline void i915_gem_object_unpin_map(struct drm_i915_gem_object *obj)
 	i915_gem_object_unpin_pages(obj);
 }
 
-void __i915_gem_object_release_map(struct drm_i915_gem_object *obj);
+void
+i915_gem_object_flush_write_domain(struct drm_i915_gem_object *obj,
+				   unsigned int flush_domains);
 
 int i915_gem_object_prepare_read(struct drm_i915_gem_object *obj,
 				 unsigned int *needs_clflush);
@@ -463,6 +412,7 @@ static inline void
 i915_gem_object_finish_access(struct drm_i915_gem_object *obj)
 {
 	i915_gem_object_unpin_pages(obj);
+	i915_gem_object_unlock(obj);
 }
 
 static inline struct intel_engine_cs *
@@ -485,7 +435,6 @@ i915_gem_object_last_write_engine(struct drm_i915_gem_object *obj)
 void i915_gem_object_set_cache_coherency(struct drm_i915_gem_object *obj,
 					 unsigned int cache_level);
 void i915_gem_object_flush_if_display(struct drm_i915_gem_object *obj);
-void i915_gem_object_flush_if_display_locked(struct drm_i915_gem_object *obj);
 
 int __must_check
 i915_gem_object_set_to_wc_domain(struct drm_i915_gem_object *obj, bool write);
@@ -498,6 +447,7 @@ i915_gem_object_pin_to_display_plane(struct drm_i915_gem_object *obj,
 				     u32 alignment,
 				     const struct i915_ggtt_view *view,
 				     unsigned int flags);
+void i915_gem_object_unpin_from_display_plane(struct i915_vma *vma);
 
 void i915_gem_object_make_unshrinkable(struct drm_i915_gem_object *obj);
 void i915_gem_object_make_shrinkable(struct drm_i915_gem_object *obj);
@@ -522,9 +472,6 @@ static inline void __start_cpu_write(struct drm_i915_gem_object *obj)
 	if (cpu_write_needs_clflush(obj))
 		obj->cache_dirty = true;
 }
-
-void i915_gem_fence_wait_priority(struct dma_fence *fence,
-				  const struct i915_sched_attr *attr);
 
 int i915_gem_object_wait(struct drm_i915_gem_object *obj,
 			 unsigned int flags,
@@ -553,9 +500,5 @@ i915_gem_object_invalidate_frontbuffer(struct drm_i915_gem_object *obj,
 	if (unlikely(rcu_access_pointer(obj->frontbuffer)))
 		__i915_gem_object_invalidate_frontbuffer(obj, origin);
 }
-
-int i915_gem_object_read_from_page(struct drm_i915_gem_object *obj, u64 offset, void *dst, int size);
-
-bool i915_gem_object_is_shmem(const struct drm_i915_gem_object *obj);
 
 #endif

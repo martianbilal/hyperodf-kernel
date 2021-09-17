@@ -132,13 +132,15 @@ void init_ro_spine(struct ro_spine *s, struct dm_btree_info *info)
 	s->nodes[1] = NULL;
 }
 
-void exit_ro_spine(struct ro_spine *s)
+int exit_ro_spine(struct ro_spine *s)
 {
-	int i;
+	int r = 0, i;
 
 	for (i = 0; i < s->count; i++) {
 		unlock_block(s->info, s->nodes[i]);
 	}
+
+	return r;
 }
 
 int ro_step(struct ro_spine *s, dm_block_t new_child)
@@ -235,7 +237,7 @@ int shadow_has_parent(struct shadow_spine *s)
 	return s->count >= 2;
 }
 
-dm_block_t shadow_root(struct shadow_spine *s)
+int shadow_root(struct shadow_spine *s)
 {
 	return s->root;
 }

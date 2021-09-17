@@ -119,7 +119,6 @@
 
 /**
  * struct zynq_qspi - Defines qspi driver instance
- * @dev:		Pointer to the this device's information
  * @regs:		Virtual address of the QSPI controller registers
  * @refclk:		Pointer to the peripheral clock
  * @pclk:		Pointer to the APB clock
@@ -317,7 +316,7 @@ static void zynq_qspi_chipselect(struct spi_device *spi, bool assert)
 /**
  * zynq_qspi_config_op - Configure QSPI controller for specified transfer
  * @xqspi:	Pointer to the zynq_qspi structure
- * @spi:	Pointer to the spi_device structure
+ * @qspi:	Pointer to the spi_device structure
  *
  * Sets the operational mode of QSPI controller for the next QSPI transfer and
  * sets the requested clock frequency.
@@ -540,8 +539,8 @@ static int zynq_qspi_exec_mem_op(struct spi_mem *mem,
 		reinit_completion(&xqspi->data_completion);
 		xqspi->txbuf = (u8 *)&op->cmd.opcode;
 		xqspi->rxbuf = NULL;
-		xqspi->tx_bytes = op->cmd.nbytes;
-		xqspi->rx_bytes = op->cmd.nbytes;
+		xqspi->tx_bytes = sizeof(op->cmd.opcode);
+		xqspi->rx_bytes = sizeof(op->cmd.opcode);
 		zynq_qspi_write_op(xqspi, ZYNQ_QSPI_FIFO_DEPTH, true);
 		zynq_qspi_write(xqspi, ZYNQ_QSPI_IEN_OFFSET,
 				ZYNQ_QSPI_IXR_RXTX_MASK);

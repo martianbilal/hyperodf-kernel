@@ -205,7 +205,7 @@ static void populate_properties(const void *blob,
 		*pprev = NULL;
 }
 
-static int populate_node(const void *blob,
+static bool populate_node(const void *blob,
 			  int offset,
 			  void **mem,
 			  struct device_node *dad,
@@ -214,24 +214,24 @@ static int populate_node(const void *blob,
 {
 	struct device_node *np;
 	const char *pathp;
-	int len;
+	unsigned int l, allocl;
 
-	pathp = fdt_get_name(blob, offset, &len);
+	pathp = fdt_get_name(blob, offset, &l);
 	if (!pathp) {
 		*pnp = NULL;
-		return len;
+		return false;
 	}
 
-	len++;
+	allocl = ++l;
 
-	np = unflatten_dt_alloc(mem, sizeof(struct device_node) + len,
+	np = unflatten_dt_alloc(mem, sizeof(struct device_node) + allocl,
 				__alignof__(struct device_node));
 	if (!dryrun) {
 		char *fn;
 		of_node_init(np);
 		np->full_name = fn = ((char *)np) + sizeof(*np);
 
-		memcpy(fn, pathp, len);
+		memcpy(fn, pathp, l);
 
 		if (dad != NULL) {
 			np->parent = dad;
@@ -295,7 +295,6 @@ static int unflatten_dt_nodes(const void *blob,
 	struct device_node *nps[FDT_MAX_DEPTH];
 	void *base = mem;
 	bool dryrun = !base;
-	int ret;
 
 	if (nodepp)
 		*nodepp = NULL;
@@ -323,10 +322,9 @@ static int unflatten_dt_nodes(const void *blob,
 		    !of_fdt_device_is_available(blob, offset))
 			continue;
 
-		ret = populate_node(blob, offset, &mem, nps[depth],
-				   &nps[depth+1], dryrun);
-		if (ret < 0)
-			return ret;
+		if (!populate_node(blob, offset, &mem, nps[depth],
+				   &nps[depth+1], dryrun))
+			return mem - base;
 
 		if (!dryrun && nodepp && !*nodepp)
 			*nodepp = nps[depth+1];
@@ -374,10 +372,6 @@ void *__unflatten_device_tree(const void *blob,
 {
 	int size;
 	void *mem;
-	int ret;
-
-	if (mynodes)
-		*mynodes = NULL;
 
 	pr_debug(" -> unflatten_device_tree()\n");
 
@@ -398,7 +392,7 @@ void *__unflatten_device_tree(const void *blob,
 
 	/* First pass, scan for size */
 	size = unflatten_dt_nodes(blob, NULL, dad, NULL);
-	if (size <= 0)
+	if (size < 0)
 		return NULL;
 
 	size = ALIGN(size, 4);
@@ -416,16 +410,12 @@ void *__unflatten_device_tree(const void *blob,
 	pr_debug("  unflattening %p...\n", mem);
 
 	/* Second pass, do actual unflattening */
-	ret = unflatten_dt_nodes(blob, mem, dad, mynodes);
-
+	unflatten_dt_nodes(blob, mem, dad, mynodes);
 	if (be32_to_cpup(mem + size) != 0xdeadbeef)
 		pr_warn("End of tree marker overwritten: %08x\n",
 			be32_to_cpup(mem + size));
 
-	if (ret <= 0)
-		return NULL;
-
-	if (detached && mynodes && *mynodes) {
+	if (detached && mynodes) {
 		of_node_set_flag(*mynodes, OF_DETACHED);
 		pr_debug("unflattened tree is detached\n");
 	}
@@ -481,7 +471,7 @@ void *initial_boot_params __ro_after_init;
 static u32 of_fdt_crc32;
 
 /**
- * __reserved_mem_reserve_reg() - reserve all memory described in 'reg' property
+ * res_mem_reserve_reg() - reserve all memory described in 'reg' property
  */
 static int __init __reserved_mem_reserve_reg(unsigned long node,
 					     const char *uname)
@@ -653,6 +643,8 @@ int __init of_scan_flat_dt(int (*it)(unsigned long node,
 	     offset = fdt_next_node(blob, offset, &depth)) {
 
 		pathp = fdt_get_name(blob, offset, NULL);
+		if (*pathp == '/')
+			pathp = kbasename(pathp);
 		rc = it(offset, pathp, depth, data);
 	}
 	return rc;
@@ -679,6 +671,8 @@ int __init of_scan_flat_dt_subnodes(unsigned long parent,
 		int rc;
 
 		pathp = fdt_get_name(blob, node, NULL);
+		if (*pathp == '/')
+			pathp = kbasename(pathp);
 		rc = it(node, pathp, data);
 		if (rc)
 			return rc;
@@ -916,7 +910,7 @@ int __init early_init_dt_scan_chosen_stdout(void)
 	int offset;
 	const char *p, *q, *options = NULL;
 	int l;
-	const struct earlycon_id *match;
+	const struct earlycon_id **p_match;
 	const void *fdt = initial_boot_params;
 
 	offset = fdt_path_offset(fdt, "/chosen");
@@ -943,7 +937,10 @@ int __init early_init_dt_scan_chosen_stdout(void)
 		return 0;
 	}
 
-	for (match = __earlycon_table; match < __earlycon_table_end; match++) {
+	for (p_match = __earlycon_table; p_match < __earlycon_table_end;
+	     p_match++) {
+		const struct earlycon_id *match = *p_match;
+
 		if (!match->compatible[0])
 			continue;
 
@@ -1081,7 +1078,7 @@ int __init early_init_dt_scan_chosen(unsigned long node, const char *uname,
 #endif
 #endif /* CONFIG_CMDLINE */
 
-	pr_debug("Command line is: %s\n", (char *)data);
+	pr_debug("Command line is: %s\n", (char*)data);
 
 	rng_seed = of_get_flat_dt_prop(node, "rng-seed", &l);
 	if (rng_seed && l > 0) {
@@ -1156,16 +1153,8 @@ int __init __weak early_init_dt_mark_hotplug_memory_arch(u64 base, u64 size)
 int __init __weak early_init_dt_reserve_memory_arch(phys_addr_t base,
 					phys_addr_t size, bool nomap)
 {
-	if (nomap) {
-		/*
-		 * If the memory is already reserved (by another region), we
-		 * should not allow it to be marked nomap.
-		 */
-		if (memblock_is_region_reserved(base, size))
-			return -EBUSY;
-
-		return memblock_mark_nomap(base, size);
-	}
+	if (nomap)
+		return memblock_remove(base, size);
 	return memblock_reserve(base, size);
 }
 

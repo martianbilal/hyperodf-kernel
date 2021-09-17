@@ -65,27 +65,27 @@ static const struct reg_init buck7_inits[] = {
 	},
 };
 
-static const struct linear_range bd71828_buck1267_volts[] = {
+static const struct regulator_linear_range bd71828_buck1267_volts[] = {
 	REGULATOR_LINEAR_RANGE(500000, 0x00, 0xef, 6250),
 	REGULATOR_LINEAR_RANGE(2000000, 0xf0, 0xff, 0),
 };
 
-static const struct linear_range bd71828_buck3_volts[] = {
+static const struct regulator_linear_range bd71828_buck3_volts[] = {
 	REGULATOR_LINEAR_RANGE(1200000, 0x00, 0x0f, 50000),
 	REGULATOR_LINEAR_RANGE(2000000, 0x10, 0x1f, 0),
 };
 
-static const struct linear_range bd71828_buck4_volts[] = {
+static const struct regulator_linear_range bd71828_buck4_volts[] = {
 	REGULATOR_LINEAR_RANGE(1000000, 0x00, 0x1f, 25000),
 	REGULATOR_LINEAR_RANGE(1800000, 0x20, 0x3f, 0),
 };
 
-static const struct linear_range bd71828_buck5_volts[] = {
+static const struct regulator_linear_range bd71828_buck5_volts[] = {
 	REGULATOR_LINEAR_RANGE(2500000, 0x00, 0x0f, 50000),
 	REGULATOR_LINEAR_RANGE(3300000, 0x10, 0x1f, 0),
 };
 
-static const struct linear_range bd71828_ldo_volts[] = {
+static const struct regulator_linear_range bd71828_ldo_volts[] = {
 	REGULATOR_LINEAR_RANGE(800000, 0x00, 0x31, 50000),
 	REGULATOR_LINEAR_RANGE(3300000, 0x32, 0x3f, 0),
 };
@@ -749,14 +749,19 @@ static const struct bd71828_regulator_data bd71828_rdata[] = {
 
 static int bd71828_probe(struct platform_device *pdev)
 {
+	struct rohm_regmap_dev *bd71828;
 	int i, j, ret;
 	struct regulator_config config = {
 		.dev = pdev->dev.parent,
 	};
 
-	config.regmap = dev_get_regmap(pdev->dev.parent, NULL);
-	if (!config.regmap)
-		return -ENODEV;
+	bd71828 = dev_get_drvdata(pdev->dev.parent);
+	if (!bd71828) {
+		dev_err(&pdev->dev, "No MFD driver data\n");
+		return -EINVAL;
+	}
+
+	config.regmap = bd71828->regmap;
 
 	for (i = 0; i < ARRAY_SIZE(bd71828_rdata); i++) {
 		struct regulator_dev *rdev;
@@ -772,7 +777,7 @@ static int bd71828_probe(struct platform_device *pdev)
 			return PTR_ERR(rdev);
 		}
 		for (j = 0; j < rd->reg_init_amnt; j++) {
-			ret = regmap_update_bits(config.regmap,
+			ret = regmap_update_bits(bd71828->regmap,
 						 rd->reg_inits[j].reg,
 						 rd->reg_inits[j].mask,
 						 rd->reg_inits[j].val);

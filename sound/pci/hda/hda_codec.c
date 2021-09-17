@@ -88,7 +88,7 @@ struct hda_conn_list {
 	struct list_head list;
 	int len;
 	hda_nid_t nid;
-	hda_nid_t conns[];
+	hda_nid_t conns[0];
 };
 
 /* look up the cached results */
@@ -641,18 +641,8 @@ static void hda_jackpoll_work(struct work_struct *work)
 	struct hda_codec *codec =
 		container_of(work, struct hda_codec, jackpoll_work.work);
 
-	/* for non-polling trigger: we need nothing if already powered on */
-	if (!codec->jackpoll_interval && snd_hdac_is_power_on(&codec->core))
-		return;
-
-	/* the power-up/down sequence triggers the runtime resume */
-	snd_hda_power_up_pm(codec);
-	/* update jacks manually if polling is required, too */
-	if (codec->jackpoll_interval) {
-		snd_hda_jack_set_dirty_all(codec);
-		snd_hda_jack_poll_all(codec);
-	}
-	snd_hda_power_down_pm(codec);
+	snd_hda_jack_set_dirty_all(codec);
+	snd_hda_jack_poll_all(codec);
 
 	if (!codec->jackpoll_interval)
 		return;
@@ -785,14 +775,13 @@ void snd_hda_codec_cleanup_for_unbind(struct hda_codec *codec)
 	snd_array_free(&codec->spdif_out);
 	snd_array_free(&codec->verbs);
 	codec->preset = NULL;
-	codec->follower_dig_outs = NULL;
+	codec->slave_dig_outs = NULL;
 	codec->spdif_status_reset = 0;
 	snd_array_free(&codec->mixers);
 	snd_array_free(&codec->nids);
 	remove_conn_list(codec);
 	snd_hdac_regmap_exit(&codec->core);
 }
-EXPORT_SYMBOL_GPL(snd_hda_codec_cleanup_for_unbind);
 
 static unsigned int hda_set_power_state(struct hda_codec *codec,
 				unsigned int power_state);
@@ -999,9 +988,6 @@ int snd_hda_codec_device_new(struct hda_bus *bus, struct snd_card *card,
 	err = snd_device_new(card, SNDRV_DEV_CODEC, codec, &dev_ops);
 	if (err < 0)
 		goto error;
-
-	/* PM runtime needs to be enabled later after binding codec */
-	pm_runtime_forbid(&codec->core.dev);
 
 	return 0;
 
@@ -1803,18 +1789,18 @@ int snd_hda_codec_reset(struct hda_codec *codec)
 		return -EBUSY;
 
 	/* OK, let it free */
-	device_release_driver(hda_codec_dev(codec));
+	snd_hdac_device_unregister(&codec->core);
 
 	/* allow device access again */
 	snd_hda_unlock_devices(bus);
 	return 0;
 }
 
-typedef int (*map_follower_func_t)(struct hda_codec *, void *, struct snd_kcontrol *);
+typedef int (*map_slave_func_t)(struct hda_codec *, void *, struct snd_kcontrol *);
 
-/* apply the function to all matching follower ctls in the mixer list */
-static int map_followers(struct hda_codec *codec, const char * const *followers,
-			 const char *suffix, map_follower_func_t func, void *data)
+/* apply the function to all matching slave ctls in the mixer list */
+static int map_slaves(struct hda_codec *codec, const char * const *slaves,
+		      const char *suffix, map_slave_func_t func, void *data) 
 {
 	struct hda_nid_item *items;
 	const char * const *s;
@@ -1825,7 +1811,7 @@ static int map_followers(struct hda_codec *codec, const char * const *followers,
 		struct snd_kcontrol *sctl = items[i].kctl;
 		if (!sctl || sctl->id.iface != SNDRV_CTL_ELEM_IFACE_MIXER)
 			continue;
-		for (s = followers; *s; s++) {
+		for (s = slaves; *s; s++) {
 			char tmpname[sizeof(sctl->id.name)];
 			const char *name = *s;
 			if (suffix) {
@@ -1844,8 +1830,8 @@ static int map_followers(struct hda_codec *codec, const char * const *followers,
 	return 0;
 }
 
-static int check_follower_present(struct hda_codec *codec,
-				  void *data, struct snd_kcontrol *sctl)
+static int check_slave_present(struct hda_codec *codec,
+			       void *data, struct snd_kcontrol *sctl)
 {
 	return 1;
 }
@@ -1864,17 +1850,17 @@ static int put_kctl_with_value(struct snd_kcontrol *kctl, int val)
 	return 0;
 }
 
-struct follower_init_arg {
+struct slave_init_arg {
 	struct hda_codec *codec;
 	int step;
 };
 
-/* initialize the follower volume with 0dB via snd_ctl_apply_vmaster_followers() */
-static int init_follower_0dB(struct snd_kcontrol *follower,
-			     struct snd_kcontrol *kctl,
-			     void *_arg)
+/* initialize the slave volume with 0dB via snd_ctl_apply_vmaster_slaves() */
+static int init_slave_0dB(struct snd_kcontrol *slave,
+			  struct snd_kcontrol *kctl,
+			  void *_arg)
 {
-	struct follower_init_arg *arg = _arg;
+	struct slave_init_arg *arg = _arg;
 	int _tlv[4];
 	const int *tlv = NULL;
 	int step;
@@ -1883,7 +1869,7 @@ static int init_follower_0dB(struct snd_kcontrol *follower,
 	if (kctl->vd[0].access & SNDRV_CTL_ELEM_ACCESS_TLV_CALLBACK) {
 		if (kctl->tlv.c != snd_hda_mixer_amp_tlv) {
 			codec_err(arg->codec,
-				  "Unexpected TLV callback for follower %s:%d\n",
+				  "Unexpected TLV callback for slave %s:%d\n",
 				  kctl->id.name, kctl->id.index);
 			return 0; /* ignore */
 		}
@@ -1901,7 +1887,7 @@ static int init_follower_0dB(struct snd_kcontrol *follower,
 		return 0;
 	if (arg->step && arg->step != step) {
 		codec_err(arg->codec,
-			  "Mismatching dB step for vmaster follower (%d!=%d)\n",
+			  "Mismatching dB step for vmaster slave (%d!=%d)\n",
 			  arg->step, step);
 		return 0;
 	}
@@ -1909,49 +1895,49 @@ static int init_follower_0dB(struct snd_kcontrol *follower,
 	arg->step = step;
 	val = -tlv[SNDRV_CTL_TLVO_DB_SCALE_MIN] / step;
 	if (val > 0) {
-		put_kctl_with_value(follower, val);
+		put_kctl_with_value(slave, val);
 		return val;
 	}
 
 	return 0;
 }
 
-/* unmute the follower via snd_ctl_apply_vmaster_followers() */
-static int init_follower_unmute(struct snd_kcontrol *follower,
-				struct snd_kcontrol *kctl,
-				void *_arg)
+/* unmute the slave via snd_ctl_apply_vmaster_slaves() */
+static int init_slave_unmute(struct snd_kcontrol *slave,
+			     struct snd_kcontrol *kctl,
+			     void *_arg)
 {
-	return put_kctl_with_value(follower, 1);
+	return put_kctl_with_value(slave, 1);
 }
 
-static int add_follower(struct hda_codec *codec,
-			void *data, struct snd_kcontrol *follower)
+static int add_slave(struct hda_codec *codec,
+		     void *data, struct snd_kcontrol *slave)
 {
-	return snd_ctl_add_follower(data, follower);
+	return snd_ctl_add_slave(data, slave);
 }
 
 /**
- * __snd_hda_add_vmaster - create a virtual master control and add followers
+ * __snd_hda_add_vmaster - create a virtual master control and add slaves
  * @codec: HD-audio codec
  * @name: vmaster control name
  * @tlv: TLV data (optional)
- * @followers: follower control names (optional)
- * @suffix: suffix string to each follower name (optional)
- * @init_follower_vol: initialize followers to unmute/0dB
+ * @slaves: slave control names (optional)
+ * @suffix: suffix string to each slave name (optional)
+ * @init_slave_vol: initialize slaves to unmute/0dB
  * @ctl_ret: store the vmaster kcontrol in return
  *
  * Create a virtual master control with the given name.  The TLV data
  * must be either NULL or a valid data.
  *
- * @followers is a NULL-terminated array of strings, each of which is a
- * follower control name.  All controls with these names are assigned to
+ * @slaves is a NULL-terminated array of strings, each of which is a
+ * slave control name.  All controls with these names are assigned to
  * the new virtual master control.
  *
  * This function returns zero if successful or a negative error code.
  */
 int __snd_hda_add_vmaster(struct hda_codec *codec, char *name,
-			  unsigned int *tlv, const char * const *followers,
-			  const char *suffix, bool init_follower_vol,
+			unsigned int *tlv, const char * const *slaves,
+			  const char *suffix, bool init_slave_vol,
 			  struct snd_kcontrol **ctl_ret)
 {
 	struct snd_kcontrol *kctl;
@@ -1960,9 +1946,9 @@ int __snd_hda_add_vmaster(struct hda_codec *codec, char *name,
 	if (ctl_ret)
 		*ctl_ret = NULL;
 
-	err = map_followers(codec, followers, suffix, check_follower_present, NULL);
+	err = map_slaves(codec, slaves, suffix, check_slave_present, NULL);
 	if (err != 1) {
-		codec_dbg(codec, "No follower found for %s\n", name);
+		codec_dbg(codec, "No slave found for %s\n", name);
 		return 0;
 	}
 	kctl = snd_ctl_make_virtual_master(name, tlv);
@@ -1972,20 +1958,20 @@ int __snd_hda_add_vmaster(struct hda_codec *codec, char *name,
 	if (err < 0)
 		return err;
 
-	err = map_followers(codec, followers, suffix, add_follower, kctl);
+	err = map_slaves(codec, slaves, suffix, add_slave, kctl);
 	if (err < 0)
 		return err;
 
 	/* init with master mute & zero volume */
 	put_kctl_with_value(kctl, 0);
-	if (init_follower_vol) {
-		struct follower_init_arg arg = {
+	if (init_slave_vol) {
+		struct slave_init_arg arg = {
 			.codec = codec,
 			.step = 0,
 		};
-		snd_ctl_apply_vmaster_followers(kctl,
-						tlv ? init_follower_0dB : init_follower_unmute,
-						&arg);
+		snd_ctl_apply_vmaster_slaves(kctl,
+					     tlv ? init_slave_0dB : init_slave_unmute,
+					     &arg);
 	}
 
 	if (ctl_ret)
@@ -2288,7 +2274,7 @@ static unsigned int convert_to_spdif_status(unsigned short val)
 	return sbits;
 }
 
-/* set digital convert verbs both for the given NID and its followers */
+/* set digital convert verbs both for the given NID and its slaves */
 static void set_dig_out(struct hda_codec *codec, hda_nid_t nid,
 			int mask, int val)
 {
@@ -2296,7 +2282,7 @@ static void set_dig_out(struct hda_codec *codec, hda_nid_t nid,
 
 	snd_hdac_regmap_update(&codec->core, nid, AC_VERB_SET_DIGI_CONVERT_1,
 			       mask, val);
-	d = codec->follower_dig_outs;
+	d = codec->slave_dig_outs;
 	if (!d)
 		return;
 	for (; *d; d++)
@@ -2939,10 +2925,6 @@ static int hda_codec_runtime_suspend(struct device *dev)
 	struct hda_codec *codec = dev_to_hda_codec(dev);
 	unsigned int state;
 
-	/* Nothing to do if card registration fails and the component driver never probes */
-	if (!codec->card)
-		return 0;
-
 	cancel_delayed_work_sync(&codec->jackpoll_work);
 	state = hda_call_codec_suspend(codec);
 	if (codec->link_down_at_suspend ||
@@ -2957,37 +2939,31 @@ static int hda_codec_runtime_resume(struct device *dev)
 {
 	struct hda_codec *codec = dev_to_hda_codec(dev);
 
-	/* Nothing to do if card registration fails and the component driver never probes */
-	if (!codec->card)
-		return 0;
-
 	codec_display_power(codec, true);
 	snd_hdac_codec_link_up(&codec->core);
 	hda_call_codec_resume(codec);
 	pm_runtime_mark_last_busy(dev);
 	return 0;
 }
-
 #endif /* CONFIG_PM */
 
 #ifdef CONFIG_PM_SLEEP
-static int hda_codec_pm_prepare(struct device *dev)
-{
-	dev->power.power_state = PMSG_SUSPEND;
-	return pm_runtime_suspended(dev);
-}
-
-static void hda_codec_pm_complete(struct device *dev)
+static int hda_codec_force_resume(struct device *dev)
 {
 	struct hda_codec *codec = dev_to_hda_codec(dev);
+	bool forced_resume = !codec->relaxed_resume && codec->jacktbl.used;
+	int ret;
 
-	/* If no other pm-functions are called between prepare() and complete() */
-	if (dev->power.power_state.event == PM_EVENT_SUSPEND)
-		dev->power.power_state = PMSG_RESUME;
-
-	if (pm_runtime_suspended(dev) && (codec->jackpoll_interval ||
-	    hda_codec_need_resume(codec) || codec->forced_resume))
-		pm_request_resume(dev);
+	/* The get/put pair below enforces the runtime resume even if the
+	 * device hasn't been used at suspend time.  This trick is needed to
+	 * update the jack state change during the sleep.
+	 */
+	if (forced_resume)
+		pm_runtime_get_noresume(dev);
+	ret = pm_runtime_force_resume(dev);
+	if (forced_resume)
+		pm_runtime_put(dev);
+	return ret;
 }
 
 static int hda_codec_pm_suspend(struct device *dev)
@@ -2999,7 +2975,7 @@ static int hda_codec_pm_suspend(struct device *dev)
 static int hda_codec_pm_resume(struct device *dev)
 {
 	dev->power.power_state = PMSG_RESUME;
-	return pm_runtime_force_resume(dev);
+	return hda_codec_force_resume(dev);
 }
 
 static int hda_codec_pm_freeze(struct device *dev)
@@ -3011,21 +2987,19 @@ static int hda_codec_pm_freeze(struct device *dev)
 static int hda_codec_pm_thaw(struct device *dev)
 {
 	dev->power.power_state = PMSG_THAW;
-	return pm_runtime_force_resume(dev);
+	return hda_codec_force_resume(dev);
 }
 
 static int hda_codec_pm_restore(struct device *dev)
 {
 	dev->power.power_state = PMSG_RESTORE;
-	return pm_runtime_force_resume(dev);
+	return hda_codec_force_resume(dev);
 }
 #endif /* CONFIG_PM_SLEEP */
 
 /* referred in hda_bind.c */
 const struct dev_pm_ops hda_codec_driver_pm = {
 #ifdef CONFIG_PM_SLEEP
-	.prepare = hda_codec_pm_prepare,
-	.complete = hda_codec_pm_complete,
 	.suspend = hda_codec_pm_suspend,
 	.resume = hda_codec_pm_resume,
 	.freeze = hda_codec_pm_freeze,
@@ -3198,7 +3172,7 @@ int snd_hda_codec_prepare(struct hda_codec *codec,
 EXPORT_SYMBOL_GPL(snd_hda_codec_prepare);
 
 /**
- * snd_hda_codec_cleanup - Clean up stream resources
+ * snd_hda_codec_cleanup - Prepare a stream
  * @codec: the HDA codec
  * @hinfo: PCM information
  * @substream: PCM substream
@@ -3439,7 +3413,7 @@ EXPORT_SYMBOL_GPL(snd_hda_set_power_save);
  * @nid: NID to check / update
  *
  * Check whether the given NID is in the amp list.  If it's in the list,
- * check the current AMP status, and update the power-status according
+ * check the current AMP status, and update the the power-status according
  * to the mute status.
  *
  * This function is supposed to be set or called from the check_power_status
@@ -3488,7 +3462,7 @@ EXPORT_SYMBOL_GPL(snd_hda_check_amp_list_power);
  */
 
 /**
- * snd_hda_input_mux_info - Info callback helper for the input-mux enum
+ * snd_hda_input_mux_info_info - Info callback helper for the input-mux enum
  * @imux: imux helper object
  * @uinfo: pointer to get/store the data
  */
@@ -3511,7 +3485,7 @@ int snd_hda_input_mux_info(const struct hda_input_mux *imux,
 EXPORT_SYMBOL_GPL(snd_hda_input_mux_info);
 
 /**
- * snd_hda_input_mux_put - Put callback helper for the input-mux enum
+ * snd_hda_input_mux_info_put - Put callback helper for the input-mux enum
  * @codec: the HDA codec
  * @imux: imux helper object
  * @ucontrol: pointer to get/store the data
@@ -3600,9 +3574,9 @@ static void setup_dig_out_stream(struct hda_codec *codec, hda_nid_t nid,
 				    spdif->ctls & ~AC_DIG1_ENABLE & 0xff,
 				    -1);
 	snd_hda_codec_setup_stream(codec, nid, stream_tag, 0, format);
-	if (codec->follower_dig_outs) {
+	if (codec->slave_dig_outs) {
 		const hda_nid_t *d;
-		for (d = codec->follower_dig_outs; *d; d++)
+		for (d = codec->slave_dig_outs; *d; d++)
 			snd_hda_codec_setup_stream(codec, *d, stream_tag, 0,
 						   format);
 	}
@@ -3615,9 +3589,9 @@ static void setup_dig_out_stream(struct hda_codec *codec, hda_nid_t nid,
 static void cleanup_dig_out_stream(struct hda_codec *codec, hda_nid_t nid)
 {
 	snd_hda_codec_cleanup_stream(codec, nid);
-	if (codec->follower_dig_outs) {
+	if (codec->slave_dig_outs) {
 		const hda_nid_t *d;
-		for (d = codec->follower_dig_outs; *d; d++)
+		for (d = codec->slave_dig_outs; *d; d++)
 			snd_hda_codec_cleanup_stream(codec, *d);
 	}
 }
@@ -3699,7 +3673,7 @@ EXPORT_SYMBOL_GPL(snd_hda_multi_out_dig_close);
  * @hinfo: PCM information to assign
  *
  * Open analog outputs and set up the hw-constraints.
- * If the digital outputs can be opened as follower, open the digital
+ * If the digital outputs can be opened as slave, open the digital
  * outputs, too.
  */
 int snd_hda_multi_out_analog_open(struct hda_codec *codec,
@@ -3946,7 +3920,7 @@ unsigned int snd_hda_correct_pin_ctl(struct hda_codec *codec,
 EXPORT_SYMBOL_GPL(snd_hda_correct_pin_ctl);
 
 /**
- * _snd_hda_set_pin_ctl - Helper to set pin ctl value
+ * _snd_hda_pin_ctl - Helper to set pin ctl value
  * @codec: the HDA codec
  * @pin: referred pin NID
  * @val: pin control value to set
@@ -4004,7 +3978,7 @@ int snd_hda_add_imux_item(struct hda_codec *codec,
 			 sizeof(imux->items[imux->num_items].label),
 			 "%s %d", label, label_idx);
 	else
-		strscpy(imux->items[imux->num_items].label, label,
+		strlcpy(imux->items[imux->num_items].label, label,
 			sizeof(imux->items[imux->num_items].label));
 	imux->items[imux->num_items].index = index;
 	imux->num_items++;

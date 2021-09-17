@@ -7,7 +7,7 @@
  * Hwmon integration:
  * Copyright (C) 2011  Jean Delvare <jdelvare@suse.de>
  * Copyright (C) 2013, 2014  Guenter Roeck <linux@roeck-us.net>
- * Copyright (C) 2014, 2015  Pali Rohár <pali@kernel.org>
+ * Copyright (C) 2014, 2015  Pali Rohár <pali.rohar@gmail.com>
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -86,7 +86,7 @@ static unsigned int auto_fan;
 #define I8K_HWMON_HAVE_FAN3	(1 << 12)
 
 MODULE_AUTHOR("Massimo Dal Zotto (dz@debian.org)");
-MODULE_AUTHOR("Pali Rohár <pali@kernel.org>");
+MODULE_AUTHOR("Pali Rohár <pali.rohar@gmail.com>");
 MODULE_DESCRIPTION("Dell laptop SMM BIOS hwmon driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("i8k");
@@ -838,10 +838,10 @@ static struct attribute *i8k_attrs[] = {
 static umode_t i8k_is_visible(struct kobject *kobj, struct attribute *attr,
 			      int index)
 {
-	if (disallow_fan_support && index >= 20)
+	if (disallow_fan_support && index >= 8)
 		return 0;
 	if (disallow_fan_type_call &&
-	    (index == 21 || index == 25 || index == 28))
+	    (index == 9 || index == 12 || index == 15))
 		return 0;
 	if (index >= 0 && index <= 1 &&
 	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_TEMP1))
@@ -1073,12 +1073,27 @@ static const struct dmi_system_id i8k_dmi_table[] __initconst = {
 		},
 	},
 	{
+		.ident = "Dell XPS421",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "XPS L421X"),
+		},
+	},
+	{
 		.ident = "Dell Studio",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Studio"),
 		},
 		.driver_data = (void *)&i8k_config_data[DELL_STUDIO],
+	},
+	{
+		.ident = "Dell XPS 13",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "XPS13"),
+		},
+		.driver_data = (void *)&i8k_config_data[DELL_XPS],
 	},
 	{
 		.ident = "Dell XPS M140",
@@ -1089,10 +1104,17 @@ static const struct dmi_system_id i8k_dmi_table[] __initconst = {
 		.driver_data = (void *)&i8k_config_data[DELL_XPS],
 	},
 	{
-		.ident = "Dell XPS",
+		.ident = "Dell XPS 15 9560",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "XPS"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "XPS 15 9560"),
+		},
+	},
+	{
+		.ident = "Dell XPS 15 9570",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "XPS 15 9570"),
 		},
 	},
 	{ }
@@ -1159,13 +1181,6 @@ static struct dmi_system_id i8k_blacklist_fan_support_dmi_table[] __initdata = {
 			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "XPS13 9333"),
 		},
 	},
-	{
-		.ident = "Dell XPS 15 L502X",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
-			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Dell System XPS L502X"),
-		},
-	},
 	{ }
 };
 
@@ -1191,14 +1206,6 @@ static struct dmi_system_id i8k_whitelist_fan_control[] __initdata = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
 			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Precision 5530"),
-		},
-		.driver_data = (void *)&i8k_fan_control_data[I8K_FAN_34A3_35A3],
-	},
-	{
-		.ident = "Dell Latitude 5480",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
-			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Latitude 5480"),
 		},
 		.driver_data = (void *)&i8k_fan_control_data[I8K_FAN_34A3_35A3],
 	},

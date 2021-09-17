@@ -58,21 +58,16 @@
 				reg = <0x33>;
 				label = "lp5521_pri";
 				clock-mode = /bits/ 8 <2>;
-				#address-cells = <1>;
-				#size-cells = <0>;
-				chan@0 {
-					reg = <0>;
+				chan0 {
 					led-cur = /bits/ 8 <0x2f>;
 					max-cur = /bits/ 8 <0x5f>;
 					linux,default-trigger = "heartbeat";
 				};
-				chan@1 {
-					reg = <1>;
+				chan1 {
 					led-cur = /bits/ 8 <0x2f>;
 					max-cur = /bits/ 8 <0x5f>;
 				};
-				chan@2 {
-					reg = <2>;
+				chan2 {
 					led-cur = /bits/ 8 <0x2f>;
 					max-cur = /bits/ 8 <0x5f>;
 				};
@@ -82,20 +77,15 @@
 				reg = <0x34>;
 				label = "lp5521_sec";
 				clock-mode = /bits/ 8 <2>;
-				#address-cells = <1>;
-				#size-cells = <0>;
-				chan@0 {
-					reg = <0>;
+				chan0 {
 					led-cur = /bits/ 8 <0x2f>;
 					max-cur = /bits/ 8 <0x5f>;
 				};
-				chan@1 {
-					reg = <1>;
+				chan1 {
 					led-cur = /bits/ 8 <0x2f>;
 					max-cur = /bits/ 8 <0x5f>;
 				};
-				chan@2 {
-					reg = <2>;
+				chan2 {
 					led-cur = /bits/ 8 <0x2f>;
 					max-cur = /bits/ 8 <0x5f>;
 				};
@@ -113,8 +103,23 @@
 			status = "okay";
 		};
 
+		/* ST6G3244ME level translator for 1.8/2.9 V */
+		vmmci: regulator-gpio {
+			compatible = "regulator-gpio";
+
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <2900000>;
+			regulator-name = "mmci-reg";
+			regulator-type = "voltage";
+
+			startup-delay-us = <100>;
+
+			states = <1800000 0x1
+				  2900000 0x0>;
+		};
+
 		// External Micro SD slot
-		mmc@80126000 {
+		sdi0_per1@80126000 {
 			arm,primecell-periphid = <0x10480180>;
 			max-frequency = <100000000>;
 			bus-width = <4>;
@@ -137,7 +142,7 @@
 		};
 
 		// WLAN SDIO channel
-		mmc@80118000 {
+		sdi1_per2@80118000 {
 			arm,primecell-periphid = <0x10480180>;
 			max-frequency = <100000000>;
 			bus-width = <4>;
@@ -150,7 +155,7 @@
 		};
 
 		// PoP:ed eMMC
-		mmc@80005000 {
+		sdi2_per3@80005000 {
 			arm,primecell-periphid = <0x10480180>;
 			max-frequency = <100000000>;
 			bus-width = <8>;
@@ -165,7 +170,7 @@
 		};
 
 		// On-board eMMC
-		mmc@80114000 {
+		sdi4_per2@80114000 {
 			arm,primecell-periphid = <0x10480180>;
 		        max-frequency = <100000000>;
 			bus-width = <8>;

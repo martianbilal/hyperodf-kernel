@@ -9,7 +9,6 @@
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
-#include <drm/drm_managed.h>
 #include <drm/drm_plane_helper.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
@@ -27,59 +26,11 @@
  * entity. Some flexibility for code reuse is provided through a separately
  * allocated &drm_connector object and supporting optional &drm_bridge
  * encoder drivers.
- *
- * Many drivers require only a very simple encoder that fulfills the minimum
- * requirements of the display pipeline and does not add additional
- * functionality. The function drm_simple_encoder_init() provides an
- * implementation of such an encoder.
  */
 
-static const struct drm_encoder_funcs drm_simple_encoder_funcs_cleanup = {
+static const struct drm_encoder_funcs drm_simple_kms_encoder_funcs = {
 	.destroy = drm_encoder_cleanup,
 };
-
-/**
- * drm_simple_encoder_init - Initialize a preallocated encoder with
- *                           basic functionality.
- * @dev: drm device
- * @encoder: the encoder to initialize
- * @encoder_type: user visible type of the encoder
- *
- * Initialises a preallocated encoder that has no further functionality.
- * Settings for possible CRTC and clones are left to their initial values.
- * The encoder will be cleaned up automatically as part of the mode-setting
- * cleanup.
- *
- * The caller of drm_simple_encoder_init() is responsible for freeing
- * the encoder's memory after the encoder has been cleaned up. At the
- * moment this only works reliably if the encoder data structure is
- * stored in the device structure. Free the encoder's memory as part of
- * the device release function.
- *
- * Note: consider using drmm_simple_encoder_alloc() instead of
- * drm_simple_encoder_init() to let the DRM managed resource infrastructure
- * take care of cleanup and deallocation.
- *
- * Returns:
- * Zero on success, error code on failure.
- */
-int drm_simple_encoder_init(struct drm_device *dev,
-			    struct drm_encoder *encoder,
-			    int encoder_type)
-{
-	return drm_encoder_init(dev, encoder,
-				&drm_simple_encoder_funcs_cleanup,
-				encoder_type, NULL);
-}
-EXPORT_SYMBOL(drm_simple_encoder_init);
-
-void *__drmm_simple_encoder_alloc(struct drm_device *dev, size_t size,
-				  size_t offset, int encoder_type)
-{
-	return __drmm_encoder_alloc(dev, size, offset, NULL, encoder_type,
-				    NULL);
-}
-EXPORT_SYMBOL(__drmm_simple_encoder_alloc);
 
 static enum drm_mode_status
 drm_simple_kms_crtc_mode_valid(struct drm_crtc *crtc,
@@ -96,22 +47,20 @@ drm_simple_kms_crtc_mode_valid(struct drm_crtc *crtc,
 }
 
 static int drm_simple_kms_crtc_check(struct drm_crtc *crtc,
-				     struct drm_atomic_state *state)
+				     struct drm_crtc_state *state)
 {
-	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state,
-									  crtc);
-	bool has_primary = crtc_state->plane_mask &
+	bool has_primary = state->plane_mask &
 			   drm_plane_mask(crtc->primary);
 
 	/* We always want to have an active plane with an active CRTC */
-	if (has_primary != crtc_state->enable)
+	if (has_primary != state->enable)
 		return -EINVAL;
 
-	return drm_atomic_add_affected_planes(state, crtc);
+	return drm_atomic_add_affected_planes(state->state, crtc);
 }
 
 static void drm_simple_kms_crtc_enable(struct drm_crtc *crtc,
-				       struct drm_atomic_state *state)
+				       struct drm_crtc_state *old_state)
 {
 	struct drm_plane *plane;
 	struct drm_simple_display_pipe *pipe;
@@ -125,7 +74,7 @@ static void drm_simple_kms_crtc_enable(struct drm_crtc *crtc,
 }
 
 static void drm_simple_kms_crtc_disable(struct drm_crtc *crtc,
-					struct drm_atomic_state *state)
+					struct drm_crtc_state *old_state)
 {
 	struct drm_simple_display_pipe *pipe;
 
@@ -280,7 +229,7 @@ static const struct drm_plane_funcs drm_simple_kms_plane_funcs = {
 int drm_simple_display_pipe_attach_bridge(struct drm_simple_display_pipe *pipe,
 					  struct drm_bridge *bridge)
 {
-	return drm_bridge_attach(&pipe->encoder, bridge, NULL, 0);
+	return drm_bridge_attach(&pipe->encoder, bridge, NULL);
 }
 EXPORT_SYMBOL(drm_simple_display_pipe_attach_bridge);
 
@@ -339,7 +288,8 @@ int drm_simple_display_pipe_init(struct drm_device *dev,
 		return ret;
 
 	encoder->possible_crtcs = drm_crtc_mask(crtc);
-	ret = drm_simple_encoder_init(dev, encoder, DRM_MODE_ENCODER_NONE);
+	ret = drm_encoder_init(dev, encoder, &drm_simple_kms_encoder_funcs,
+			       DRM_MODE_ENCODER_NONE, NULL);
 	if (ret || !connector)
 		return ret;
 

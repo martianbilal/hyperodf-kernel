@@ -20,7 +20,6 @@
 #include <linux/hw_random.h>
 #include <linux/ccp.h>
 #include <linux/firmware.h>
-#include <linux/gfp.h>
 
 #include <asm/smp.h>
 
@@ -44,14 +43,6 @@ MODULE_PARM_DESC(psp_probe_timeout, " default timeout value, in seconds, during 
 
 static bool psp_dead;
 static int psp_timeout;
-
-/* Trusted Memory Region (TMR):
- *   The TMR is a 1MB area that must be 1MB aligned.  Use the page allocator
- *   to allocate the memory, which will return aligned memory for the specified
- *   allocation order.
- */
-#define SEV_ES_TMR_SIZE		(1024 * 1024)
-static void *sev_es_tmr;
 
 static inline bool sev_version_greater_or_equal(u8 maj, u8 min)
 {
@@ -128,7 +119,6 @@ static int sev_cmd_buffer_len(int cmd)
 	case SEV_CMD_LAUNCH_UPDATE_SECRET:	return sizeof(struct sev_data_launch_secret);
 	case SEV_CMD_DOWNLOAD_FIRMWARE:		return sizeof(struct sev_data_download_firmware);
 	case SEV_CMD_GET_ID:			return sizeof(struct sev_data_get_id);
-	case SEV_CMD_ATTESTATION_REPORT:	return sizeof(struct sev_data_attestation_report);
 	default:				return 0;
 	}
 
@@ -149,9 +139,6 @@ static int __sev_do_cmd_locked(int cmd, void *data, int *psp_ret)
 		return -EBUSY;
 
 	sev = psp->sev_data;
-
-	if (data && WARN_ON_ONCE(!virt_addr_valid(data)))
-		return -EINVAL;
 
 	/* Get the physical address of the command buffer */
 	phys_lsb = data ? lower_32_bits(__psp_pa(data)) : 0;
@@ -227,20 +214,6 @@ static int __sev_platform_init_locked(int *error)
 	if (sev->state == SEV_STATE_INIT)
 		return 0;
 
-	if (sev_es_tmr) {
-		u64 tmr_pa;
-
-		/*
-		 * Do not include the encryption mask on the physical
-		 * address of the TMR (firmware should clear it anyway).
-		 */
-		tmr_pa = __pa(sev_es_tmr);
-
-		sev->init_cmd_buf.flags |= SEV_INIT_FLAGS_SEV_ES;
-		sev->init_cmd_buf.tmr_address = tmr_pa;
-		sev->init_cmd_buf.tmr_len = SEV_ES_TMR_SIZE;
-	}
-
 	rc = __sev_do_cmd_locked(SEV_CMD_INIT, &sev->init_cmd_buf, error);
 	if (rc)
 		return rc;
@@ -310,11 +283,11 @@ static int sev_get_platform_state(int *state, int *error)
 	return rc;
 }
 
-static int sev_ioctl_do_reset(struct sev_issue_cmd *argp, bool writable)
+static int sev_ioctl_do_reset(struct sev_issue_cmd *argp)
 {
 	int state, rc;
 
-	if (!writable)
+	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
 	/*
@@ -358,12 +331,12 @@ static int sev_ioctl_do_platform_status(struct sev_issue_cmd *argp)
 	return ret;
 }
 
-static int sev_ioctl_do_pek_pdh_gen(int cmd, struct sev_issue_cmd *argp, bool writable)
+static int sev_ioctl_do_pek_pdh_gen(int cmd, struct sev_issue_cmd *argp)
 {
 	struct sev_device *sev = psp_master->sev_data;
 	int rc;
 
-	if (!writable)
+	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
 	if (sev->state == SEV_STATE_UNINIT) {
@@ -375,16 +348,15 @@ static int sev_ioctl_do_pek_pdh_gen(int cmd, struct sev_issue_cmd *argp, bool wr
 	return __sev_do_cmd_locked(cmd, NULL, &argp->error);
 }
 
-static int sev_ioctl_do_pek_csr(struct sev_issue_cmd *argp, bool writable)
+static int sev_ioctl_do_pek_csr(struct sev_issue_cmd *argp)
 {
 	struct sev_device *sev = psp_master->sev_data;
 	struct sev_user_data_pek_csr input;
 	struct sev_data_pek_csr *data;
-	void __user *input_address;
 	void *blob = NULL;
 	int ret;
 
-	if (!writable)
+	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
 	if (copy_from_user(&input, (void __user *)argp->data, sizeof(input)))
@@ -399,8 +371,8 @@ static int sev_ioctl_do_pek_csr(struct sev_issue_cmd *argp, bool writable)
 		goto cmd;
 
 	/* allocate a physically contiguous buffer to store the CSR blob */
-	input_address = (void __user *)input.address;
-	if (input.length > SEV_FW_BLOB_MAX_SIZE) {
+	if (!access_ok(input.address, input.length) ||
+	    input.length > SEV_FW_BLOB_MAX_SIZE) {
 		ret = -EFAULT;
 		goto e_free;
 	}
@@ -432,7 +404,7 @@ cmd:
 	}
 
 	if (blob) {
-		if (copy_to_user(input_address, blob, input.length))
+		if (copy_to_user((void __user *)input.address, blob, input.length))
 			ret = -EFAULT;
 	}
 
@@ -443,7 +415,7 @@ e_free:
 	return ret;
 }
 
-void *psp_copy_user_blob(u64 uaddr, u32 len)
+void *psp_copy_user_blob(u64 __user uaddr, u32 len)
 {
 	if (!uaddr || !len)
 		return ERR_PTR(-EINVAL);
@@ -452,7 +424,7 @@ void *psp_copy_user_blob(u64 uaddr, u32 len)
 	if (len > SEV_FW_BLOB_MAX_SIZE)
 		return ERR_PTR(-EINVAL);
 
-	return memdup_user((void __user *)uaddr, len);
+	return memdup_user((void __user *)(uintptr_t)uaddr, len);
 }
 EXPORT_SYMBOL_GPL(psp_copy_user_blob);
 
@@ -567,7 +539,7 @@ fw_err:
 	return ret;
 }
 
-static int sev_ioctl_do_pek_import(struct sev_issue_cmd *argp, bool writable)
+static int sev_ioctl_do_pek_import(struct sev_issue_cmd *argp)
 {
 	struct sev_device *sev = psp_master->sev_data;
 	struct sev_user_data_pek_cert_import input;
@@ -575,7 +547,7 @@ static int sev_ioctl_do_pek_import(struct sev_issue_cmd *argp, bool writable)
 	void *pek_blob, *oca_blob;
 	int ret;
 
-	if (!writable)
+	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
 	if (copy_from_user(&input, (void __user *)argp->data, sizeof(input)))
@@ -627,7 +599,6 @@ static int sev_ioctl_do_get_id2(struct sev_issue_cmd *argp)
 {
 	struct sev_user_data_get_id2 input;
 	struct sev_data_get_id *data;
-	void __user *input_address;
 	void *id_blob = NULL;
 	int ret;
 
@@ -638,7 +609,11 @@ static int sev_ioctl_do_get_id2(struct sev_issue_cmd *argp)
 	if (copy_from_user(&input, (void __user *)argp->data, sizeof(input)))
 		return -EFAULT;
 
-	input_address = (void __user *)input.address;
+	/* Check if we have write access to the userspace buffer */
+	if (input.address &&
+	    input.length &&
+	    !access_ok(input.address, input.length))
+		return -EFAULT;
 
 	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
@@ -669,7 +644,8 @@ static int sev_ioctl_do_get_id2(struct sev_issue_cmd *argp)
 	}
 
 	if (id_blob) {
-		if (copy_to_user(input_address, id_blob, data->len)) {
+		if (copy_to_user((void __user *)input.address,
+				 id_blob, data->len)) {
 			ret = -EFAULT;
 			goto e_free;
 		}
@@ -722,19 +698,17 @@ static int sev_ioctl_do_get_id(struct sev_issue_cmd *argp)
 	return ret;
 }
 
-static int sev_ioctl_do_pdh_export(struct sev_issue_cmd *argp, bool writable)
+static int sev_ioctl_do_pdh_export(struct sev_issue_cmd *argp)
 {
 	struct sev_device *sev = psp_master->sev_data;
 	struct sev_user_data_pdh_cert_export input;
 	void *pdh_blob = NULL, *cert_blob = NULL;
 	struct sev_data_pdh_cert_export *data;
-	void __user *input_cert_chain_address;
-	void __user *input_pdh_cert_address;
 	int ret;
 
 	/* If platform is not in INIT state then transition it to INIT. */
 	if (sev->state != SEV_STATE_INIT) {
-		if (!writable)
+		if (!capable(CAP_SYS_ADMIN))
 			return -EPERM;
 
 		ret = __sev_platform_init_locked(&argp->error);
@@ -755,17 +729,16 @@ static int sev_ioctl_do_pdh_export(struct sev_issue_cmd *argp, bool writable)
 	    !input.cert_chain_address)
 		goto cmd;
 
-	input_pdh_cert_address = (void __user *)input.pdh_cert_address;
-	input_cert_chain_address = (void __user *)input.cert_chain_address;
-
 	/* Allocate a physically contiguous buffer to store the PDH blob. */
-	if (input.pdh_cert_len > SEV_FW_BLOB_MAX_SIZE) {
+	if ((input.pdh_cert_len > SEV_FW_BLOB_MAX_SIZE) ||
+	    !access_ok(input.pdh_cert_address, input.pdh_cert_len)) {
 		ret = -EFAULT;
 		goto e_free;
 	}
 
 	/* Allocate a physically contiguous buffer to store the cert chain blob. */
-	if (input.cert_chain_len > SEV_FW_BLOB_MAX_SIZE) {
+	if ((input.cert_chain_len > SEV_FW_BLOB_MAX_SIZE) ||
+	    !access_ok(input.cert_chain_address, input.cert_chain_len)) {
 		ret = -EFAULT;
 		goto e_free;
 	}
@@ -801,7 +774,7 @@ cmd:
 	}
 
 	if (pdh_blob) {
-		if (copy_to_user(input_pdh_cert_address,
+		if (copy_to_user((void __user *)input.pdh_cert_address,
 				 pdh_blob, input.pdh_cert_len)) {
 			ret = -EFAULT;
 			goto e_free_cert;
@@ -809,7 +782,7 @@ cmd:
 	}
 
 	if (cert_blob) {
-		if (copy_to_user(input_cert_chain_address,
+		if (copy_to_user((void __user *)input.cert_chain_address,
 				 cert_blob, input.cert_chain_len))
 			ret = -EFAULT;
 	}
@@ -828,7 +801,6 @@ static long sev_ioctl(struct file *file, unsigned int ioctl, unsigned long arg)
 	void __user *argp = (void __user *)arg;
 	struct sev_issue_cmd input;
 	int ret = -EFAULT;
-	bool writable = file->f_mode & FMODE_WRITE;
 
 	if (!psp_master || !psp_master->sev_data)
 		return -ENODEV;
@@ -847,25 +819,25 @@ static long sev_ioctl(struct file *file, unsigned int ioctl, unsigned long arg)
 	switch (input.cmd) {
 
 	case SEV_FACTORY_RESET:
-		ret = sev_ioctl_do_reset(&input, writable);
+		ret = sev_ioctl_do_reset(&input);
 		break;
 	case SEV_PLATFORM_STATUS:
 		ret = sev_ioctl_do_platform_status(&input);
 		break;
 	case SEV_PEK_GEN:
-		ret = sev_ioctl_do_pek_pdh_gen(SEV_CMD_PEK_GEN, &input, writable);
+		ret = sev_ioctl_do_pek_pdh_gen(SEV_CMD_PEK_GEN, &input);
 		break;
 	case SEV_PDH_GEN:
-		ret = sev_ioctl_do_pek_pdh_gen(SEV_CMD_PDH_GEN, &input, writable);
+		ret = sev_ioctl_do_pek_pdh_gen(SEV_CMD_PDH_GEN, &input);
 		break;
 	case SEV_PEK_CSR:
-		ret = sev_ioctl_do_pek_csr(&input, writable);
+		ret = sev_ioctl_do_pek_csr(&input);
 		break;
 	case SEV_PEK_CERT_IMPORT:
-		ret = sev_ioctl_do_pek_import(&input, writable);
+		ret = sev_ioctl_do_pek_import(&input);
 		break;
 	case SEV_PDH_CERT_EXPORT:
-		ret = sev_ioctl_do_pdh_export(&input, writable);
+		ret = sev_ioctl_do_pdh_export(&input);
 		break;
 	case SEV_GET_ID:
 		pr_warn_once("SEV_GET_ID command is deprecated, use SEV_GET_ID2\n");
@@ -924,9 +896,9 @@ EXPORT_SYMBOL_GPL(sev_guest_df_flush);
 
 static void sev_exit(struct kref *ref)
 {
+	struct sev_misc_dev *misc_dev = container_of(ref, struct sev_misc_dev, refcount);
+
 	misc_deregister(&misc_dev->misc);
-	kfree(misc_dev);
-	misc_dev = NULL;
 }
 
 static int sev_misc_init(struct sev_device *sev)
@@ -944,7 +916,7 @@ static int sev_misc_init(struct sev_device *sev)
 	if (!misc_dev) {
 		struct miscdevice *misc;
 
-		misc_dev = kzalloc(sizeof(*misc_dev), GFP_KERNEL);
+		misc_dev = devm_kzalloc(dev, sizeof(*misc_dev), GFP_KERNEL);
 		if (!misc_dev)
 			return -ENOMEM;
 
@@ -990,7 +962,7 @@ int sev_dev_init(struct psp_device *psp)
 	if (!sev->vdata) {
 		ret = -ENODEV;
 		dev_err(dev, "sev: missing driver data\n");
-		goto e_sev;
+		goto e_err;
 	}
 
 	psp_set_sev_irq_handler(psp, sev_irq_handler, sev);
@@ -1005,8 +977,6 @@ int sev_dev_init(struct psp_device *psp)
 
 e_irq:
 	psp_clear_sev_irq_handler(psp);
-e_sev:
-	devm_kfree(dev, sev);
 e_err:
 	psp->sev_data = NULL;
 
@@ -1041,7 +1011,6 @@ EXPORT_SYMBOL_GPL(sev_issue_cmd_external_user);
 void sev_pci_init(void)
 {
 	struct sev_device *sev = psp_master->sev_data;
-	struct page *tmr_page;
 	int error, rc;
 
 	if (!sev)
@@ -1070,16 +1039,6 @@ void sev_pci_init(void)
 	if (sev_version_greater_or_equal(0, 15) &&
 	    sev_update_firmware(sev->dev) == 0)
 		sev_get_api_version();
-
-	/* Obtain the TMR memory area for SEV-ES use */
-	tmr_page = alloc_pages(GFP_KERNEL, get_order(SEV_ES_TMR_SIZE));
-	if (tmr_page) {
-		sev_es_tmr = page_address(tmr_page);
-	} else {
-		sev_es_tmr = NULL;
-		dev_warn(sev->dev,
-			 "SEV: TMR allocation failed, SEV-ES support unavailable\n");
-	}
 
 	/* Initialize the platform */
 	rc = sev_platform_init(&error);
@@ -1115,13 +1074,4 @@ void sev_pci_exit(void)
 		return;
 
 	sev_platform_shutdown(NULL);
-
-	if (sev_es_tmr) {
-		/* The TMR area was encrypted, flush it from the cache */
-		wbinvd_on_all_cpus();
-
-		free_pages((unsigned long)sev_es_tmr,
-			   get_order(SEV_ES_TMR_SIZE));
-		sev_es_tmr = NULL;
-	}
 }

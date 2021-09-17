@@ -542,8 +542,10 @@ static int bd70528_probe(struct platform_device *pdev)
 
 	irq = platform_get_irq_byname(pdev, irq_name);
 
-	if (irq < 0)
+	if (irq < 0) {
+		dev_err(&pdev->dev, "Failed to get irq\n");
 		return irq;
+	}
 
 	platform_set_drvdata(pdev, bd_rtc);
 
@@ -604,7 +606,7 @@ static int bd70528_probe(struct platform_device *pdev)
 		}
 	}
 
-	return devm_rtc_register_device(rtc);
+	return rtc_register_device(rtc);
 }
 
 static const struct platform_device_id bd718x7_rtc_id[] = {

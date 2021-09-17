@@ -1475,8 +1475,8 @@ static int do_jit(struct bpf_prog *bpf_prog, int *addrs, u8 *image,
 	for (i = 0; i < insn_cnt; i++, insn++) {
 		const s32 imm32 = insn->imm;
 		const bool is64 = BPF_CLASS(insn->code) == BPF_ALU64;
-		const bool dstk = insn->dst_reg != BPF_REG_AX;
-		const bool sstk = insn->src_reg != BPF_REG_AX;
+		const bool dstk = insn->dst_reg == BPF_REG_AX ? false : true;
+		const bool sstk = insn->src_reg == BPF_REG_AX ? false : true;
 		const u8 code = insn->code;
 		const u8 *dst = bpf2ia32[insn->dst_reg];
 		const u8 *src = bpf2ia32[insn->src_reg];
@@ -2243,8 +2243,10 @@ emit_jmp:
 				return -EFAULT;
 			}
 			break;
-		case BPF_STX | BPF_ATOMIC | BPF_W:
-		case BPF_STX | BPF_ATOMIC | BPF_DW:
+		/* STX XADD: lock *(u32 *)(dst + off) += src */
+		case BPF_STX | BPF_XADD | BPF_W:
+		/* STX XADD: lock *(u64 *)(dst + off) += src */
+		case BPF_STX | BPF_XADD | BPF_DW:
 			goto notyet;
 		case BPF_JMP | BPF_EXIT:
 			if (seen_exit) {
@@ -2276,16 +2278,7 @@ notyet:
 		}
 
 		if (image) {
-			/*
-			 * When populating the image, assert that:
-			 *
-			 *  i) We do not write beyond the allocated space, and
-			 * ii) addrs[i] did not change from the prior run, in order
-			 *     to validate assumptions made for computing branch
-			 *     displacements.
-			 */
-			if (unlikely(proglen + ilen > oldproglen ||
-				     proglen + ilen != addrs[i])) {
+			if (unlikely(proglen + ilen > oldproglen)) {
 				pr_err("bpf_jit: fatal error\n");
 				return -EFAULT;
 			}

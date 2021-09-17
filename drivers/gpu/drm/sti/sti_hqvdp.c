@@ -639,16 +639,16 @@ static struct drm_info_list hqvdp_debugfs_files[] = {
 	{ "hqvdp", hqvdp_dbg_show, 0, NULL },
 };
 
-static void hqvdp_debugfs_init(struct sti_hqvdp *hqvdp, struct drm_minor *minor)
+static int hqvdp_debugfs_init(struct sti_hqvdp *hqvdp, struct drm_minor *minor)
 {
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(hqvdp_debugfs_files); i++)
 		hqvdp_debugfs_files[i].data = hqvdp;
 
-	drm_debugfs_create_files(hqvdp_debugfs_files,
-				 ARRAY_SIZE(hqvdp_debugfs_files),
-				 minor->debugfs_root, minor);
+	return drm_debugfs_create_files(hqvdp_debugfs_files,
+					ARRAY_SIZE(hqvdp_debugfs_files),
+					minor->debugfs_root, minor);
 }
 
 /**
@@ -1262,20 +1262,25 @@ static const struct drm_plane_helper_funcs sti_hqvdp_helpers_funcs = {
 	.atomic_disable = sti_hqvdp_atomic_disable,
 };
 
+static void sti_hqvdp_destroy(struct drm_plane *drm_plane)
+{
+	DRM_DEBUG_DRIVER("\n");
+
+	drm_plane_cleanup(drm_plane);
+}
+
 static int sti_hqvdp_late_register(struct drm_plane *drm_plane)
 {
 	struct sti_plane *plane = to_sti_plane(drm_plane);
 	struct sti_hqvdp *hqvdp = to_sti_hqvdp(plane);
 
-	hqvdp_debugfs_init(hqvdp, drm_plane->dev->primary);
-
-	return 0;
+	return hqvdp_debugfs_init(hqvdp, drm_plane->dev->primary);
 }
 
 static const struct drm_plane_funcs sti_hqvdp_plane_helpers_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
-	.destroy = drm_plane_cleanup,
+	.destroy = sti_hqvdp_destroy,
 	.reset = sti_plane_reset,
 	.atomic_duplicate_state = drm_atomic_helper_plane_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_plane_destroy_state,

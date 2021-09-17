@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # SPDX-License-Identifier: GPL-2.0
 # Copyright Thomas Gleixner <tglx@linutronix.de>
 
@@ -180,9 +180,6 @@ class id_parser(object):
                 # Remove trailing comment closure
                 if line.strip().endswith('*/'):
                     expr = expr.rstrip('*/').strip()
-                # Remove trailing xml comment closure
-                if line.strip().endswith('-->'):
-                    expr = expr.rstrip('-->').strip()
                 # Special case for SH magic boot code files
                 if line.startswith('LIST \"'):
                     expr = expr.rstrip('\"').strip()

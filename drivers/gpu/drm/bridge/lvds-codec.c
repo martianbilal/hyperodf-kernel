@@ -10,45 +10,30 @@
 #include <linux/of_device.h>
 #include <linux/of_graph.h>
 #include <linux/platform_device.h>
-#include <linux/regulator/consumer.h>
 
 #include <drm/drm_bridge.h>
 #include <drm/drm_panel.h>
 
 struct lvds_codec {
-	struct device *dev;
 	struct drm_bridge bridge;
 	struct drm_bridge *panel_bridge;
-	struct regulator *vcc;
 	struct gpio_desc *powerdown_gpio;
 	u32 connector_type;
 };
 
-static inline struct lvds_codec *to_lvds_codec(struct drm_bridge *bridge)
+static int lvds_codec_attach(struct drm_bridge *bridge)
 {
-	return container_of(bridge, struct lvds_codec, bridge);
-}
-
-static int lvds_codec_attach(struct drm_bridge *bridge,
-			     enum drm_bridge_attach_flags flags)
-{
-	struct lvds_codec *lvds_codec = to_lvds_codec(bridge);
+	struct lvds_codec *lvds_codec = container_of(bridge,
+						     struct lvds_codec, bridge);
 
 	return drm_bridge_attach(bridge->encoder, lvds_codec->panel_bridge,
-				 bridge, flags);
+				 bridge);
 }
 
 static void lvds_codec_enable(struct drm_bridge *bridge)
 {
-	struct lvds_codec *lvds_codec = to_lvds_codec(bridge);
-	int ret;
-
-	ret = regulator_enable(lvds_codec->vcc);
-	if (ret) {
-		dev_err(lvds_codec->dev,
-			"Failed to enable regulator \"vcc\": %d\n", ret);
-		return;
-	}
+	struct lvds_codec *lvds_codec = container_of(bridge,
+						     struct lvds_codec, bridge);
 
 	if (lvds_codec->powerdown_gpio)
 		gpiod_set_value_cansleep(lvds_codec->powerdown_gpio, 0);
@@ -56,19 +41,14 @@ static void lvds_codec_enable(struct drm_bridge *bridge)
 
 static void lvds_codec_disable(struct drm_bridge *bridge)
 {
-	struct lvds_codec *lvds_codec = to_lvds_codec(bridge);
-	int ret;
+	struct lvds_codec *lvds_codec = container_of(bridge,
+						     struct lvds_codec, bridge);
 
 	if (lvds_codec->powerdown_gpio)
 		gpiod_set_value_cansleep(lvds_codec->powerdown_gpio, 1);
-
-	ret = regulator_disable(lvds_codec->vcc);
-	if (ret)
-		dev_err(lvds_codec->dev,
-			"Failed to disable regulator \"vcc\": %d\n", ret);
 }
 
-static const struct drm_bridge_funcs funcs = {
+static struct drm_bridge_funcs funcs = {
 	.attach = lvds_codec_attach,
 	.enable = lvds_codec_enable,
 	.disable = lvds_codec_disable,
@@ -85,19 +65,16 @@ static int lvds_codec_probe(struct platform_device *pdev)
 	if (!lvds_codec)
 		return -ENOMEM;
 
-	lvds_codec->dev = &pdev->dev;
 	lvds_codec->connector_type = (uintptr_t)of_device_get_match_data(dev);
-
-	lvds_codec->vcc = devm_regulator_get(lvds_codec->dev, "power");
-	if (IS_ERR(lvds_codec->vcc))
-		return dev_err_probe(dev, PTR_ERR(lvds_codec->vcc),
-				     "Unable to get \"vcc\" supply\n");
-
 	lvds_codec->powerdown_gpio = devm_gpiod_get_optional(dev, "powerdown",
 							     GPIOD_OUT_HIGH);
-	if (IS_ERR(lvds_codec->powerdown_gpio))
-		return dev_err_probe(dev, PTR_ERR(lvds_codec->powerdown_gpio),
-				     "powerdown GPIO failure\n");
+	if (IS_ERR(lvds_codec->powerdown_gpio)) {
+		int err = PTR_ERR(lvds_codec->powerdown_gpio);
+
+		if (err != -EPROBE_DEFER)
+			dev_err(dev, "powerdown GPIO failure: %d\n", err);
+		return err;
+	}
 
 	/* Locate the panel DT node. */
 	panel_node = of_graph_get_remote_node(dev->of_node, 1, 0);

@@ -11,7 +11,6 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
@@ -35,19 +34,19 @@ struct value_to_name_map {
 };
 
 struct match_chip_info {
-	void (*init_func)(struct brcm_usb_init_params *params);
+	void *init_func;
 	u8 required_regs[BRCM_REGS_MAX + 1];
 	u8 optional_reg;
 };
 
-static const struct value_to_name_map brcm_dr_mode_to_name[] = {
+static struct value_to_name_map brcm_dr_mode_to_name[] = {
 	{ USB_CTLR_MODE_HOST, "host" },
 	{ USB_CTLR_MODE_DEVICE, "peripheral" },
 	{ USB_CTLR_MODE_DRD, "drd" },
 	{ USB_CTLR_MODE_TYPEC_PD, "typec-pd" }
 };
 
-static const struct value_to_name_map brcm_dual_mode_to_name[] = {
+static struct value_to_name_map brcm_dual_mode_to_name[] = {
 	{ 0, "host" },
 	{ 1, "device" },
 	{ 2, "auto" },
@@ -139,7 +138,7 @@ static int brcm_usb_phy_exit(struct phy *gphy)
 	return 0;
 }
 
-static const struct phy_ops brcm_usb_phy_ops = {
+static struct phy_ops brcm_usb_phy_ops = {
 	.init		= brcm_usb_phy_init,
 	.exit		= brcm_usb_phy_exit,
 	.owner		= THIS_MODULE,
@@ -171,7 +170,7 @@ static struct phy *brcm_usb_phy_xlate(struct device *dev,
 	return ERR_PTR(-ENODEV);
 }
 
-static int name_to_value(const struct value_to_name_map *table, int count,
+static int name_to_value(struct value_to_name_map *table, int count,
 			 const char *name, int *value)
 {
 	int x;
@@ -186,7 +185,7 @@ static int name_to_value(const struct value_to_name_map *table, int count,
 	return -EINVAL;
 }
 
-static const char *value_to_name(const struct value_to_name_map *table, int count,
+static const char *value_to_name(struct value_to_name_map *table, int count,
 				 int value)
 {
 	if (value >= count)
@@ -253,7 +252,7 @@ static const struct attribute_group brcm_usb_phy_group = {
 	.attrs = brcm_usb_phy_attrs,
 };
 
-static const struct match_chip_info chip_info_7216 = {
+static struct match_chip_info chip_info_7216 = {
 	.init_func = &brcm_usb_dvr_init_7216,
 	.required_regs = {
 		BRCM_REGS_CTRL,
@@ -263,7 +262,7 @@ static const struct match_chip_info chip_info_7216 = {
 	},
 };
 
-static const struct match_chip_info chip_info_7211b0 = {
+static struct match_chip_info chip_info_7211b0 = {
 	.init_func = &brcm_usb_dvr_init_7211b0,
 	.required_regs = {
 		BRCM_REGS_CTRL,
@@ -276,7 +275,7 @@ static const struct match_chip_info chip_info_7211b0 = {
 	.optional_reg = BRCM_REGS_BDC_EC,
 };
 
-static const struct match_chip_info chip_info_7445 = {
+static struct match_chip_info chip_info_7445 = {
 	.init_func = &brcm_usb_dvr_init_7445,
 	.required_regs = {
 		BRCM_REGS_CTRL,
@@ -286,10 +285,6 @@ static const struct match_chip_info chip_info_7445 = {
 };
 
 static const struct of_device_id brcm_usb_dt_ids[] = {
-	{
-		.compatible = "brcm,bcm4908-usb-phy",
-		.data = &chip_info_7445,
-	},
 	{
 		.compatible = "brcm,bcm7216-usb-phy",
 		.data = &chip_info_7216,
@@ -432,6 +427,8 @@ static int brcm_usb_phy_probe(struct platform_device *pdev)
 	struct device_node *dn = pdev->dev.of_node;
 	int err;
 	const char *mode;
+	const struct of_device_id *match;
+	void (*dvr_init)(struct brcm_usb_init_params *params);
 	const struct match_chip_info *info;
 	struct regmap *rmap;
 	int x;
@@ -444,11 +441,10 @@ static int brcm_usb_phy_probe(struct platform_device *pdev)
 	priv->ini.family_id = brcmstb_get_family_id();
 	priv->ini.product_id = brcmstb_get_product_id();
 
-	info = of_device_get_match_data(&pdev->dev);
-	if (!info)
-		return -ENOENT;
-
-	info->init_func(&priv->ini);
+	match = of_match_node(brcm_usb_dt_ids, dev->of_node);
+	info = match->data;
+	dvr_init = info->init_func;
+	(*dvr_init)(&priv->ini);
 
 	dev_dbg(dev, "Best mapping table is for %s\n",
 		priv->ini.family_name);

@@ -114,10 +114,8 @@ int isst_get_tdp_info(int cpu, int config_index,
 
 	ret = isst_send_mbox_command(cpu, CONFIG_TDP, CONFIG_TDP_GET_TDP_INFO,
 				     0, config_index, &resp);
-	if (ret) {
-		isst_display_error_info_message(1, "Invalid level, Can't get TDP information at level", 1, config_index);
+	if (ret)
 		return ret;
-	}
 
 	ctdp_level->pkg_tdp = resp & GENMASK(14, 0);
 	ctdp_level->tdp_ratio = (resp & GENMASK(23, 16)) >> 16;
@@ -354,7 +352,7 @@ int isst_set_tdp_level_msr(int cpu, int tdp_level)
 	debug_printf("cpu: tdp_level via MSR %d\n", cpu, tdp_level);
 
 	if (isst_get_config_tdp_lock_status(cpu)) {
-		isst_display_error_info_message(1, "tdp_locked", 0, 0);
+		debug_printf("cpu: tdp_locked %d\n", cpu);
 		return -1;
 	}
 
@@ -375,56 +373,25 @@ int isst_set_tdp_level(int cpu, int tdp_level)
 	unsigned int resp;
 	int ret;
 
-
-	if (isst_get_config_tdp_lock_status(cpu)) {
-		isst_display_error_info_message(1, "TDP is locked", 0, 0);
-		return -1;
-
-	}
-
 	ret = isst_send_mbox_command(cpu, CONFIG_TDP, CONFIG_TDP_SET_LEVEL, 0,
 				     tdp_level, &resp);
-	if (ret) {
-		isst_display_error_info_message(1, "Set TDP level failed for level", 1, tdp_level);
-		return ret;
-	}
+	if (ret)
+		return isst_set_tdp_level_msr(cpu, tdp_level);
 
 	return 0;
 }
 
 int isst_get_pbf_info(int cpu, int level, struct isst_pbf_info *pbf_info)
 {
-	struct isst_pkg_ctdp_level_info ctdp_level;
-	struct isst_pkg_ctdp pkg_dev;
-	int i, ret, max_punit_core, max_mask_index;
+	int i, ret, core_cnt, max;
 	unsigned int req, resp;
-
-	ret = isst_get_ctdp_levels(cpu, &pkg_dev);
-	if (ret) {
-		isst_display_error_info_message(1, "Failed to get number of levels", 0, 0);
-		return ret;
-	}
-
-	if (level > pkg_dev.levels) {
-		isst_display_error_info_message(1, "Invalid level", 1, level);
-		return -1;
-	}
-
-	ret = isst_get_ctdp_control(cpu, level, &ctdp_level);
-	if (ret)
-		return ret;
-
-	if (!ctdp_level.pbf_support) {
-		isst_display_error_info_message(1, "base-freq feature is not present at this level", 1, level);
-		return -1;
-	}
 
 	pbf_info->core_cpumask_size = alloc_cpu_set(&pbf_info->core_cpumask);
 
-	max_punit_core = get_max_punit_core_id(get_physical_package_id(cpu), get_physical_die_id(cpu));
-	max_mask_index = max_punit_core > 32 ? 2 : 1;
+	core_cnt = get_core_count(get_physical_package_id(cpu), get_physical_die_id(cpu));
+	max = core_cnt > 32 ? 2 : 1;
 
-	for (i = 0; i < max_mask_index; ++i) {
+	for (i = 0; i < max; ++i) {
 		unsigned long long mask;
 		int count;
 
@@ -514,10 +481,6 @@ int isst_set_pbf_fact_status(int cpu, int pbf, int enable)
 		else
 			req &= ~BIT(17);
 	} else {
-
-		if (enable && !ctdp_level.sst_cp_enabled)
-			isst_display_error_info_message(0, "Make sure to execute before: core-power enable", 0, 0);
-
 		if (ctdp_level.pbf_enabled)
 			req = BIT(17);
 
@@ -603,32 +566,10 @@ int isst_get_fact_bucket_info(int cpu, int level,
 	return 0;
 }
 
-int isst_get_fact_info(int cpu, int level, int fact_bucket, struct isst_fact_info *fact_info)
+int isst_get_fact_info(int cpu, int level, struct isst_fact_info *fact_info)
 {
-	struct isst_pkg_ctdp_level_info ctdp_level;
-	struct isst_pkg_ctdp pkg_dev;
 	unsigned int resp;
-	int j, ret, print;
-
-	ret = isst_get_ctdp_levels(cpu, &pkg_dev);
-	if (ret) {
-		isst_display_error_info_message(1, "Failed to get number of levels", 0, 0);
-		return ret;
-	}
-
-	if (level > pkg_dev.levels) {
-		isst_display_error_info_message(1, "Invalid level", 1, level);
-		return -1;
-	}
-
-	ret = isst_get_ctdp_control(cpu, level, &ctdp_level);
-	if (ret)
-		return ret;
-
-	if (!ctdp_level.fact_support) {
-		isst_display_error_info_message(1, "turbo-freq feature is not present at this level", 1, level);
-		return -1;
-	}
+	int ret;
 
 	ret = isst_send_mbox_command(cpu, CONFIG_TDP,
 				     CONFIG_TDP_GET_FACT_LP_CLIPPING_RATIO, 0,
@@ -644,36 +585,8 @@ int isst_get_fact_info(int cpu, int level, int fact_bucket, struct isst_fact_inf
 	fact_info->lp_clipping_ratio_license_avx512 = (resp >> 16) & 0xff;
 
 	ret = isst_get_fact_bucket_info(cpu, level, fact_info->bucket_info);
-	if (ret)
-		return ret;
 
-	print = 0;
-	for (j = 0; j < ISST_FACT_MAX_BUCKETS; ++j) {
-		if (fact_bucket != 0xff && fact_bucket != j)
-			continue;
-
-		if (!fact_info->bucket_info[j].high_priority_cores_count)
-			break;
-
-		print = 1;
-	}
-	if (!print) {
-		isst_display_error_info_message(1, "Invalid bucket", 0, 0);
-		return -1;
-	}
-
-	return 0;
-}
-
-int isst_get_trl(int cpu, unsigned long long *trl)
-{
-	int ret;
-
-	ret = isst_send_msr_command(cpu, 0x1AD, 0, trl);
-	if (ret)
-		return ret;
-
-	return 0;
+	return ret;
 }
 
 int isst_set_trl(int cpu, unsigned long long trl)
@@ -758,7 +671,7 @@ void isst_get_process_ctdp_complete(int cpu, struct isst_pkg_ctdp *pkg_dev)
 
 int isst_get_process_ctdp(int cpu, int tdp_level, struct isst_pkg_ctdp *pkg_dev)
 {
-	int i, ret, valid = 0;
+	int i, ret;
 
 	if (pkg_dev->processed)
 		return 0;
@@ -770,14 +683,6 @@ int isst_get_process_ctdp(int cpu, int tdp_level, struct isst_pkg_ctdp *pkg_dev)
 	debug_printf("cpu: %d ctdp enable:%d current level: %d levels:%d\n",
 		     cpu, pkg_dev->enabled, pkg_dev->current_level,
 		     pkg_dev->levels);
-
-	if (tdp_level != 0xff && tdp_level > pkg_dev->levels) {
-		isst_display_error_info_message(1, "Invalid level", 0, 0);
-		return -1;
-	}
-
-	if (!pkg_dev->enabled)
-		isst_display_error_info_message(0, "perf-profile feature is not supported, just base-config level 0 is valid", 0, 0);
 
 	for (i = 0; i <= pkg_dev->levels; ++i) {
 		struct isst_pkg_ctdp_level_info *ctdp_level;
@@ -798,7 +703,6 @@ int isst_get_process_ctdp(int cpu, int tdp_level, struct isst_pkg_ctdp *pkg_dev)
 		if (ret)
 			continue;
 
-		valid = 1;
 		pkg_dev->processed = 1;
 		ctdp_level->processed = 1;
 
@@ -809,13 +713,13 @@ int isst_get_process_ctdp(int cpu, int tdp_level, struct isst_pkg_ctdp *pkg_dev)
 		}
 
 		if (ctdp_level->fact_support) {
-			ret = isst_get_fact_info(cpu, i, 0xff,
+			ret = isst_get_fact_info(cpu, i,
 						 &ctdp_level->fact_info);
 			if (ret)
 				return ret;
 		}
 
-		if (!pkg_dev->enabled && is_skx_based_platform()) {
+		if (!pkg_dev->enabled) {
 			int freq;
 
 			freq = get_cpufreq_base_freq(cpu);
@@ -871,9 +775,6 @@ int isst_get_process_ctdp(int cpu, int tdp_level, struct isst_pkg_ctdp *pkg_dev)
 		isst_get_uncore_mem_freq(cpu, i, ctdp_level);
 	}
 
-	if (!valid)
-		isst_display_error_info_message(0, "Invalid level, Can't get TDP control information at specified levels on cpu", 1, cpu);
-
 	return 0;
 }
 
@@ -923,24 +824,22 @@ int isst_pm_qos_config(int cpu, int enable_clos, int priority_type)
 			return ret;
 
 		if (ctdp_level.fact_enabled) {
-			isst_display_error_info_message(1, "Ignoring request, turbo-freq feature is still enabled", 0, 0);
+			debug_printf("Turbo-freq feature must be disabled first\n");
 			return -EINVAL;
 		}
 		ret = isst_write_pm_config(cpu, 0);
 		if (ret)
-			isst_display_error_info_message(0, "WRITE_PM_CONFIG command failed, ignoring error", 0, 0);
+			perror("isst_write_pm_config\n");
 	} else {
 		ret = isst_write_pm_config(cpu, 1);
 		if (ret)
-			isst_display_error_info_message(0, "WRITE_PM_CONFIG command failed, ignoring error", 0, 0);
+			perror("isst_write_pm_config\n");
 	}
 
 	ret = isst_send_mbox_command(cpu, CONFIG_CLOS, CLOS_PM_QOS_CONFIG, 0, 0,
 				     &resp);
-	if (ret) {
-		isst_display_error_info_message(1, "CLOS_PM_QOS_CONFIG command failed", 0, 0);
+	if (ret)
 		return ret;
-	}
 
 	debug_printf("cpu:%d CLOS_PM_QOS_CONFIG resp:%x\n", cpu, resp);
 
@@ -950,9 +849,6 @@ int isst_pm_qos_config(int cpu, int enable_clos, int priority_type)
 		req = req | BIT(1);
 	else
 		req = req & ~BIT(1);
-
-	if (priority_type > 1)
-		isst_display_error_info_message(1, "Invalid priority type: Changing type to ordered", 0, 0);
 
 	if (priority_type)
 		req = req | BIT(2);

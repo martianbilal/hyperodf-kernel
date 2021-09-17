@@ -276,9 +276,7 @@ enum {
 	MLX5_MKEY_MASK_RW		= 1ull << 20,
 	MLX5_MKEY_MASK_A		= 1ull << 21,
 	MLX5_MKEY_MASK_SMALL_FENCE	= 1ull << 23,
-	MLX5_MKEY_MASK_RELAXED_ORDERING_WRITE	= 1ull << 25,
-	MLX5_MKEY_MASK_FREE			= 1ull << 29,
-	MLX5_MKEY_MASK_RELAXED_ORDERING_READ	= 1ull << 47,
+	MLX5_MKEY_MASK_FREE		= 1ull << 29,
 };
 
 enum {
@@ -346,7 +344,6 @@ enum mlx5_event {
 	MLX5_EVENT_TYPE_NIC_VPORT_CHANGE   = 0xd,
 
 	MLX5_EVENT_TYPE_ESW_FUNCTIONS_CHANGED = 0xe,
-	MLX5_EVENT_TYPE_VHCA_STATE_CHANGE = 0xf,
 
 	MLX5_EVENT_TYPE_DCT_DRAINED        = 0x1c,
 	MLX5_EVENT_TYPE_DCT_KEY_VIOLATION  = 0x1d,
@@ -359,10 +356,6 @@ enum mlx5_event {
 	MLX5_EVENT_TYPE_MAX                = 0x100,
 };
 
-enum mlx5_driver_event {
-	MLX5_DRIVER_EVENT_TYPE_TRAP = 0,
-};
-
 enum {
 	MLX5_TRACER_SUBTYPE_OWNERSHIP_CHANGE = 0x0,
 	MLX5_TRACER_SUBTYPE_TRACES_AVAILABLE = 0x1,
@@ -371,8 +364,6 @@ enum {
 enum {
 	MLX5_GENERAL_SUBTYPE_DELAY_DROP_TIMEOUT = 0x1,
 	MLX5_GENERAL_SUBTYPE_PCI_POWER_CHANGE_EVENT = 0x5,
-	MLX5_GENERAL_SUBTYPE_FW_LIVE_PATCH_EVENT = 0x7,
-	MLX5_GENERAL_SUBTYPE_PCI_SYNC_FOR_FW_UPDATE_EVENT = 0x8,
 };
 
 enum {
@@ -458,21 +449,10 @@ enum {
 
 enum {
 	MLX5_OPC_MOD_TLS_TIS_STATIC_PARAMS = 0x1,
-	MLX5_OPC_MOD_TLS_TIR_STATIC_PARAMS = 0x2,
 };
 
 enum {
 	MLX5_OPC_MOD_TLS_TIS_PROGRESS_PARAMS = 0x1,
-	MLX5_OPC_MOD_TLS_TIR_PROGRESS_PARAMS = 0x2,
-};
-
-struct mlx5_wqe_tls_static_params_seg {
-	u8     ctx[MLX5_ST_SZ_BYTES(tls_static_params)];
-};
-
-struct mlx5_wqe_tls_progress_params_seg {
-	__be32 tis_tir_num;
-	u8     ctx[MLX5_ST_SZ_BYTES(tls_progress_params)];
 };
 
 enum {
@@ -582,10 +562,7 @@ struct mlx5_init_seg {
 	__be32			internal_timer_l;
 	__be32			rsvd3[2];
 	__be32			health_counter;
-	__be32			rsvd4[11];
-	__be32			real_time_h;
-	__be32			real_time_l;
-	__be32			rsvd5[1006];
+	__be32			rsvd4[1019];
 	__be64			ieee1588_clk;
 	__be32			ieee1588_clk_type;
 	__be32			clr_intx;
@@ -712,24 +689,6 @@ struct mlx5_eqe_temp_warning {
 	__be64 sensor_warning_lsb;
 } __packed;
 
-#define SYNC_RST_STATE_MASK    0xf
-
-enum sync_rst_state_type {
-	MLX5_SYNC_RST_STATE_RESET_REQUEST	= 0x0,
-	MLX5_SYNC_RST_STATE_RESET_NOW		= 0x1,
-	MLX5_SYNC_RST_STATE_RESET_ABORT		= 0x2,
-};
-
-struct mlx5_eqe_sync_fw_update {
-	u8 reserved_at_0[3];
-	u8 sync_rst_state;
-};
-
-struct mlx5_eqe_vhca_state {
-	__be16 ec_function;
-	__be16 function_id;
-} __packed;
-
 union ev_data {
 	__be32				raw[7];
 	struct mlx5_eqe_cmd		cmd;
@@ -748,8 +707,6 @@ union ev_data {
 	struct mlx5_eqe_dct             dct;
 	struct mlx5_eqe_temp_warning	temp_warning;
 	struct mlx5_eqe_xrq_err		xrq_err;
-	struct mlx5_eqe_sync_fw_update	sync_fw_update;
-	struct mlx5_eqe_vhca_state	vhca_state;
 } __packed;
 
 struct mlx5_eqe {
@@ -792,7 +749,7 @@ struct mlx5_err_cqe {
 };
 
 struct mlx5_cqe64 {
-	u8		tls_outer_l3_tunneled;
+	u8		outer_l3_tunneled;
 	u8		rsvd0;
 	__be16		wqe_id;
 	u8		lro_tcppsh_abort_dupack;
@@ -810,12 +767,7 @@ struct mlx5_cqe64 {
 	u8		l4_l3_hdr_type;
 	__be16		vlan_info;
 	__be32		srqn; /* [31:24]: lro_num_seg, [23:0]: srqn */
-	union {
-		__be32 immediate;
-		__be32 inval_rkey;
-		__be32 pkey;
-		__be32 ft_metadata;
-	};
+	__be32		imm_inval_pkey;
 	u8		rsvd40[4];
 	__be32		byte_cnt;
 	__be32		timestamp_h;
@@ -831,7 +783,7 @@ struct mlx5_mini_cqe8 {
 		__be32 rx_hash_result;
 		struct {
 			__be16 checksum;
-			__be16 stridx;
+			__be16 rsvd;
 		};
 		struct {
 			__be16 wqe_counter;
@@ -851,7 +803,6 @@ enum {
 
 enum {
 	MLX5_CQE_FORMAT_CSUM = 0x1,
-	MLX5_CQE_FORMAT_CSUM_STRIDX = 0x3,
 };
 
 #define MLX5_MINI_CQE_ARRAY_SIZE 8
@@ -883,12 +834,7 @@ static inline u8 get_cqe_l3_hdr_type(struct mlx5_cqe64 *cqe)
 
 static inline bool cqe_is_tunneled(struct mlx5_cqe64 *cqe)
 {
-	return cqe->tls_outer_l3_tunneled & 0x1;
-}
-
-static inline u8 get_cqe_tls_offload(struct mlx5_cqe64 *cqe)
-{
-	return (cqe->tls_outer_l3_tunneled >> 3) & 0x3;
+	return cqe->outer_l3_tunneled & 0x1;
 }
 
 static inline bool cqe_has_vlan(struct mlx5_cqe64 *cqe)
@@ -904,11 +850,6 @@ static inline u64 get_cqe_ts(struct mlx5_cqe64 *cqe)
 	lo = be32_to_cpu(cqe->timestamp_l);
 
 	return (u64)lo | ((u64)hi << 32);
-}
-
-static inline u16 get_cqe_flow_tag(struct mlx5_cqe64 *cqe)
-{
-	return be32_to_cpu(cqe->sop_drop_qpn) & 0xFFF;
 }
 
 #define MLX5_MPWQE_LOG_NUM_STRIDES_BASE	(9)
@@ -981,13 +922,6 @@ enum {
 	CQE_L4_OK	= 1 << 2,
 };
 
-enum {
-	CQE_TLS_OFFLOAD_NOT_DECRYPTED		= 0x0,
-	CQE_TLS_OFFLOAD_DECRYPTED		= 0x1,
-	CQE_TLS_OFFLOAD_RESYNC			= 0x2,
-	CQE_TLS_OFFLOAD_ERROR			= 0x3,
-};
-
 struct mlx5_sig_err_cqe {
 	u8		rsvd0[16];
 	__be32		expected_trans_sig;
@@ -1030,6 +964,7 @@ enum {
 	MLX5_MKEY_REMOTE_INVAL	= 1 << 24,
 	MLX5_MKEY_FLAG_SYNC_UMR = 1 << 29,
 	MLX5_MKEY_BSF_EN	= 1 << 30,
+	MLX5_MKEY_LEN64		= 1 << 31,
 };
 
 struct mlx5_mkey_seg {
@@ -1095,7 +1030,6 @@ enum {
 	MLX5_MATCH_INNER_HEADERS	= 1 << 2,
 	MLX5_MATCH_MISC_PARAMETERS_2	= 1 << 3,
 	MLX5_MATCH_MISC_PARAMETERS_3	= 1 << 4,
-	MLX5_MATCH_MISC_PARAMETERS_4	= 1 << 5,
 };
 
 enum {
@@ -1173,7 +1107,6 @@ enum mlx5_cap_type {
 	MLX5_CAP_TLS,
 	MLX5_CAP_VDPA_EMULATION = 0x13,
 	MLX5_CAP_DEV_EVENT = 0x14,
-	MLX5_CAP_IPSEC,
 	/* NUM OF CAP Types */
 	MLX5_CAP_NUM
 };
@@ -1278,12 +1211,6 @@ enum mlx5_qcam_feature_groups {
 #define MLX5_CAP_FLOWTABLE_RDMA_RX_MAX(mdev, cap) \
 	MLX5_CAP_FLOWTABLE_MAX(mdev, flow_table_properties_nic_receive_rdma.cap)
 
-#define MLX5_CAP_FLOWTABLE_RDMA_TX(mdev, cap) \
-	MLX5_CAP_FLOWTABLE(mdev, flow_table_properties_nic_transmit_rdma.cap)
-
-#define MLX5_CAP_FLOWTABLE_RDMA_TX_MAX(mdev, cap) \
-	MLX5_CAP_FLOWTABLE_MAX(mdev, flow_table_properties_nic_transmit_rdma.cap)
-
 #define MLX5_CAP_ESW_FLOWTABLE(mdev, cap) \
 	MLX5_GET(flow_table_eswitch_cap, \
 		 mdev->caps.hca_cur[MLX5_CAP_ESWITCH_FLOW_TABLE], cap)
@@ -1384,15 +1311,12 @@ enum mlx5_qcam_feature_groups {
 	MLX5_ADDR_OF(device_event_cap, (mdev)->caps.hca_cur[MLX5_CAP_DEV_EVENT], cap)
 
 #define MLX5_CAP_DEV_VDPA_EMULATION(mdev, cap)\
-	MLX5_GET(virtio_emulation_cap, \
+	MLX5_GET(device_virtio_emulation_cap, \
 		(mdev)->caps.hca_cur[MLX5_CAP_VDPA_EMULATION], cap)
 
 #define MLX5_CAP64_DEV_VDPA_EMULATION(mdev, cap)\
-	MLX5_GET64(virtio_emulation_cap, \
+	MLX5_GET64(device_virtio_emulation_cap, \
 		(mdev)->caps.hca_cur[MLX5_CAP_VDPA_EMULATION], cap)
-
-#define MLX5_CAP_IPSEC(mdev, cap)\
-	MLX5_GET(ipsec_cap, (mdev)->caps.hca_cur[MLX5_CAP_IPSEC], cap)
 
 enum {
 	MLX5_CMD_STAT_OK			= 0x0,

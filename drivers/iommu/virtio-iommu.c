@@ -440,7 +440,7 @@ static int viommu_add_resv_mem(struct viommu_endpoint *vdev,
 	default:
 		dev_warn(vdev->dev, "unknown resv mem subtype 0x%x\n",
 			 mem->subtype);
-		fallthrough;
+		/* Fall-through */
 	case VIRTIO_IOMMU_RESV_MEM_T_RESERVED:
 		region = iommu_alloc_resv_region(start, size, 0,
 						 IOMMU_RESV_RESERVED);
@@ -466,7 +466,7 @@ static int viommu_probe_endpoint(struct viommu_dev *viommu, struct device *dev)
 	struct virtio_iommu_req_probe *probe;
 	struct virtio_iommu_probe_property *prop;
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-	struct viommu_endpoint *vdev = dev_iommu_priv_get(dev);
+	struct viommu_endpoint *vdev = fwspec->iommu_priv;
 
 	if (!fwspec->num_ids)
 		return -EINVAL;
@@ -607,21 +607,11 @@ static struct iommu_domain *viommu_domain_alloc(unsigned type)
 	return &vdomain->domain;
 }
 
-static int viommu_domain_finalise(struct viommu_endpoint *vdev,
+static int viommu_domain_finalise(struct viommu_dev *viommu,
 				  struct iommu_domain *domain)
 {
 	int ret;
-	unsigned long viommu_page_size;
-	struct viommu_dev *viommu = vdev->viommu;
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
-
-	viommu_page_size = 1UL << __ffs(viommu->pgsize_bitmap);
-	if (viommu_page_size > PAGE_SIZE) {
-		dev_err(vdev->dev,
-			"granule 0x%lx larger than system page size 0x%lx\n",
-			viommu_page_size, PAGE_SIZE);
-		return -EINVAL;
-	}
 
 	ret = ida_alloc_range(&viommu->domain_ids, viommu->first_domain,
 			      viommu->last_domain, GFP_KERNEL);
@@ -660,7 +650,7 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 	int ret = 0;
 	struct virtio_iommu_req_attach req;
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-	struct viommu_endpoint *vdev = dev_iommu_priv_get(dev);
+	struct viommu_endpoint *vdev = fwspec->iommu_priv;
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
 
 	mutex_lock(&vdomain->mutex);
@@ -669,7 +659,7 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 		 * Properly initialize the domain now that we know which viommu
 		 * owns it.
 		 */
-		ret = viommu_domain_finalise(vdev, domain);
+		ret = viommu_domain_finalise(vdev->viommu, domain);
 	} else if (vdomain->viommu != vdev->viommu) {
 		dev_err(dev, "cannot attach to foreign vIOMMU\n");
 		ret = -EXDEV;
@@ -819,7 +809,8 @@ static void viommu_iotlb_sync(struct iommu_domain *domain,
 static void viommu_get_resv_regions(struct device *dev, struct list_head *head)
 {
 	struct iommu_resv_region *entry, *new_entry, *msi = NULL;
-	struct viommu_endpoint *vdev = dev_iommu_priv_get(dev);
+	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+	struct viommu_endpoint *vdev = fwspec->iommu_priv;
 	int prot = IOMMU_WRITE | IOMMU_NOEXEC | IOMMU_MMIO;
 
 	list_for_each_entry(entry, &vdev->resv_regions, list) {
@@ -865,28 +856,29 @@ static struct viommu_dev *viommu_get_by_fwnode(struct fwnode_handle *fwnode)
 	return dev ? dev_to_virtio(dev)->priv : NULL;
 }
 
-static struct iommu_device *viommu_probe_device(struct device *dev)
+static int viommu_add_device(struct device *dev)
 {
 	int ret;
+	struct iommu_group *group;
 	struct viommu_endpoint *vdev;
 	struct viommu_dev *viommu = NULL;
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 
 	if (!fwspec || fwspec->ops != &viommu_ops)
-		return ERR_PTR(-ENODEV);
+		return -ENODEV;
 
 	viommu = viommu_get_by_fwnode(fwspec->iommu_fwnode);
 	if (!viommu)
-		return ERR_PTR(-ENODEV);
+		return -ENODEV;
 
 	vdev = kzalloc(sizeof(*vdev), GFP_KERNEL);
 	if (!vdev)
-		return ERR_PTR(-ENOMEM);
+		return -ENOMEM;
 
 	vdev->dev = dev;
 	vdev->viommu = viommu;
 	INIT_LIST_HEAD(&vdev->resv_regions);
-	dev_iommu_priv_set(dev, vdev);
+	fwspec->iommu_priv = vdev;
 
 	if (viommu->probe_size) {
 		/* Get additional information for this endpoint */
@@ -895,25 +887,45 @@ static struct iommu_device *viommu_probe_device(struct device *dev)
 			goto err_free_dev;
 	}
 
-	return &viommu->iommu;
+	ret = iommu_device_link(&viommu->iommu, dev);
+	if (ret)
+		goto err_free_dev;
 
+	/*
+	 * Last step creates a default domain and attaches to it. Everything
+	 * must be ready.
+	 */
+	group = iommu_group_get_for_dev(dev);
+	if (IS_ERR(group)) {
+		ret = PTR_ERR(group);
+		goto err_unlink_dev;
+	}
+
+	iommu_group_put(group);
+
+	return PTR_ERR_OR_ZERO(group);
+
+err_unlink_dev:
+	iommu_device_unlink(&viommu->iommu, dev);
 err_free_dev:
 	generic_iommu_put_resv_regions(dev, &vdev->resv_regions);
 	kfree(vdev);
 
-	return ERR_PTR(ret);
+	return ret;
 }
 
-static void viommu_release_device(struct device *dev)
+static void viommu_remove_device(struct device *dev)
 {
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 	struct viommu_endpoint *vdev;
+	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 
 	if (!fwspec || fwspec->ops != &viommu_ops)
 		return;
 
-	vdev = dev_iommu_priv_get(dev);
+	vdev = fwspec->iommu_priv;
 
+	iommu_group_remove_device(dev);
+	iommu_device_unlink(&vdev->viommu->iommu, dev);
 	generic_iommu_put_resv_regions(dev, &vdev->resv_regions);
 	kfree(vdev);
 }
@@ -939,8 +951,8 @@ static struct iommu_ops viommu_ops = {
 	.unmap			= viommu_unmap,
 	.iova_to_phys		= viommu_iova_to_phys,
 	.iotlb_sync		= viommu_iotlb_sync,
-	.probe_device		= viommu_probe_device,
-	.release_device		= viommu_release_device,
+	.add_device		= viommu_add_device,
+	.remove_device		= viommu_remove_device,
 	.device_group		= viommu_device_group,
 	.get_resv_regions	= viommu_get_resv_regions,
 	.put_resv_regions	= generic_iommu_put_resv_regions,
@@ -1010,8 +1022,8 @@ static int viommu_probe(struct virtio_device *vdev)
 	if (ret)
 		return ret;
 
-	virtio_cread_le(vdev, struct virtio_iommu_config, page_size_mask,
-			&viommu->pgsize_bitmap);
+	virtio_cread(vdev, struct virtio_iommu_config, page_size_mask,
+		     &viommu->pgsize_bitmap);
 
 	if (!viommu->pgsize_bitmap) {
 		ret = -EINVAL;
@@ -1022,25 +1034,25 @@ static int viommu_probe(struct virtio_device *vdev)
 	viommu->last_domain = ~0U;
 
 	/* Optional features */
-	virtio_cread_le_feature(vdev, VIRTIO_IOMMU_F_INPUT_RANGE,
-				struct virtio_iommu_config, input_range.start,
-				&input_start);
+	virtio_cread_feature(vdev, VIRTIO_IOMMU_F_INPUT_RANGE,
+			     struct virtio_iommu_config, input_range.start,
+			     &input_start);
 
-	virtio_cread_le_feature(vdev, VIRTIO_IOMMU_F_INPUT_RANGE,
-				struct virtio_iommu_config, input_range.end,
-				&input_end);
+	virtio_cread_feature(vdev, VIRTIO_IOMMU_F_INPUT_RANGE,
+			     struct virtio_iommu_config, input_range.end,
+			     &input_end);
 
-	virtio_cread_le_feature(vdev, VIRTIO_IOMMU_F_DOMAIN_RANGE,
-				struct virtio_iommu_config, domain_range.start,
-				&viommu->first_domain);
+	virtio_cread_feature(vdev, VIRTIO_IOMMU_F_DOMAIN_RANGE,
+			     struct virtio_iommu_config, domain_range.start,
+			     &viommu->first_domain);
 
-	virtio_cread_le_feature(vdev, VIRTIO_IOMMU_F_DOMAIN_RANGE,
-				struct virtio_iommu_config, domain_range.end,
-				&viommu->last_domain);
+	virtio_cread_feature(vdev, VIRTIO_IOMMU_F_DOMAIN_RANGE,
+			     struct virtio_iommu_config, domain_range.end,
+			     &viommu->last_domain);
 
-	virtio_cread_le_feature(vdev, VIRTIO_IOMMU_F_PROBE,
-				struct virtio_iommu_config, probe_size,
-				&viommu->probe_size);
+	virtio_cread_feature(vdev, VIRTIO_IOMMU_F_PROBE,
+			     struct virtio_iommu_config, probe_size,
+			     &viommu->probe_size);
 
 	viommu->geometry = (struct iommu_domain_geometry) {
 		.aperture_start	= input_start,
@@ -1072,6 +1084,7 @@ static int viommu_probe(struct virtio_device *vdev)
 
 #ifdef CONFIG_PCI
 	if (pci_bus_type.iommu_ops != &viommu_ops) {
+		pci_request_acs();
 		ret = bus_set_iommu(&pci_bus_type, &viommu_ops);
 		if (ret)
 			goto err_unregister;
@@ -1138,7 +1151,6 @@ static struct virtio_device_id id_table[] = {
 	{ VIRTIO_ID_IOMMU, VIRTIO_DEV_ANY_ID },
 	{ 0 },
 };
-MODULE_DEVICE_TABLE(virtio, id_table);
 
 static struct virtio_driver virtio_iommu_drv = {
 	.driver.name		= KBUILD_MODNAME,

@@ -8,6 +8,7 @@
  */
 
 #include <linux/err.h>
+#include <linux/firmware/imx/types.h>
 #include <linux/firmware/imx/ipc.h>
 #include <linux/firmware/imx/sci.h>
 #include <linux/interrupt.h>
@@ -313,7 +314,6 @@ static int imx_scu_probe(struct platform_device *pdev)
 			if (ret != -EPROBE_DEFER)
 				dev_err(dev, "Failed to request mbox chan %s ret %d\n",
 					chan_name, ret);
-			kfree(chan_name);
 			return ret;
 		}
 
@@ -327,10 +327,6 @@ static int imx_scu_probe(struct platform_device *pdev)
 	init_completion(&sc_ipc->done);
 
 	imx_sc_ipc_handle = sc_ipc;
-
-	ret = imx_scu_soc_init(dev);
-	if (ret)
-		dev_warn(dev, "failed to initialize SoC info: %d\n", ret);
 
 	ret = imx_scu_enable_general_irq_channel(dev);
 	if (ret)

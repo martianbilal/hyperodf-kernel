@@ -192,7 +192,7 @@ static int cdns_ufs_link_startup_notify(struct ufs_hba *hba,
 	 * and device TX LCC are disabled once link startup is
 	 * completed.
 	 */
-	ufshcd_disable_host_tx_lcc(hba);
+	ufshcd_dme_set(hba, UIC_ARG_MIB(PA_LOCAL_TX_LCC_ENABLE), 0);
 
 	/*
 	 * Disabling Autohibern8 feature in cadence UFS
@@ -221,7 +221,8 @@ static int cdns_ufs_init(struct ufs_hba *hba)
 		return -ENOMEM;
 	ufshcd_set_variant(hba, host);
 
-	status = ufshcd_vops_phy_initialization(hba);
+	if (hba->vops && hba->vops->phy_initialization)
+		status = hba->vops->phy_initialization(hba);
 
 	return status;
 }

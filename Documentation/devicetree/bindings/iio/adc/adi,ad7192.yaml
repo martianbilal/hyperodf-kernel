@@ -30,8 +30,6 @@ properties:
 
   spi-cpha: true
 
-  spi-max-frequency: true
-
   clocks:
     maxItems: 1
     description: phandle to the master clock (mclk)
@@ -80,7 +78,7 @@ properties:
     type: boolean
 
   bipolar:
-    description: see Documentation/devicetree/bindings/iio/adc/adc.yaml
+    description: see Documentation/devicetree/bindings/iio/adc/adc.txt
     type: boolean
 
 required:
@@ -93,8 +91,6 @@ required:
   - avdd-supply
   - spi-cpol
   - spi-cpha
-
-additionalProperties: false
 
 examples:
   - |
@@ -110,6 +106,7 @@ examples:
         spi-cpha;
         clocks = <&ad7192_mclk>;
         clock-names = "mclk";
+        #interrupt-cells = <2>;
         interrupts = <25 0x2>;
         interrupt-parent = <&gpio>;
         dvdd-supply = <&dvdd>;

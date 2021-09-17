@@ -380,7 +380,9 @@ static int kcm_parse_func_strparser(struct strparser *strp, struct sk_buff *skb)
 	struct bpf_prog *prog = psock->bpf_prog;
 	int res;
 
-	res = bpf_prog_run_pin_on_cpu(prog, skb);
+	preempt_disable();
+	res = BPF_PROG_RUN(prog, skb);
+	preempt_enable();
 	return res;
 }
 
@@ -786,7 +788,7 @@ static ssize_t kcm_sendpage(struct socket *sock, struct page *page,
 
 		if (skb_can_coalesce(skb, i, page, offset)) {
 			skb_frag_size_add(&skb_shinfo(skb)->frags[i - 1], size);
-			skb_shinfo(skb)->flags |= SKBFL_SHARED_FRAG;
+			skb_shinfo(skb)->tx_flags |= SKBTX_SHARED_FRAG;
 			goto coalesced;
 		}
 
@@ -834,7 +836,7 @@ static ssize_t kcm_sendpage(struct socket *sock, struct page *page,
 
 	get_page(page);
 	skb_fill_page_desc(skb, i, page, offset, size);
-	skb_shinfo(skb)->flags |= SKBFL_SHARED_FRAG;
+	skb_shinfo(skb)->tx_flags |= SKBTX_SHARED_FRAG;
 
 coalesced:
 	skb->len += size;
@@ -1265,7 +1267,7 @@ static void kcm_recv_enable(struct kcm_sock *kcm)
 }
 
 static int kcm_setsockopt(struct socket *sock, int level, int optname,
-			  sockptr_t optval, unsigned int optlen)
+			  char __user *optval, unsigned int optlen)
 {
 	struct kcm_sock *kcm = kcm_sk(sock->sk);
 	int val, valbool;
@@ -1277,8 +1279,8 @@ static int kcm_setsockopt(struct socket *sock, int level, int optname,
 	if (optlen < sizeof(int))
 		return -EINVAL;
 
-	if (copy_from_sockptr(&val, optval, sizeof(int)))
-		return -EFAULT;
+	if (get_user(val, (int __user *)optval))
+		return -EINVAL;
 
 	valbool = val ? 1 : 0;
 
@@ -1496,7 +1498,7 @@ static int kcm_attach_ioctl(struct socket *sock, struct kcm_attach *info)
 
 	return 0;
 out:
-	sockfd_put(csock);
+	fput(csock->file);
 	return err;
 }
 
@@ -1644,7 +1646,7 @@ static int kcm_unattach_ioctl(struct socket *sock, struct kcm_unattach *info)
 	spin_unlock_bh(&mux->lock);
 
 out:
-	sockfd_put(csock);
+	fput(csock->file);
 	return err;
 }
 

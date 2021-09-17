@@ -7,6 +7,8 @@
 #include "ice_dcb_nl.h"
 #include <net/dcbnl.h>
 
+#define ICE_APP_PROT_ID_ROCE	0x8915
+
 /**
  * ice_dcbnl_devreset - perform enough of a ifdown/ifup to sync DCBNL info
  * @netdev: device associated with interface that needs reset
@@ -18,10 +20,12 @@ static void ice_dcbnl_devreset(struct net_device *netdev)
 	while (ice_is_reset_in_progress(pf->state))
 		usleep_range(1000, 2000);
 
+	set_bit(__ICE_DCBNL_DEVRESET, pf->state);
 	dev_close(netdev);
 	netdev_state_change(netdev);
 	dev_open(netdev, NULL);
 	netdev_state_change(netdev);
+	clear_bit(__ICE_DCBNL_DEVRESET, pf->state);
 }
 
 /**
@@ -32,10 +36,12 @@ static void ice_dcbnl_devreset(struct net_device *netdev)
 static int ice_dcbnl_getets(struct net_device *netdev, struct ieee_ets *ets)
 {
 	struct ice_dcbx_cfg *dcbxcfg;
+	struct ice_port_info *pi;
 	struct ice_pf *pf;
 
 	pf = ice_netdev_to_pf(netdev);
-	dcbxcfg = &pf->hw.port_info->qos_cfg.local_dcbx_cfg;
+	pi = pf->hw.port_info;
+	dcbxcfg = &pi->local_dcbx_cfg;
 
 	ets->willing = dcbxcfg->etscfg.willing;
 	ets->ets_cap = dcbxcfg->etscfg.maxtcs;
@@ -70,7 +76,7 @@ static int ice_dcbnl_setets(struct net_device *netdev, struct ieee_ets *ets)
 	    !(pf->dcbx_cap & DCB_CAP_DCBX_VER_IEEE))
 		return -EINVAL;
 
-	new_cfg = &pf->hw.port_info->qos_cfg.desired_dcbx_cfg;
+	new_cfg = &pf->hw.port_info->desired_dcbx_cfg;
 
 	mutex_lock(&pf->tc_mutex);
 
@@ -89,12 +95,14 @@ static int ice_dcbnl_setets(struct net_device *netdev, struct ieee_ets *ets)
 		new_cfg->etsrec.prio_table[i] = ets->reco_prio_tc[i];
 	}
 
-	if (ice_dcb_bwchk(pf, new_cfg)) {
-		err = -EINVAL;
-		goto ets_out;
-	}
-
-	max_tc = pf->hw.func_caps.common_cap.maxtc;
+	/* max_tc is a 1-8 value count of number of TC's, not a 0-7 value
+	 * for the TC's index number.  Add one to value if not zero, and
+	 * for zero set it to the FW's default value
+	 */
+	if (max_tc)
+		max_tc++;
+	else
+		max_tc = IEEE_8021QAZ_MAX_TCS;
 
 	new_cfg->etscfg.maxtcs = max_tc;
 
@@ -111,7 +119,6 @@ static int ice_dcbnl_setets(struct net_device *netdev, struct ieee_ets *ets)
 	if (err == ICE_DCB_NO_HW_CHG)
 		err = ICE_DCB_HW_CHG_RST;
 
-ets_out:
 	mutex_unlock(&pf->tc_mutex);
 	return err;
 }
@@ -132,7 +139,7 @@ ice_dcbnl_getnumtcs(struct net_device *dev, int __always_unused tcid, u8 *num)
 	if (!test_bit(ICE_FLAG_DCB_CAPABLE, pf->flags))
 		return -EINVAL;
 
-	*num = pf->hw.func_caps.common_cap.maxtc;
+	*num = IEEE_8021QAZ_MAX_TCS;
 	return 0;
 }
 
@@ -155,11 +162,6 @@ static u8 ice_dcbnl_getdcbx(struct net_device *netdev)
 static u8 ice_dcbnl_setdcbx(struct net_device *netdev, u8 mode)
 {
 	struct ice_pf *pf = ice_netdev_to_pf(netdev);
-	struct ice_qos_cfg *qos_cfg;
-
-	/* if FW LLDP agent is running, DCBNL not allowed to change mode */
-	if (test_bit(ICE_FLAG_FW_LLDP_AGENT, pf->flags))
-		return ICE_DCB_NO_HW_CHG;
 
 	/* No support for LLD_MANAGED modes or CEE+IEEE */
 	if ((mode & DCB_CAP_DCBX_LLD_MANAGED) ||
@@ -172,11 +174,10 @@ static u8 ice_dcbnl_setdcbx(struct net_device *netdev, u8 mode)
 		return ICE_DCB_NO_HW_CHG;
 
 	pf->dcbx_cap = mode;
-	qos_cfg = &pf->hw.port_info->qos_cfg;
 	if (mode & DCB_CAP_DCBX_VER_CEE)
-		qos_cfg->local_dcbx_cfg.dcbx_mode = ICE_DCBX_MODE_CEE;
+		pf->hw.port_info->local_dcbx_cfg.dcbx_mode = ICE_DCBX_MODE_CEE;
 	else
-		qos_cfg->local_dcbx_cfg.dcbx_mode = ICE_DCBX_MODE_IEEE;
+		pf->hw.port_info->local_dcbx_cfg.dcbx_mode = ICE_DCBX_MODE_IEEE;
 
 	dev_info(ice_pf_to_dev(pf), "DCBx mode = 0x%x\n", mode);
 	return ICE_DCB_HW_CHG_RST;
@@ -227,7 +228,7 @@ static int ice_dcbnl_getpfc(struct net_device *netdev, struct ieee_pfc *pfc)
 	struct ice_dcbx_cfg *dcbxcfg;
 	int i;
 
-	dcbxcfg = &pi->qos_cfg.local_dcbx_cfg;
+	dcbxcfg = &pi->local_dcbx_cfg;
 	pfc->pfc_cap = dcbxcfg->pfc.pfccap;
 	pfc->pfc_en = dcbxcfg->pfc.pfcena;
 	pfc->mbc = dcbxcfg->pfc.mbc;
@@ -258,7 +259,7 @@ static int ice_dcbnl_setpfc(struct net_device *netdev, struct ieee_pfc *pfc)
 
 	mutex_lock(&pf->tc_mutex);
 
-	new_cfg = &pf->hw.port_info->qos_cfg.desired_dcbx_cfg;
+	new_cfg = &pf->hw.port_info->desired_dcbx_cfg;
 
 	if (pfc->pfc_cap)
 		new_cfg->pfc.pfccap = pfc->pfc_cap;
@@ -295,9 +296,9 @@ ice_dcbnl_get_pfc_cfg(struct net_device *netdev, int prio, u8 *setting)
 	if (prio >= ICE_MAX_USER_PRIORITY)
 		return;
 
-	*setting = (pi->qos_cfg.local_dcbx_cfg.pfc.pfcena >> prio) & 0x1;
+	*setting = (pi->local_dcbx_cfg.pfc.pfcena >> prio) & 0x1;
 	dev_dbg(ice_pf_to_dev(pf), "Get PFC Config up=%d, setting=%d, pfcenable=0x%x\n",
-		prio, *setting, pi->qos_cfg.local_dcbx_cfg.pfc.pfcena);
+		prio, *setting, pi->local_dcbx_cfg.pfc.pfcena);
 }
 
 /**
@@ -318,7 +319,7 @@ static void ice_dcbnl_set_pfc_cfg(struct net_device *netdev, int prio, u8 set)
 	if (prio >= ICE_MAX_USER_PRIORITY)
 		return;
 
-	new_cfg = &pf->hw.port_info->qos_cfg.desired_dcbx_cfg;
+	new_cfg = &pf->hw.port_info->desired_dcbx_cfg;
 
 	new_cfg->pfc.pfccap = pf->hw.func_caps.common_cap.maxtc;
 	if (set)
@@ -340,7 +341,7 @@ static u8 ice_dcbnl_getpfcstate(struct net_device *netdev)
 	struct ice_port_info *pi = pf->hw.port_info;
 
 	/* Return enabled if any UP enabled for PFC */
-	if (pi->qos_cfg.local_dcbx_cfg.pfc.pfcena)
+	if (pi->local_dcbx_cfg.pfc.pfcena)
 		return 1;
 
 	return 0;
@@ -380,8 +381,8 @@ static u8 ice_dcbnl_setstate(struct net_device *netdev, u8 state)
 
 	if (state) {
 		set_bit(ICE_FLAG_DCB_ENA, pf->flags);
-		memcpy(&pf->hw.port_info->qos_cfg.desired_dcbx_cfg,
-		       &pf->hw.port_info->qos_cfg.local_dcbx_cfg,
+		memcpy(&pf->hw.port_info->desired_dcbx_cfg,
+		       &pf->hw.port_info->local_dcbx_cfg,
 		       sizeof(struct ice_dcbx_cfg));
 	} else {
 		clear_bit(ICE_FLAG_DCB_ENA, pf->flags);
@@ -415,7 +416,7 @@ ice_dcbnl_get_pg_tc_cfg_tx(struct net_device *netdev, int prio,
 	if (prio >= ICE_MAX_USER_PRIORITY)
 		return;
 
-	*pgid = pi->qos_cfg.local_dcbx_cfg.etscfg.prio_table[prio];
+	*pgid = pi->local_dcbx_cfg.etscfg.prio_table[prio];
 	dev_dbg(ice_pf_to_dev(pf), "Get PG config prio=%d tc=%d\n", prio,
 		*pgid);
 }
@@ -446,7 +447,7 @@ ice_dcbnl_set_pg_tc_cfg_tx(struct net_device *netdev, int tc,
 	if (tc >= ICE_MAX_TRAFFIC_CLASS)
 		return;
 
-	new_cfg = &pf->hw.port_info->qos_cfg.desired_dcbx_cfg;
+	new_cfg = &pf->hw.port_info->desired_dcbx_cfg;
 
 	/* prio_type, bwg_id and bw_pct per UP are not supported */
 
@@ -476,7 +477,7 @@ ice_dcbnl_get_pg_bwg_cfg_tx(struct net_device *netdev, int pgid, u8 *bw_pct)
 	if (pgid >= ICE_MAX_TRAFFIC_CLASS)
 		return;
 
-	*bw_pct = pi->qos_cfg.local_dcbx_cfg.etscfg.tcbwtable[pgid];
+	*bw_pct = pi->local_dcbx_cfg.etscfg.tcbwtable[pgid];
 	dev_dbg(ice_pf_to_dev(pf), "Get PG BW config tc=%d bw_pct=%d\n",
 		pgid, *bw_pct);
 }
@@ -500,7 +501,7 @@ ice_dcbnl_set_pg_bwg_cfg_tx(struct net_device *netdev, int pgid, u8 bw_pct)
 	if (pgid >= ICE_MAX_TRAFFIC_CLASS)
 		return;
 
-	new_cfg = &pf->hw.port_info->qos_cfg.desired_dcbx_cfg;
+	new_cfg = &pf->hw.port_info->desired_dcbx_cfg;
 
 	new_cfg->etscfg.tcbwtable[pgid] = bw_pct;
 }
@@ -530,31 +531,7 @@ ice_dcbnl_get_pg_tc_cfg_rx(struct net_device *netdev, int prio,
 	if (prio >= ICE_MAX_USER_PRIORITY)
 		return;
 
-	*pgid = pi->qos_cfg.local_dcbx_cfg.etscfg.prio_table[prio];
-}
-
-/**
- * ice_dcbnl_set_pg_tc_cfg_rx
- * @netdev: relevant netdev struct
- * @prio: corresponding user priority
- * @prio_type: the traffic priority type
- * @pgid: the PG ID
- * @bw_pct: BW percentage for corresponding BWG
- * @up_map: prio mapped to corresponding TC
- *
- * lldpad requires this function pointer to be non-NULL to complete CEE config.
- */
-static void
-ice_dcbnl_set_pg_tc_cfg_rx(struct net_device *netdev,
-			   int __always_unused prio,
-			   u8 __always_unused prio_type,
-			   u8 __always_unused pgid,
-			   u8 __always_unused bw_pct,
-			   u8 __always_unused up_map)
-{
-	struct ice_pf *pf = ice_netdev_to_pf(netdev);
-
-	dev_dbg(ice_pf_to_dev(pf), "Rx TC PG Config Not Supported.\n");
+	*pgid = pi->local_dcbx_cfg.etscfg.prio_table[prio];
 }
 
 /**
@@ -574,23 +551,6 @@ ice_dcbnl_get_pg_bwg_cfg_rx(struct net_device *netdev, int __always_unused pgid,
 		return;
 
 	*bw_pct = 0;
-}
-
-/**
- * ice_dcbnl_set_pg_bwg_cfg_rx
- * @netdev: the corresponding netdev
- * @pgid: corresponding TC
- * @bw_pct: BW percentage for given TC
- *
- * lldpad requires this function pointer to be non-NULL to complete CEE config.
- */
-static void
-ice_dcbnl_set_pg_bwg_cfg_rx(struct net_device *netdev, int __always_unused pgid,
-			    u8 __always_unused bw_pct)
-{
-	struct ice_pf *pf = ice_netdev_to_pf(netdev);
-
-	dev_dbg(ice_pf_to_dev(pf), "Rx BWG PG Config Not Supported.\n");
 }
 
 /**
@@ -671,7 +631,7 @@ static bool
 ice_dcbnl_find_app(struct ice_dcbx_cfg *cfg,
 		   struct ice_dcb_app_priority_table *app)
 {
-	unsigned int i;
+	int i;
 
 	for (i = 0; i < cfg->numapps; i++) {
 		if (app->selector == cfg->app[i].selector &&
@@ -701,9 +661,9 @@ static int ice_dcbnl_setapp(struct net_device *netdev, struct dcb_app *app)
 
 	mutex_lock(&pf->tc_mutex);
 
-	new_cfg = &pf->hw.port_info->qos_cfg.desired_dcbx_cfg;
+	new_cfg = &pf->hw.port_info->desired_dcbx_cfg;
 
-	old_cfg = &pf->hw.port_info->qos_cfg.local_dcbx_cfg;
+	old_cfg = &pf->hw.port_info->local_dcbx_cfg;
 
 	if (old_cfg->numapps == ICE_DCBX_MAX_APPS) {
 		ret = -EINVAL;
@@ -746,14 +706,13 @@ static int ice_dcbnl_delapp(struct net_device *netdev, struct dcb_app *app)
 {
 	struct ice_pf *pf = ice_netdev_to_pf(netdev);
 	struct ice_dcbx_cfg *old_cfg, *new_cfg;
-	unsigned int i, j;
-	int ret = 0;
+	int i, j, ret = 0;
 
 	if (pf->dcbx_cap & DCB_CAP_DCBX_LLD_MANAGED)
 		return -EINVAL;
 
 	mutex_lock(&pf->tc_mutex);
-	old_cfg = &pf->hw.port_info->qos_cfg.local_dcbx_cfg;
+	old_cfg = &pf->hw.port_info->local_dcbx_cfg;
 
 	if (old_cfg->numapps <= 1)
 		goto delapp_out;
@@ -762,7 +721,7 @@ static int ice_dcbnl_delapp(struct net_device *netdev, struct dcb_app *app)
 	if (ret)
 		goto delapp_out;
 
-	new_cfg = &pf->hw.port_info->qos_cfg.desired_dcbx_cfg;
+	new_cfg = &pf->hw.port_info->desired_dcbx_cfg;
 
 	for (i = 1; i < new_cfg->numapps; i++) {
 		if (app->selector == new_cfg->app[i].selector &&
@@ -815,7 +774,7 @@ static u8 ice_dcbnl_cee_set_all(struct net_device *netdev)
 	    !(pf->dcbx_cap & DCB_CAP_DCBX_VER_CEE))
 		return ICE_DCB_NO_HW_CHG;
 
-	new_cfg = &pf->hw.port_info->qos_cfg.desired_dcbx_cfg;
+	new_cfg = &pf->hw.port_info->desired_dcbx_cfg;
 
 	mutex_lock(&pf->tc_mutex);
 
@@ -840,8 +799,6 @@ static const struct dcbnl_rtnl_ops dcbnl_ops = {
 	.getpermhwaddr = ice_dcbnl_get_perm_hw_addr,
 	.setpgtccfgtx = ice_dcbnl_set_pg_tc_cfg_tx,
 	.setpgbwgcfgtx = ice_dcbnl_set_pg_bwg_cfg_tx,
-	.setpgtccfgrx = ice_dcbnl_set_pg_tc_cfg_rx,
-	.setpgbwgcfgrx = ice_dcbnl_set_pg_bwg_cfg_rx,
 	.getpgtccfgtx = ice_dcbnl_get_pg_tc_cfg_tx,
 	.getpgbwgcfgtx = ice_dcbnl_get_pg_bwg_cfg_tx,
 	.getpgtccfgrx = ice_dcbnl_get_pg_tc_cfg_rx,
@@ -870,7 +827,7 @@ void ice_dcbnl_set_all(struct ice_vsi *vsi)
 	struct ice_port_info *pi;
 	struct dcb_app sapp;
 	struct ice_pf *pf;
-	unsigned int i;
+	int i;
 
 	if (!netdev)
 		return;
@@ -886,7 +843,7 @@ void ice_dcbnl_set_all(struct ice_vsi *vsi)
 	if (!test_bit(ICE_FLAG_DCB_ENA, pf->flags))
 		return;
 
-	dcbxcfg = &pi->qos_cfg.local_dcbx_cfg;
+	dcbxcfg = &pi->local_dcbx_cfg;
 
 	for (i = 0; i < dcbxcfg->numapps; i++) {
 		u8 prio, tc_map;
@@ -942,7 +899,7 @@ ice_dcbnl_flush_apps(struct ice_pf *pf, struct ice_dcbx_cfg *old_cfg,
 		     struct ice_dcbx_cfg *new_cfg)
 {
 	struct ice_vsi *main_vsi = ice_get_main_vsi(pf);
-	unsigned int i;
+	int i;
 
 	if (!main_vsi)
 		return;

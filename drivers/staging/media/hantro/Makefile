@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: GPL-2.0
-
 obj-$(CONFIG_VIDEO_HANTRO) += hantro-vpu.o
 
 hantro-vpu-y += \
@@ -17,9 +15,6 @@ hantro-vpu-y += \
 		hantro_h264.o \
 		hantro_mpeg2.o \
 		hantro_vp8.o
-
-hantro-vpu-$(CONFIG_VIDEO_HANTRO_IMX8M) += \
-		imx8m_vpu_hw.o
 
 hantro-vpu-$(CONFIG_VIDEO_HANTRO_ROCKCHIP) += \
 		rk3288_vpu_hw.o \

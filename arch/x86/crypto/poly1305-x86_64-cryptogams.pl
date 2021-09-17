@@ -246,12 +246,12 @@ $code.=<<___ if (!$kernel);
 ___
 &declare_function("poly1305_init_x86_64", 32, 3);
 $code.=<<___;
-	xor	%eax,%eax
+	xor	%rax,%rax
 	mov	%rax,0($ctx)		# initialize hash value
 	mov	%rax,8($ctx)
 	mov	%rax,16($ctx)
 
-	test	$inp,$inp
+	cmp	\$0,$inp
 	je	.Lno_key
 ___
 $code.=<<___ if (!$kernel);
@@ -403,6 +403,10 @@ $code.=<<___;
 ___
 &end_function("poly1305_emit_x86_64");
 if ($avx) {
+
+if($kernel) {
+	$code .= "#ifdef CONFIG_AS_AVX\n";
+}
 
 ########################################################################
 # Layout of opaque area is following.
@@ -1512,7 +1516,15 @@ $code.=<<___;
 ___
 &end_function("poly1305_emit_avx");
 
+if ($kernel) {
+	$code .= "#endif\n";
+}
+
 if ($avx>1) {
+
+if ($kernel) {
+	$code .= "#ifdef CONFIG_AS_AVX2\n";
+}
 
 my ($H0,$H1,$H2,$H3,$H4, $MASK, $T4,$T0,$T1,$T2,$T3, $D0,$D1,$D2,$D3,$D4) =
     map("%ymm$_",(0..15));
@@ -2804,6 +2816,10 @@ ___
 poly1305_blocks_avxN(0);
 &end_function("poly1305_blocks_avx2");
 
+if($kernel) {
+	$code .= "#endif\n";
+}
+
 #######################################################################
 if ($avx>2) {
 # On entry we have input length divisible by 64. But since inner loop
@@ -2853,7 +2869,7 @@ $code.=<<___;
 .type	poly1305_init_base2_44,\@function,3
 .align	32
 poly1305_init_base2_44:
-	xor	%eax,%eax
+	xor	%rax,%rax
 	mov	%rax,0($ctx)		# initialize hash value
 	mov	%rax,8($ctx)
 	mov	%rax,16($ctx)
@@ -3947,7 +3963,7 @@ xor128_decrypt_n_pad:
 	mov	\$16,$len
 	sub	%r10,$len
 	xor	%eax,%eax
-	xor	%r11d,%r11d
+	xor	%r11,%r11
 .Loop_dec_byte:
 	mov	($inp,$otp),%r11b
 	mov	($otp),%al
@@ -4085,7 +4101,7 @@ avx_handler:
 	.long	0xa548f3fc		# cld; rep movsq
 
 	mov	$disp,%rsi
-	xor	%ecx,%ecx		# arg1, UNW_FLAG_NHANDLER
+	xor	%rcx,%rcx		# arg1, UNW_FLAG_NHANDLER
 	mov	8(%rsi),%rdx		# arg2, disp->ImageBase
 	mov	0(%rsi),%r8		# arg3, disp->ControlPc
 	mov	16(%rsi),%r9		# arg4, disp->FunctionEntry

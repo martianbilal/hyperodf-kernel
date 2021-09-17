@@ -23,24 +23,15 @@ extern struct nft_object_type nft_secmark_obj_type;
 int nf_tables_core_module_init(void);
 void nf_tables_core_module_exit(void);
 
-struct nft_bitwise_fast_expr {
-	u32			mask;
-	u32			xor;
-	u8			sreg;
-	u8			dreg;
-};
-
 struct nft_cmp_fast_expr {
 	u32			data;
-	u32			mask;
-	u8			sreg;
+	enum nft_registers	sreg:8;
 	u8			len;
-	bool			inv;
 };
 
 struct nft_immediate_expr {
 	struct nft_data		data;
-	u8			dreg;
+	enum nft_registers	dreg:8;
 	u8			dlen;
 };
 
@@ -60,14 +51,14 @@ struct nft_payload {
 	enum nft_payload_bases	base:8;
 	u8			offset;
 	u8			len;
-	u8			dreg;
+	enum nft_registers	dreg:8;
 };
 
 struct nft_payload_set {
 	enum nft_payload_bases	base:8;
 	u8			offset;
 	u8			len;
-	u8			sreg;
+	enum nft_registers	sreg:8;
 	u8			csum_type;
 	u8			csum_offset;
 	u8			csum_flags;
@@ -75,18 +66,15 @@ struct nft_payload_set {
 
 extern const struct nft_expr_ops nft_payload_fast_ops;
 
-extern const struct nft_expr_ops nft_bitwise_fast_ops;
-
 extern struct static_key_false nft_counters_enabled;
 extern struct static_key_false nft_trace_enabled;
 
-extern const struct nft_set_type nft_set_rhash_type;
-extern const struct nft_set_type nft_set_hash_type;
-extern const struct nft_set_type nft_set_hash_fast_type;
-extern const struct nft_set_type nft_set_rbtree_type;
-extern const struct nft_set_type nft_set_bitmap_type;
-extern const struct nft_set_type nft_set_pipapo_type;
-extern const struct nft_set_type nft_set_pipapo_avx2_type;
+extern struct nft_set_type nft_set_rhash_type;
+extern struct nft_set_type nft_set_hash_type;
+extern struct nft_set_type nft_set_hash_fast_type;
+extern struct nft_set_type nft_set_rbtree_type;
+extern struct nft_set_type nft_set_bitmap_type;
+extern struct nft_set_type nft_set_pipapo_type;
 
 struct nft_expr;
 struct nft_regs;

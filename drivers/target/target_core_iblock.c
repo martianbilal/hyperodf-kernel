@@ -211,7 +211,6 @@ static unsigned long long iblock_emulate_read_cap_with_block_size(
 			break;
 		case 512:
 			blocks_long <<= 3;
-			break;
 		default:
 			break;
 		}
@@ -315,8 +314,10 @@ iblock_get_bio(struct se_cmd *cmd, sector_t lba, u32 sg_num, int op,
 	 * Only allocate as many vector entries as the bio code allows us to,
 	 * we'll loop later on until we have handled the whole request.
 	 */
-	bio = bio_alloc_bioset(GFP_NOIO, bio_max_segs(sg_num),
-				&ib_dev->ibd_bio_set);
+	if (sg_num > BIO_MAX_PAGES)
+		sg_num = BIO_MAX_PAGES;
+
+	bio = bio_alloc_bioset(GFP_NOIO, sg_num, &ib_dev->ibd_bio_set);
 	if (!bio) {
 		pr_err("Unable to allocate memory for bio\n");
 		return NULL;
@@ -610,8 +611,9 @@ static ssize_t iblock_show_configfs_dev_params(struct se_device *dev, char *b)
 	bl += sprintf(b + bl, "        ");
 	if (bd) {
 		bl += sprintf(b + bl, "Major: %d Minor: %d  %s\n",
-			MAJOR(bd->bd_dev), MINOR(bd->bd_dev),
-			"CLAIMED: IBLOCK");
+			MAJOR(bd->bd_dev), MINOR(bd->bd_dev), (!bd->bd_contains) ?
+			"" : (bd->bd_holder == ib_dev) ?
+			"CLAIMED: IBLOCK" : "CLAIMED: OS");
 	} else {
 		bl += sprintf(b + bl, "Major: 0 Minor: 0\n");
 	}
@@ -636,7 +638,8 @@ iblock_alloc_bip(struct se_cmd *cmd, struct bio *bio,
 		return -ENODEV;
 	}
 
-	bip = bio_integrity_alloc(bio, GFP_NOIO, bio_max_segs(cmd->t_prot_nents));
+	bip = bio_integrity_alloc(bio, GFP_NOIO,
+			min_t(unsigned int, cmd->t_prot_nents, BIO_MAX_PAGES));
 	if (IS_ERR(bip)) {
 		pr_err("Unable to allocate bio_integrity_payload\n");
 		return PTR_ERR(bip);

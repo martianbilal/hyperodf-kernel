@@ -68,7 +68,6 @@ struct encoder_feature_support {
 	unsigned int max_hdmi_pixel_clock;
 	bool hdmi_ycbcr420_supported;
 	bool dp_ycbcr420_supported;
-	bool fec_supported;
 };
 
 union dpcd_psr_configuration {
@@ -90,8 +89,7 @@ union psr_error_status {
 	struct {
 		unsigned char LINK_CRC_ERROR        :1;
 		unsigned char RFB_STORAGE_ERROR     :1;
-		unsigned char VSC_SDP_ERROR         :1;
-		unsigned char RESERVED              :5;
+		unsigned char RESERVED              :6;
 	} bits;
 	unsigned char raw;
 };

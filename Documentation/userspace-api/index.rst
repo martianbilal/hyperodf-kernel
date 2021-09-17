@@ -22,9 +22,6 @@ place where this information is gathered.
    spec_ctrl
    accelerators/ocxl
    ioctl/index
-   iommu
-   media/index
-   sysfs-platform_profile
 
 .. only::  subproject and html
 

@@ -48,9 +48,6 @@ struct host1x_client_ops {
  * @channel: host1x channel associated with this client
  * @syncpts: array of syncpoints requested for this client
  * @num_syncpts: number of syncpoints requested for this client
- * @parent: pointer to parent structure
- * @usecount: reference count for this structure
- * @lock: mutex for mutually exclusive concurrency
  */
 struct host1x_client {
 	struct list_head list;
@@ -320,32 +317,7 @@ static inline struct host1x_device *to_host1x_device(struct device *dev)
 int host1x_device_init(struct host1x_device *device);
 int host1x_device_exit(struct host1x_device *device);
 
-void __host1x_client_init(struct host1x_client *client, struct lock_class_key *key);
-void host1x_client_exit(struct host1x_client *client);
-
-#define host1x_client_init(client)			\
-	({						\
-		static struct lock_class_key __key;	\
-		__host1x_client_init(client, &__key);	\
-	})
-
-int __host1x_client_register(struct host1x_client *client);
-
-/*
- * Note that this wrapper calls __host1x_client_init() for compatibility
- * with existing callers. Callers that want to separately initialize and
- * register a host1x client must first initialize using either of the
- * __host1x_client_init() or host1x_client_init() functions and then use
- * the low-level __host1x_client_register() function to avoid the client
- * getting reinitialized.
- */
-#define host1x_client_register(client)			\
-	({						\
-		static struct lock_class_key __key;	\
-		__host1x_client_init(client, &__key);	\
-		__host1x_client_register(client);	\
-	})
-
+int host1x_client_register(struct host1x_client *client);
 int host1x_client_unregister(struct host1x_client *client);
 
 int host1x_client_suspend(struct host1x_client *client);
@@ -353,12 +325,10 @@ int host1x_client_resume(struct host1x_client *client);
 
 struct tegra_mipi_device;
 
-struct tegra_mipi_device *tegra_mipi_request(struct device *device,
-					     struct device_node *np);
+struct tegra_mipi_device *tegra_mipi_request(struct device *device);
 void tegra_mipi_free(struct tegra_mipi_device *device);
 int tegra_mipi_enable(struct tegra_mipi_device *device);
 int tegra_mipi_disable(struct tegra_mipi_device *device);
-int tegra_mipi_start_calibration(struct tegra_mipi_device *device);
-int tegra_mipi_finish_calibration(struct tegra_mipi_device *device);
+int tegra_mipi_calibrate(struct tegra_mipi_device *device);
 
 #endif

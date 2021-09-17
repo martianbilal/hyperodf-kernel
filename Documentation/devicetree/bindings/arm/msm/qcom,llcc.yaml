@@ -23,8 +23,6 @@ properties:
     enum:
       - qcom,sc7180-llcc
       - qcom,sdm845-llcc
-      - qcom,sm8150-llcc
-      - qcom,sm8250-llcc
 
   reg:
     items:
@@ -44,8 +42,6 @@ required:
   - reg
   - reg-names
   - interrupts
-
-additionalProperties: false
 
 examples:
   - |

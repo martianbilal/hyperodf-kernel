@@ -379,19 +379,19 @@ static inline unsigned int iavf_itr_divisor(struct iavf_q_vector *q_vector)
 	unsigned int divisor;
 
 	switch (q_vector->adapter->link_speed) {
-	case VIRTCHNL_LINK_SPEED_40GB:
+	case IAVF_LINK_SPEED_40GB:
 		divisor = IAVF_ITR_ADAPTIVE_MIN_INC * 1024;
 		break;
-	case VIRTCHNL_LINK_SPEED_25GB:
-	case VIRTCHNL_LINK_SPEED_20GB:
+	case IAVF_LINK_SPEED_25GB:
+	case IAVF_LINK_SPEED_20GB:
 		divisor = IAVF_ITR_ADAPTIVE_MIN_INC * 512;
 		break;
 	default:
-	case VIRTCHNL_LINK_SPEED_10GB:
+	case IAVF_LINK_SPEED_10GB:
 		divisor = IAVF_ITR_ADAPTIVE_MIN_INC * 256;
 		break;
-	case VIRTCHNL_LINK_SPEED_1GB:
-	case VIRTCHNL_LINK_SPEED_100MB:
+	case IAVF_LINK_SPEED_1GB:
+	case IAVF_LINK_SPEED_100MB:
 		divisor = IAVF_ITR_ADAPTIVE_MIN_INC * 32;
 		break;
 	}
@@ -1007,7 +1007,7 @@ static inline void iavf_rx_checksum(struct iavf_vsi *vsi,
 	case IAVF_RX_PTYPE_INNER_PROT_UDP:
 	case IAVF_RX_PTYPE_INNER_PROT_SCTP:
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
-		fallthrough;
+		/* fall though */
 	default:
 		break;
 	}
@@ -1142,6 +1142,19 @@ static void iavf_reuse_rx_page(struct iavf_ring *rx_ring,
 }
 
 /**
+ * iavf_page_is_reusable - check if any reuse is possible
+ * @page: page struct to check
+ *
+ * A page is not reusable if it was allocated under low memory
+ * conditions, or it's not in the same NUMA node as this CPU.
+ */
+static inline bool iavf_page_is_reusable(struct page *page)
+{
+	return (page_to_nid(page) == numa_mem_id()) &&
+		!page_is_pfmemalloc(page);
+}
+
+/**
  * iavf_can_reuse_rx_page - Determine if this page can be reused by
  * the adapter for another receive
  *
@@ -1174,7 +1187,7 @@ static bool iavf_can_reuse_rx_page(struct iavf_rx_buffer *rx_buffer)
 	struct page *page = rx_buffer->page;
 
 	/* Is any reuse possible? */
-	if (!dev_page_is_reusable(page))
+	if (unlikely(!iavf_page_is_reusable(page)))
 		return false;
 
 #if (PAGE_SIZE < 8192)
@@ -1296,7 +1309,10 @@ static struct sk_buff *iavf_construct_skb(struct iavf_ring *rx_ring,
 		return NULL;
 	/* prefetch first cache line of first page */
 	va = page_address(rx_buffer->page) + rx_buffer->page_offset;
-	net_prefetch(va);
+	prefetch(va);
+#if L1_CACHE_BYTES < 128
+	prefetch(va + L1_CACHE_BYTES);
+#endif
 
 	/* allocate a skb to store the frags */
 	skb = __napi_alloc_skb(&rx_ring->q_vector->napi,
@@ -1360,8 +1376,10 @@ static struct sk_buff *iavf_build_skb(struct iavf_ring *rx_ring,
 		return NULL;
 	/* prefetch first cache line of first page */
 	va = page_address(rx_buffer->page) + rx_buffer->page_offset;
-	net_prefetch(va);
-
+	prefetch(va);
+#if L1_CACHE_BYTES < 128
+	prefetch(va + L1_CACHE_BYTES);
+#endif
 	/* build an skb around the page buffer */
 	skb = build_skb(va - IAVF_SKB_PAD, truesize);
 	if (unlikely(!skb))

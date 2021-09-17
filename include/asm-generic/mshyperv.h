@@ -27,14 +27,11 @@
 
 struct ms_hyperv_info {
 	u32 features;
-	u32 features_b;
 	u32 misc_features;
 	u32 hints;
 	u32 nested_features;
 	u32 max_vp_index;
 	u32 max_lp_index;
-	u32 isolation_config_a;
-	u32 isolation_config_b;
 };
 extern struct ms_hyperv_info ms_hyperv;
 
@@ -92,7 +89,7 @@ static inline void vmbus_signal_eom(struct hv_message *msg, u32 old_msg_type)
 	}
 }
 
-int hv_setup_vmbus_irq(int irq, void (*handler)(void));
+void hv_setup_vmbus_irq(void (*handler)(void));
 void hv_remove_vmbus_irq(void);
 void hv_enable_vmbus_irq(void);
 void hv_disable_vmbus_irq(void);
@@ -101,8 +98,6 @@ void hv_setup_kexec_handler(void (*handler)(void));
 void hv_remove_kexec_handler(void);
 void hv_setup_crash_handler(void (*handler)(struct pt_regs *regs));
 void hv_remove_crash_handler(void);
-
-extern int vmbus_interrupt;
 
 #if IS_ENABLED(CONFIG_HYPERV)
 /*
@@ -172,9 +167,8 @@ void hyperv_report_panic(struct pt_regs *regs, long err, bool in_die);
 void hyperv_report_panic_msg(phys_addr_t pa, size_t size);
 bool hv_is_hyperv_initialized(void);
 bool hv_is_hibernation_supported(void);
-enum hv_isolation_type hv_get_isolation_type(void);
-bool hv_is_isolation_supported(void);
 void hyperv_cleanup(void);
+void hv_setup_sched_clock(void *sched_clock);
 #else /* CONFIG_HYPERV */
 static inline bool hv_is_hyperv_initialized(void) { return false; }
 static inline bool hv_is_hibernation_supported(void) { return false; }

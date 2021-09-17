@@ -266,15 +266,15 @@ static int p80211_convert_to_ether(struct wlandevice *wlandev,
 /**
  * p80211netdev_rx_bh - deferred processing of all received frames
  *
- * @t: pointer to the tasklet associated with this handler
+ * @arg: pointer to WLAN network device structure (cast to unsigned long)
  */
-static void p80211netdev_rx_bh(struct tasklet_struct *t)
+static void p80211netdev_rx_bh(unsigned long arg)
 {
-	struct wlandevice *wlandev = from_tasklet(wlandev, t, rx_bh);
+	struct wlandevice *wlandev = (struct wlandevice *)arg;
 	struct sk_buff *skb = NULL;
 	struct net_device *dev = wlandev->netdev;
 
-	/* Let's empty our queue */
+	/* Let's empty our our queue */
 	while ((skb = skb_dequeue(&wlandev->nsd_rxq))) {
 		if (wlandev->state == WLAN_DEVICE_OPEN) {
 			if (dev->type != ARPHRD_ETHER) {
@@ -429,7 +429,7 @@ static netdev_tx_t p80211knetdev_hard_start_xmit(struct sk_buff *skb,
 failed:
 	/* Free up the WEP buffer if it's not the same as the skb */
 	if ((p80211_wep.data) && (p80211_wep.data != skb->data))
-		kfree_sensitive(p80211_wep.data);
+		kzfree(p80211_wep.data);
 
 	/* we always free the skb here, never in a lower level. */
 	if (!result)
@@ -569,22 +569,24 @@ static int p80211knetdev_do_ioctl(struct net_device *dev,
 		goto bail;
 	}
 
-	msgbuf = memdup_user(req->data, req->len);
-	if (IS_ERR(msgbuf)) {
-		result = PTR_ERR(msgbuf);
-		goto bail;
-	}
-
-	result = p80211req_dorequest(wlandev, msgbuf);
-
-	if (result == 0) {
-		if (copy_to_user
-		    ((void __user *)req->data, msgbuf, req->len)) {
+	/* Allocate a buf of size req->len */
+	msgbuf = kmalloc(req->len, GFP_KERNEL);
+	if (msgbuf) {
+		if (copy_from_user(msgbuf, (void __user *)req->data, req->len))
 			result = -EFAULT;
-		}
-	}
-	kfree(msgbuf);
+		else
+			result = p80211req_dorequest(wlandev, msgbuf);
 
+		if (result == 0) {
+			if (copy_to_user
+			    ((void __user *)req->data, msgbuf, req->len)) {
+				result = -EFAULT;
+			}
+		}
+		kfree(msgbuf);
+	} else {
+		result = -ENOMEM;
+	}
 bail:
 	/* If allocate,copyfrom or copyto fails, return errno */
 	return result;
@@ -726,7 +728,8 @@ int wlan_setup(struct wlandevice *wlandev, struct device *physdev)
 
 	/* Set up the rx queue */
 	skb_queue_head_init(&wlandev->nsd_rxq);
-	tasklet_setup(&wlandev->rx_bh, p80211netdev_rx_bh);
+	tasklet_init(&wlandev->rx_bh,
+		     p80211netdev_rx_bh, (unsigned long)wlandev);
 
 	/* Allocate and initialize the wiphy struct */
 	wiphy = wlan_create_wiphy(physdev, wlandev);

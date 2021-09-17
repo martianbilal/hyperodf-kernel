@@ -41,7 +41,6 @@ struct mlxsw_sp_bridge {
 	DECLARE_BITMAP(mids_bitmap, MLXSW_SP_MID_MAX);
 	const struct mlxsw_sp_bridge_ops *bridge_8021q_ops;
 	const struct mlxsw_sp_bridge_ops *bridge_8021d_ops;
-	const struct mlxsw_sp_bridge_ops *bridge_8021ad_ops;
 };
 
 struct mlxsw_sp_bridge_device {
@@ -137,9 +136,9 @@ bool mlxsw_sp_bridge_device_is_offloaded(const struct mlxsw_sp *mlxsw_sp,
 }
 
 static int mlxsw_sp_bridge_device_upper_rif_destroy(struct net_device *dev,
-						    struct netdev_nested_priv *priv)
+						    void *data)
 {
-	struct mlxsw_sp *mlxsw_sp = priv->data;
+	struct mlxsw_sp *mlxsw_sp = data;
 
 	mlxsw_sp_rif_destroy_by_dev(mlxsw_sp, dev);
 	return 0;
@@ -148,74 +147,22 @@ static int mlxsw_sp_bridge_device_upper_rif_destroy(struct net_device *dev,
 static void mlxsw_sp_bridge_device_rifs_destroy(struct mlxsw_sp *mlxsw_sp,
 						struct net_device *dev)
 {
-	struct netdev_nested_priv priv = {
-		.data = (void *)mlxsw_sp,
-	};
-
 	mlxsw_sp_rif_destroy_by_dev(mlxsw_sp, dev);
 	netdev_walk_all_upper_dev_rcu(dev,
 				      mlxsw_sp_bridge_device_upper_rif_destroy,
-				      &priv);
-}
-
-static int mlxsw_sp_bridge_device_vxlan_init(struct mlxsw_sp_bridge *bridge,
-					     struct net_device *br_dev,
-					     struct netlink_ext_ack *extack)
-{
-	struct net_device *dev, *stop_dev;
-	struct list_head *iter;
-	int err;
-
-	netdev_for_each_lower_dev(br_dev, dev, iter) {
-		if (netif_is_vxlan(dev) && netif_running(dev)) {
-			err = mlxsw_sp_bridge_vxlan_join(bridge->mlxsw_sp,
-							 br_dev, dev, 0,
-							 extack);
-			if (err) {
-				stop_dev = dev;
-				goto err_vxlan_join;
-			}
-		}
-	}
-
-	return 0;
-
-err_vxlan_join:
-	netdev_for_each_lower_dev(br_dev, dev, iter) {
-		if (netif_is_vxlan(dev) && netif_running(dev)) {
-			if (stop_dev == dev)
-				break;
-			mlxsw_sp_bridge_vxlan_leave(bridge->mlxsw_sp, dev);
-		}
-	}
-	return err;
-}
-
-static void mlxsw_sp_bridge_device_vxlan_fini(struct mlxsw_sp_bridge *bridge,
-					      struct net_device *br_dev)
-{
-	struct net_device *dev;
-	struct list_head *iter;
-
-	netdev_for_each_lower_dev(br_dev, dev, iter) {
-		if (netif_is_vxlan(dev) && netif_running(dev))
-			mlxsw_sp_bridge_vxlan_leave(bridge->mlxsw_sp, dev);
-	}
+				      mlxsw_sp);
 }
 
 static struct mlxsw_sp_bridge_device *
 mlxsw_sp_bridge_device_create(struct mlxsw_sp_bridge *bridge,
-			      struct net_device *br_dev,
-			      struct netlink_ext_ack *extack)
+			      struct net_device *br_dev)
 {
 	struct device *dev = bridge->mlxsw_sp->bus_info->dev;
 	struct mlxsw_sp_bridge_device *bridge_device;
 	bool vlan_enabled = br_vlan_enabled(br_dev);
-	int err;
 
 	if (vlan_enabled && bridge->vlan_enabled_exists) {
 		dev_err(dev, "Only one VLAN-aware bridge is supported\n");
-		NL_SET_ERR_MSG_MOD(extack, "Only one VLAN-aware bridge is supported");
 		return ERR_PTR(-EINVAL);
 	}
 
@@ -229,43 +176,21 @@ mlxsw_sp_bridge_device_create(struct mlxsw_sp_bridge *bridge,
 	bridge_device->mrouter = br_multicast_router(br_dev);
 	INIT_LIST_HEAD(&bridge_device->ports_list);
 	if (vlan_enabled) {
-		u16 proto;
-
 		bridge->vlan_enabled_exists = true;
-		br_vlan_get_proto(br_dev, &proto);
-		if (proto == ETH_P_8021AD)
-			bridge_device->ops = bridge->bridge_8021ad_ops;
-		else
-			bridge_device->ops = bridge->bridge_8021q_ops;
+		bridge_device->ops = bridge->bridge_8021q_ops;
 	} else {
 		bridge_device->ops = bridge->bridge_8021d_ops;
 	}
 	INIT_LIST_HEAD(&bridge_device->mids_list);
 	list_add(&bridge_device->list, &bridge->bridges_list);
 
-	/* It is possible we already have VXLAN devices enslaved to the bridge.
-	 * In which case, we need to replay their configuration as if they were
-	 * just now enslaved to the bridge.
-	 */
-	err = mlxsw_sp_bridge_device_vxlan_init(bridge, br_dev, extack);
-	if (err)
-		goto err_vxlan_init;
-
 	return bridge_device;
-
-err_vxlan_init:
-	list_del(&bridge_device->list);
-	if (bridge_device->vlan_enabled)
-		bridge->vlan_enabled_exists = false;
-	kfree(bridge_device);
-	return ERR_PTR(err);
 }
 
 static void
 mlxsw_sp_bridge_device_destroy(struct mlxsw_sp_bridge *bridge,
 			       struct mlxsw_sp_bridge_device *bridge_device)
 {
-	mlxsw_sp_bridge_device_vxlan_fini(bridge, bridge_device->dev);
 	mlxsw_sp_bridge_device_rifs_destroy(bridge->mlxsw_sp,
 					    bridge_device->dev);
 	list_del(&bridge_device->list);
@@ -278,8 +203,7 @@ mlxsw_sp_bridge_device_destroy(struct mlxsw_sp_bridge *bridge,
 
 static struct mlxsw_sp_bridge_device *
 mlxsw_sp_bridge_device_get(struct mlxsw_sp_bridge *bridge,
-			   struct net_device *br_dev,
-			   struct netlink_ext_ack *extack)
+			   struct net_device *br_dev)
 {
 	struct mlxsw_sp_bridge_device *bridge_device;
 
@@ -287,7 +211,7 @@ mlxsw_sp_bridge_device_get(struct mlxsw_sp_bridge *bridge,
 	if (bridge_device)
 		return bridge_device;
 
-	return mlxsw_sp_bridge_device_create(bridge, br_dev, extack);
+	return mlxsw_sp_bridge_device_create(bridge, br_dev);
 }
 
 static void
@@ -368,8 +292,7 @@ mlxsw_sp_bridge_port_destroy(struct mlxsw_sp_bridge_port *bridge_port)
 
 static struct mlxsw_sp_bridge_port *
 mlxsw_sp_bridge_port_get(struct mlxsw_sp_bridge *bridge,
-			 struct net_device *brport_dev,
-			 struct netlink_ext_ack *extack)
+			 struct net_device *brport_dev)
 {
 	struct net_device *br_dev = netdev_master_upper_dev_get(brport_dev);
 	struct mlxsw_sp_bridge_device *bridge_device;
@@ -382,7 +305,7 @@ mlxsw_sp_bridge_port_get(struct mlxsw_sp_bridge *bridge,
 		return bridge_port;
 	}
 
-	bridge_device = mlxsw_sp_bridge_device_get(bridge, br_dev, extack);
+	bridge_device = mlxsw_sp_bridge_device_get(bridge, br_dev);
 	if (IS_ERR(bridge_device))
 		return ERR_CAST(bridge_device);
 
@@ -527,12 +450,16 @@ mlxsw_sp_port_bridge_vlan_stp_set(struct mlxsw_sp_port *mlxsw_sp_port,
 }
 
 static int mlxsw_sp_port_attr_stp_state_set(struct mlxsw_sp_port *mlxsw_sp_port,
+					    struct switchdev_trans *trans,
 					    struct net_device *orig_dev,
 					    u8 state)
 {
 	struct mlxsw_sp_bridge_port *bridge_port;
 	struct mlxsw_sp_bridge_vlan *bridge_vlan;
 	int err;
+
+	if (switchdev_trans_ph_prepare(trans))
+		return 0;
 
 	/* It's possible we failed to enslave the port, yet this
 	 * operation is executed due to it being deferred.
@@ -653,59 +580,56 @@ err_port_bridge_vlan_learning_set:
 	return err;
 }
 
-static int
-mlxsw_sp_port_attr_br_pre_flags_set(struct mlxsw_sp_port *mlxsw_sp_port,
-				    struct switchdev_brport_flags flags)
+static int mlxsw_sp_port_attr_br_pre_flags_set(struct mlxsw_sp_port
+					       *mlxsw_sp_port,
+					       struct switchdev_trans *trans,
+					       unsigned long brport_flags)
 {
-	if (flags.mask & ~(BR_LEARNING | BR_FLOOD | BR_MCAST_FLOOD))
+	if (brport_flags & ~(BR_LEARNING | BR_FLOOD | BR_MCAST_FLOOD))
 		return -EINVAL;
 
 	return 0;
 }
 
 static int mlxsw_sp_port_attr_br_flags_set(struct mlxsw_sp_port *mlxsw_sp_port,
+					   struct switchdev_trans *trans,
 					   struct net_device *orig_dev,
-					   struct switchdev_brport_flags flags)
+					   unsigned long brport_flags)
 {
 	struct mlxsw_sp_bridge_port *bridge_port;
 	int err;
+
+	if (switchdev_trans_ph_prepare(trans))
+		return 0;
 
 	bridge_port = mlxsw_sp_bridge_port_find(mlxsw_sp_port->mlxsw_sp->bridge,
 						orig_dev);
 	if (!bridge_port)
 		return 0;
 
-	if (flags.mask & BR_FLOOD) {
-		err = mlxsw_sp_bridge_port_flood_table_set(mlxsw_sp_port,
-							   bridge_port,
-							   MLXSW_SP_FLOOD_TYPE_UC,
-							   flags.val & BR_FLOOD);
-		if (err)
-			return err;
-	}
+	err = mlxsw_sp_bridge_port_flood_table_set(mlxsw_sp_port, bridge_port,
+						   MLXSW_SP_FLOOD_TYPE_UC,
+						   brport_flags & BR_FLOOD);
+	if (err)
+		return err;
 
-	if (flags.mask & BR_LEARNING) {
-		err = mlxsw_sp_bridge_port_learning_set(mlxsw_sp_port,
-							bridge_port,
-							flags.val & BR_LEARNING);
-		if (err)
-			return err;
-	}
+	err = mlxsw_sp_bridge_port_learning_set(mlxsw_sp_port, bridge_port,
+						brport_flags & BR_LEARNING);
+	if (err)
+		return err;
 
 	if (bridge_port->bridge_device->multicast_enabled)
 		goto out;
 
-	if (flags.mask & BR_MCAST_FLOOD) {
-		err = mlxsw_sp_bridge_port_flood_table_set(mlxsw_sp_port,
-							   bridge_port,
-							   MLXSW_SP_FLOOD_TYPE_MC,
-							   flags.val & BR_MCAST_FLOOD);
-		if (err)
-			return err;
-	}
+	err = mlxsw_sp_bridge_port_flood_table_set(mlxsw_sp_port, bridge_port,
+						   MLXSW_SP_FLOOD_TYPE_MC,
+						   brport_flags &
+						   BR_MCAST_FLOOD);
+	if (err)
+		return err;
 
 out:
-	memcpy(&bridge_port->flags, &flags.val, sizeof(flags.val));
+	memcpy(&bridge_port->flags, &brport_flags, sizeof(brport_flags));
 	return 0;
 }
 
@@ -723,25 +647,34 @@ static int mlxsw_sp_ageing_set(struct mlxsw_sp *mlxsw_sp, u32 ageing_time)
 }
 
 static int mlxsw_sp_port_attr_br_ageing_set(struct mlxsw_sp_port *mlxsw_sp_port,
+					    struct switchdev_trans *trans,
 					    unsigned long ageing_clock_t)
 {
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
 	unsigned long ageing_jiffies = clock_t_to_jiffies(ageing_clock_t);
 	u32 ageing_time = jiffies_to_msecs(ageing_jiffies) / 1000;
 
-	if (ageing_time < MLXSW_SP_MIN_AGEING_TIME ||
-	    ageing_time > MLXSW_SP_MAX_AGEING_TIME)
-		return -ERANGE;
+	if (switchdev_trans_ph_prepare(trans)) {
+		if (ageing_time < MLXSW_SP_MIN_AGEING_TIME ||
+		    ageing_time > MLXSW_SP_MAX_AGEING_TIME)
+			return -ERANGE;
+		else
+			return 0;
+	}
 
 	return mlxsw_sp_ageing_set(mlxsw_sp, ageing_time);
 }
 
 static int mlxsw_sp_port_attr_br_vlan_set(struct mlxsw_sp_port *mlxsw_sp_port,
+					  struct switchdev_trans *trans,
 					  struct net_device *orig_dev,
 					  bool vlan_enabled)
 {
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
 	struct mlxsw_sp_bridge_device *bridge_device;
+
+	if (!switchdev_trans_ph_prepare(trans))
+		return 0;
 
 	bridge_device = mlxsw_sp_bridge_device_find(mlxsw_sp->bridge, orig_dev);
 	if (WARN_ON(!bridge_device))
@@ -754,27 +687,16 @@ static int mlxsw_sp_port_attr_br_vlan_set(struct mlxsw_sp_port *mlxsw_sp_port,
 	return -EINVAL;
 }
 
-static int mlxsw_sp_port_attr_br_vlan_proto_set(struct mlxsw_sp_port *mlxsw_sp_port,
-						struct net_device *orig_dev,
-						u16 vlan_proto)
-{
-	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
-	struct mlxsw_sp_bridge_device *bridge_device;
-
-	bridge_device = mlxsw_sp_bridge_device_find(mlxsw_sp->bridge, orig_dev);
-	if (WARN_ON(!bridge_device))
-		return -EINVAL;
-
-	netdev_err(bridge_device->dev, "VLAN protocol can't be changed on existing bridge\n");
-	return -EINVAL;
-}
-
 static int mlxsw_sp_port_attr_mrouter_set(struct mlxsw_sp_port *mlxsw_sp_port,
+					  struct switchdev_trans *trans,
 					  struct net_device *orig_dev,
 					  bool is_port_mrouter)
 {
 	struct mlxsw_sp_bridge_port *bridge_port;
 	int err;
+
+	if (switchdev_trans_ph_prepare(trans))
+		return 0;
 
 	bridge_port = mlxsw_sp_bridge_port_find(mlxsw_sp_port->mlxsw_sp->bridge,
 						orig_dev);
@@ -807,6 +729,7 @@ static bool mlxsw_sp_mc_flood(const struct mlxsw_sp_bridge_port *bridge_port)
 }
 
 static int mlxsw_sp_port_mc_disabled_set(struct mlxsw_sp_port *mlxsw_sp_port,
+					 struct switchdev_trans *trans,
 					 struct net_device *orig_dev,
 					 bool mc_disabled)
 {
@@ -814,6 +737,9 @@ static int mlxsw_sp_port_mc_disabled_set(struct mlxsw_sp_port *mlxsw_sp_port,
 	struct mlxsw_sp_bridge_device *bridge_device;
 	struct mlxsw_sp_bridge_port *bridge_port;
 	int err;
+
+	if (switchdev_trans_ph_prepare(trans))
+		return 0;
 
 	/* It's possible we failed to enslave the port, yet this
 	 * operation is executed due to it being deferred.
@@ -874,11 +800,15 @@ mlxsw_sp_bridge_mrouter_update_mdb(struct mlxsw_sp *mlxsw_sp,
 
 static int
 mlxsw_sp_port_attr_br_mrouter_set(struct mlxsw_sp_port *mlxsw_sp_port,
+				  struct switchdev_trans *trans,
 				  struct net_device *orig_dev,
 				  bool is_mrouter)
 {
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
 	struct mlxsw_sp_bridge_device *bridge_device;
+
+	if (switchdev_trans_ph_prepare(trans))
+		return 0;
 
 	/* It's possible we failed to enslave the port, yet this
 	 * operation is executed due to it being deferred.
@@ -896,52 +826,48 @@ mlxsw_sp_port_attr_br_mrouter_set(struct mlxsw_sp_port *mlxsw_sp_port,
 
 static int mlxsw_sp_port_attr_set(struct net_device *dev,
 				  const struct switchdev_attr *attr,
-				  struct netlink_ext_ack *extack)
+				  struct switchdev_trans *trans)
 {
 	struct mlxsw_sp_port *mlxsw_sp_port = netdev_priv(dev);
 	int err;
 
 	switch (attr->id) {
 	case SWITCHDEV_ATTR_ID_PORT_STP_STATE:
-		err = mlxsw_sp_port_attr_stp_state_set(mlxsw_sp_port,
+		err = mlxsw_sp_port_attr_stp_state_set(mlxsw_sp_port, trans,
 						       attr->orig_dev,
 						       attr->u.stp_state);
 		break;
 	case SWITCHDEV_ATTR_ID_PORT_PRE_BRIDGE_FLAGS:
 		err = mlxsw_sp_port_attr_br_pre_flags_set(mlxsw_sp_port,
+							  trans,
 							  attr->u.brport_flags);
 		break;
 	case SWITCHDEV_ATTR_ID_PORT_BRIDGE_FLAGS:
-		err = mlxsw_sp_port_attr_br_flags_set(mlxsw_sp_port,
+		err = mlxsw_sp_port_attr_br_flags_set(mlxsw_sp_port, trans,
 						      attr->orig_dev,
 						      attr->u.brport_flags);
 		break;
 	case SWITCHDEV_ATTR_ID_BRIDGE_AGEING_TIME:
-		err = mlxsw_sp_port_attr_br_ageing_set(mlxsw_sp_port,
+		err = mlxsw_sp_port_attr_br_ageing_set(mlxsw_sp_port, trans,
 						       attr->u.ageing_time);
 		break;
 	case SWITCHDEV_ATTR_ID_BRIDGE_VLAN_FILTERING:
-		err = mlxsw_sp_port_attr_br_vlan_set(mlxsw_sp_port,
+		err = mlxsw_sp_port_attr_br_vlan_set(mlxsw_sp_port, trans,
 						     attr->orig_dev,
 						     attr->u.vlan_filtering);
 		break;
-	case SWITCHDEV_ATTR_ID_BRIDGE_VLAN_PROTOCOL:
-		err = mlxsw_sp_port_attr_br_vlan_proto_set(mlxsw_sp_port,
-							   attr->orig_dev,
-							   attr->u.vlan_protocol);
-		break;
 	case SWITCHDEV_ATTR_ID_PORT_MROUTER:
-		err = mlxsw_sp_port_attr_mrouter_set(mlxsw_sp_port,
+		err = mlxsw_sp_port_attr_mrouter_set(mlxsw_sp_port, trans,
 						     attr->orig_dev,
 						     attr->u.mrouter);
 		break;
 	case SWITCHDEV_ATTR_ID_BRIDGE_MC_DISABLED:
-		err = mlxsw_sp_port_mc_disabled_set(mlxsw_sp_port,
+		err = mlxsw_sp_port_mc_disabled_set(mlxsw_sp_port, trans,
 						    attr->orig_dev,
 						    attr->u.mc_disabled);
 		break;
 	case SWITCHDEV_ATTR_ID_BRIDGE_MROUTER:
-		err = mlxsw_sp_port_attr_br_mrouter_set(mlxsw_sp_port,
+		err = mlxsw_sp_port_attr_br_mrouter_set(mlxsw_sp_port, trans,
 							attr->orig_dev,
 							attr->u.mrouter);
 		break;
@@ -950,7 +876,8 @@ static int mlxsw_sp_port_attr_set(struct net_device *dev,
 		break;
 	}
 
-	mlxsw_sp_span_respin(mlxsw_sp_port->mlxsw_sp);
+	if (switchdev_trans_ph_commit(trans))
+		mlxsw_sp_span_respin(mlxsw_sp_port->mlxsw_sp);
 
 	return err;
 }
@@ -1073,7 +1000,7 @@ mlxsw_sp_port_vlan_bridge_join(struct mlxsw_sp_port_vlan *mlxsw_sp_port_vlan,
 		 &bridge_vlan->port_vlan_list);
 
 	mlxsw_sp_bridge_port_get(mlxsw_sp_port->mlxsw_sp->bridge,
-				 bridge_port->dev, extack);
+				 bridge_port->dev);
 	mlxsw_sp_port_vlan->bridge_port = bridge_port;
 
 	return 0;
@@ -1132,7 +1059,6 @@ mlxsw_sp_bridge_port_vlan_add(struct mlxsw_sp_port *mlxsw_sp_port,
 	u16 pvid = mlxsw_sp_port_pvid_determine(mlxsw_sp_port, vid, is_pvid);
 	struct mlxsw_sp_port_vlan *mlxsw_sp_port_vlan;
 	u16 old_pvid = mlxsw_sp_port->pvid;
-	u16 proto;
 	int err;
 
 	/* The only valid scenario in which a port-vlan already exists, is if
@@ -1156,8 +1082,7 @@ mlxsw_sp_bridge_port_vlan_add(struct mlxsw_sp_port *mlxsw_sp_port,
 	if (err)
 		goto err_port_vlan_set;
 
-	br_vlan_get_proto(bridge_port->bridge_device->dev, &proto);
-	err = mlxsw_sp_port_pvid_set(mlxsw_sp_port, pvid, proto);
+	err = mlxsw_sp_port_pvid_set(mlxsw_sp_port, pvid);
 	if (err)
 		goto err_port_pvid_set;
 
@@ -1169,7 +1094,7 @@ mlxsw_sp_bridge_port_vlan_add(struct mlxsw_sp_port *mlxsw_sp_port,
 	return 0;
 
 err_port_vlan_bridge_join:
-	mlxsw_sp_port_pvid_set(mlxsw_sp_port, old_pvid, proto);
+	mlxsw_sp_port_pvid_set(mlxsw_sp_port, old_pvid);
 err_port_pvid_set:
 	mlxsw_sp_port_vlan_set(mlxsw_sp_port, vid, vid, false, false);
 err_port_vlan_set:
@@ -1182,21 +1107,28 @@ mlxsw_sp_br_ban_rif_pvid_change(struct mlxsw_sp *mlxsw_sp,
 				const struct net_device *br_dev,
 				const struct switchdev_obj_port_vlan *vlan)
 {
+	struct mlxsw_sp_rif *rif;
+	struct mlxsw_sp_fid *fid;
 	u16 pvid;
+	u16 vid;
 
-	pvid = mlxsw_sp_rif_vid(mlxsw_sp, br_dev);
-	if (!pvid)
+	rif = mlxsw_sp_rif_find_by_dev(mlxsw_sp, br_dev);
+	if (!rif)
 		return 0;
+	fid = mlxsw_sp_rif_fid(rif);
+	pvid = mlxsw_sp_fid_8021q_vid(fid);
 
-	if (vlan->flags & BRIDGE_VLAN_INFO_PVID) {
-		if (vlan->vid != pvid) {
-			netdev_err(br_dev, "Can't change PVID, it's used by router interface\n");
-			return -EBUSY;
-		}
-	} else {
-		if (vlan->vid == pvid) {
-			netdev_err(br_dev, "Can't remove PVID, it's used by router interface\n");
-			return -EBUSY;
+	for (vid = vlan->vid_begin; vid <= vlan->vid_end; ++vid) {
+		if (vlan->flags & BRIDGE_VLAN_INFO_PVID) {
+			if (vid != pvid) {
+				netdev_err(br_dev, "Can't change PVID, it's used by router interface\n");
+				return -EBUSY;
+			}
+		} else {
+			if (vid == pvid) {
+				netdev_err(br_dev, "Can't remove PVID, it's used by router interface\n");
+				return -EBUSY;
+			}
 		}
 	}
 
@@ -1205,6 +1137,7 @@ mlxsw_sp_br_ban_rif_pvid_change(struct mlxsw_sp *mlxsw_sp,
 
 static int mlxsw_sp_port_vlans_add(struct mlxsw_sp_port *mlxsw_sp_port,
 				   const struct switchdev_obj_port_vlan *vlan,
+				   struct switchdev_trans *trans,
 				   struct netlink_ext_ack *extack)
 {
 	bool flag_untagged = vlan->flags & BRIDGE_VLAN_INFO_UNTAGGED;
@@ -1212,18 +1145,23 @@ static int mlxsw_sp_port_vlans_add(struct mlxsw_sp_port *mlxsw_sp_port,
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
 	struct net_device *orig_dev = vlan->obj.orig_dev;
 	struct mlxsw_sp_bridge_port *bridge_port;
+	u16 vid;
 
 	if (netif_is_bridge_master(orig_dev)) {
 		int err = 0;
 
 		if ((vlan->flags & BRIDGE_VLAN_INFO_BRENTRY) &&
-		    br_vlan_enabled(orig_dev))
+		    br_vlan_enabled(orig_dev) &&
+		    switchdev_trans_ph_prepare(trans))
 			err = mlxsw_sp_br_ban_rif_pvid_change(mlxsw_sp,
 							      orig_dev, vlan);
 		if (!err)
 			err = -EOPNOTSUPP;
 		return err;
 	}
+
+	if (switchdev_trans_ph_commit(trans))
+		return 0;
 
 	bridge_port = mlxsw_sp_bridge_port_find(mlxsw_sp->bridge, orig_dev);
 	if (WARN_ON(!bridge_port))
@@ -1232,9 +1170,17 @@ static int mlxsw_sp_port_vlans_add(struct mlxsw_sp_port *mlxsw_sp_port,
 	if (!bridge_port->bridge_device->vlan_enabled)
 		return 0;
 
-	return mlxsw_sp_bridge_port_vlan_add(mlxsw_sp_port, bridge_port,
-					     vlan->vid, flag_untagged,
-					     flag_pvid, extack);
+	for (vid = vlan->vid_begin; vid <= vlan->vid_end; vid++) {
+		int err;
+
+		err = mlxsw_sp_bridge_port_vlan_add(mlxsw_sp_port, bridge_port,
+						    vid, flag_untagged,
+						    flag_pvid, extack);
+		if (err)
+			return err;
+	}
+
+	return 0;
 }
 
 static enum mlxsw_reg_sfdf_flush_type mlxsw_sp_fdb_flush_type(bool lagged)
@@ -1289,7 +1235,7 @@ static int mlxsw_sp_port_fdb_tunnel_uc_op(struct mlxsw_sp *mlxsw_sp,
 		uip = be32_to_cpu(addr->addr4);
 		sfd_proto = MLXSW_REG_SFD_UC_TUNNEL_PROTOCOL_IPV4;
 		break;
-	case MLXSW_SP_L3_PROTO_IPV6:
+	case MLXSW_SP_L3_PROTO_IPV6: /* fall through */
 	default:
 		WARN_ON(1);
 		return -EOPNOTSUPP;
@@ -1671,7 +1617,8 @@ static int mlxsw_sp_port_remove_from_mid(struct mlxsw_sp_port *mlxsw_sp_port,
 }
 
 static int mlxsw_sp_port_mdb_add(struct mlxsw_sp_port *mlxsw_sp_port,
-				 const struct switchdev_obj_port_mdb *mdb)
+				 const struct switchdev_obj_port_mdb *mdb,
+				 struct switchdev_trans *trans)
 {
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
 	struct net_device *orig_dev = mdb->obj.orig_dev;
@@ -1682,6 +1629,9 @@ static int mlxsw_sp_port_mdb_add(struct mlxsw_sp_port *mlxsw_sp_port,
 	struct mlxsw_sp_mid *mid;
 	u16 fid_index;
 	int err = 0;
+
+	if (switchdev_trans_ph_commit(trans))
+		return 0;
 
 	bridge_port = mlxsw_sp_bridge_port_find(mlxsw_sp->bridge, orig_dev);
 	if (!bridge_port)
@@ -1762,8 +1712,39 @@ mlxsw_sp_port_mrouter_update_mdb(struct mlxsw_sp_port *mlxsw_sp_port,
 	}
 }
 
+struct mlxsw_sp_span_respin_work {
+	struct work_struct work;
+	struct mlxsw_sp *mlxsw_sp;
+};
+
+static void mlxsw_sp_span_respin_work(struct work_struct *work)
+{
+	struct mlxsw_sp_span_respin_work *respin_work =
+		container_of(work, struct mlxsw_sp_span_respin_work, work);
+
+	rtnl_lock();
+	mlxsw_sp_span_respin(respin_work->mlxsw_sp);
+	rtnl_unlock();
+	kfree(respin_work);
+}
+
+static void mlxsw_sp_span_respin_schedule(struct mlxsw_sp *mlxsw_sp)
+{
+	struct mlxsw_sp_span_respin_work *respin_work;
+
+	respin_work = kzalloc(sizeof(*respin_work), GFP_ATOMIC);
+	if (!respin_work)
+		return;
+
+	INIT_WORK(&respin_work->work, mlxsw_sp_span_respin_work);
+	respin_work->mlxsw_sp = mlxsw_sp;
+
+	mlxsw_core_schedule_work(&respin_work->work);
+}
+
 static int mlxsw_sp_port_obj_add(struct net_device *dev,
 				 const struct switchdev_obj *obj,
+				 struct switchdev_trans *trans,
 				 struct netlink_ext_ack *extack)
 {
 	struct mlxsw_sp_port *mlxsw_sp_port = netdev_priv(dev);
@@ -1773,19 +1754,22 @@ static int mlxsw_sp_port_obj_add(struct net_device *dev,
 	switch (obj->id) {
 	case SWITCHDEV_OBJ_ID_PORT_VLAN:
 		vlan = SWITCHDEV_OBJ_PORT_VLAN(obj);
+		err = mlxsw_sp_port_vlans_add(mlxsw_sp_port, vlan, trans,
+					      extack);
 
-		err = mlxsw_sp_port_vlans_add(mlxsw_sp_port, vlan, extack);
-
-		/* The event is emitted before the changes are actually
-		 * applied to the bridge. Therefore schedule the respin
-		 * call for later, so that the respin logic sees the
-		 * updated bridge state.
-		 */
-		mlxsw_sp_span_respin(mlxsw_sp_port->mlxsw_sp);
+		if (switchdev_trans_ph_prepare(trans)) {
+			/* The event is emitted before the changes are actually
+			 * applied to the bridge. Therefore schedule the respin
+			 * call for later, so that the respin logic sees the
+			 * updated bridge state.
+			 */
+			mlxsw_sp_span_respin_schedule(mlxsw_sp_port->mlxsw_sp);
+		}
 		break;
 	case SWITCHDEV_OBJ_ID_PORT_MDB:
 		err = mlxsw_sp_port_mdb_add(mlxsw_sp_port,
-					    SWITCHDEV_OBJ_PORT_MDB(obj));
+					    SWITCHDEV_OBJ_PORT_MDB(obj),
+					    trans);
 		break;
 	default:
 		err = -EOPNOTSUPP;
@@ -1801,15 +1785,13 @@ mlxsw_sp_bridge_port_vlan_del(struct mlxsw_sp_port *mlxsw_sp_port,
 {
 	u16 pvid = mlxsw_sp_port->pvid == vid ? 0 : mlxsw_sp_port->pvid;
 	struct mlxsw_sp_port_vlan *mlxsw_sp_port_vlan;
-	u16 proto;
 
 	mlxsw_sp_port_vlan = mlxsw_sp_port_vlan_find_by_vid(mlxsw_sp_port, vid);
 	if (WARN_ON(!mlxsw_sp_port_vlan))
 		return;
 
 	mlxsw_sp_port_vlan_bridge_leave(mlxsw_sp_port_vlan);
-	br_vlan_get_proto(bridge_port->bridge_device->dev, &proto);
-	mlxsw_sp_port_pvid_set(mlxsw_sp_port, pvid, proto);
+	mlxsw_sp_port_pvid_set(mlxsw_sp_port, pvid);
 	mlxsw_sp_port_vlan_set(mlxsw_sp_port, vid, vid, false, false);
 	mlxsw_sp_port_vlan_destroy(mlxsw_sp_port_vlan);
 }
@@ -1820,6 +1802,7 @@ static int mlxsw_sp_port_vlans_del(struct mlxsw_sp_port *mlxsw_sp_port,
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
 	struct net_device *orig_dev = vlan->obj.orig_dev;
 	struct mlxsw_sp_bridge_port *bridge_port;
+	u16 vid;
 
 	if (netif_is_bridge_master(orig_dev))
 		return -EOPNOTSUPP;
@@ -1831,7 +1814,8 @@ static int mlxsw_sp_port_vlans_del(struct mlxsw_sp_port *mlxsw_sp_port,
 	if (!bridge_port->bridge_device->vlan_enabled)
 		return 0;
 
-	mlxsw_sp_bridge_port_vlan_del(mlxsw_sp_port, bridge_port, vlan->vid);
+	for (vid = vlan->vid_begin; vid <= vlan->vid_end; vid++)
+		mlxsw_sp_bridge_port_vlan_del(mlxsw_sp_port, bridge_port, vid);
 
 	return 0;
 }
@@ -1932,7 +1916,7 @@ static int mlxsw_sp_port_obj_del(struct net_device *dev,
 		break;
 	}
 
-	mlxsw_sp_span_respin(mlxsw_sp_port->mlxsw_sp);
+	mlxsw_sp_span_respin_schedule(mlxsw_sp_port->mlxsw_sp);
 
 	return err;
 }
@@ -1955,9 +1939,10 @@ static struct mlxsw_sp_port *mlxsw_sp_lag_rep_port(struct mlxsw_sp *mlxsw_sp,
 }
 
 static int
-mlxsw_sp_bridge_vlan_aware_port_join(struct mlxsw_sp_bridge_port *bridge_port,
-				     struct mlxsw_sp_port *mlxsw_sp_port,
-				     struct netlink_ext_ack *extack)
+mlxsw_sp_bridge_8021q_port_join(struct mlxsw_sp_bridge_device *bridge_device,
+				struct mlxsw_sp_bridge_port *bridge_port,
+				struct mlxsw_sp_port *mlxsw_sp_port,
+				struct netlink_ext_ack *extack)
 {
 	if (is_vlan_dev(bridge_port->dev)) {
 		NL_SET_ERR_MSG_MOD(extack, "Can not enslave a VLAN device to a VLAN-aware bridge");
@@ -1971,37 +1956,19 @@ mlxsw_sp_bridge_vlan_aware_port_join(struct mlxsw_sp_bridge_port *bridge_port,
 	return 0;
 }
 
-static int
-mlxsw_sp_bridge_8021q_port_join(struct mlxsw_sp_bridge_device *bridge_device,
-				struct mlxsw_sp_bridge_port *bridge_port,
-				struct mlxsw_sp_port *mlxsw_sp_port,
-				struct netlink_ext_ack *extack)
-{
-	return mlxsw_sp_bridge_vlan_aware_port_join(bridge_port, mlxsw_sp_port,
-						    extack);
-}
-
-static void
-mlxsw_sp_bridge_vlan_aware_port_leave(struct mlxsw_sp_port *mlxsw_sp_port)
-{
-	/* Make sure untagged frames are allowed to ingress */
-	mlxsw_sp_port_pvid_set(mlxsw_sp_port, MLXSW_SP_DEFAULT_VID,
-			       ETH_P_8021Q);
-}
-
 static void
 mlxsw_sp_bridge_8021q_port_leave(struct mlxsw_sp_bridge_device *bridge_device,
 				 struct mlxsw_sp_bridge_port *bridge_port,
 				 struct mlxsw_sp_port *mlxsw_sp_port)
 {
-	mlxsw_sp_bridge_vlan_aware_port_leave(mlxsw_sp_port);
+	/* Make sure untagged frames are allowed to ingress */
+	mlxsw_sp_port_pvid_set(mlxsw_sp_port, MLXSW_SP_DEFAULT_VID);
 }
 
 static int
-mlxsw_sp_bridge_vlan_aware_vxlan_join(struct mlxsw_sp_bridge_device *bridge_device,
-				      const struct net_device *vxlan_dev,
-				      u16 vid, u16 ethertype,
-				      struct netlink_ext_ack *extack)
+mlxsw_sp_bridge_8021q_vxlan_join(struct mlxsw_sp_bridge_device *bridge_device,
+				 const struct net_device *vxlan_dev, u16 vid,
+				 struct netlink_ext_ack *extack)
 {
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_lower_get(bridge_device->dev);
 	struct vxlan_dev *vxlan = netdev_priv(vxlan_dev);
@@ -2009,7 +1976,6 @@ mlxsw_sp_bridge_vlan_aware_vxlan_join(struct mlxsw_sp_bridge_device *bridge_devi
 		.type = MLXSW_SP_NVE_TYPE_VXLAN,
 		.vni = vxlan->cfg.vni,
 		.dev = vxlan_dev,
-		.ethertype = ethertype,
 	};
 	struct mlxsw_sp_fid *fid;
 	int err;
@@ -2024,11 +1990,12 @@ mlxsw_sp_bridge_vlan_aware_vxlan_join(struct mlxsw_sp_bridge_device *bridge_devi
 			return err;
 	}
 
-	fid = mlxsw_sp_fid_8021q_get(mlxsw_sp, vid);
-	if (IS_ERR(fid)) {
-		NL_SET_ERR_MSG_MOD(extack, "Failed to create 802.1Q FID");
-		return PTR_ERR(fid);
-	}
+	/* If no other port is member in the VLAN, then the FID does not exist.
+	 * NVE will be enabled on the FID once a port joins the VLAN
+	 */
+	fid = mlxsw_sp_fid_8021q_lookup(mlxsw_sp, vid);
+	if (!fid)
+		return 0;
 
 	if (mlxsw_sp_fid_vni_is_set(fid)) {
 		NL_SET_ERR_MSG_MOD(extack, "VNI is already set on FID");
@@ -2040,21 +2007,17 @@ mlxsw_sp_bridge_vlan_aware_vxlan_join(struct mlxsw_sp_bridge_device *bridge_devi
 	if (err)
 		goto err_nve_fid_enable;
 
+	/* The tunnel port does not hold a reference on the FID. Only
+	 * local ports and the router port
+	 */
+	mlxsw_sp_fid_put(fid);
+
 	return 0;
 
 err_nve_fid_enable:
 err_vni_exists:
 	mlxsw_sp_fid_put(fid);
 	return err;
-}
-
-static int
-mlxsw_sp_bridge_8021q_vxlan_join(struct mlxsw_sp_bridge_device *bridge_device,
-				 const struct net_device *vxlan_dev, u16 vid,
-				 struct netlink_ext_ack *extack)
-{
-	return mlxsw_sp_bridge_vlan_aware_vxlan_join(bridge_device, vxlan_dev,
-						     vid, ETH_P_8021Q, extack);
 }
 
 static struct net_device *
@@ -2085,8 +2048,38 @@ mlxsw_sp_bridge_8021q_fid_get(struct mlxsw_sp_bridge_device *bridge_device,
 			      u16 vid, struct netlink_ext_ack *extack)
 {
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_lower_get(bridge_device->dev);
+	struct net_device *vxlan_dev;
+	struct mlxsw_sp_fid *fid;
+	int err;
 
-	return mlxsw_sp_fid_8021q_get(mlxsw_sp, vid);
+	fid = mlxsw_sp_fid_8021q_get(mlxsw_sp, vid);
+	if (IS_ERR(fid))
+		return fid;
+
+	if (mlxsw_sp_fid_vni_is_set(fid))
+		return fid;
+
+	/* Find the VxLAN device that has the specified VLAN configured as
+	 * PVID and egress untagged. There can be at most one such device
+	 */
+	vxlan_dev = mlxsw_sp_bridge_8021q_vxlan_dev_find(bridge_device->dev,
+							 vid);
+	if (!vxlan_dev)
+		return fid;
+
+	if (!netif_running(vxlan_dev))
+		return fid;
+
+	err = mlxsw_sp_bridge_8021q_vxlan_join(bridge_device, vxlan_dev, vid,
+					       extack);
+	if (err)
+		goto err_vxlan_join;
+
+	return fid;
+
+err_vxlan_join:
+	mlxsw_sp_fid_put(fid);
+	return ERR_PTR(err);
 }
 
 static struct mlxsw_sp_fid *
@@ -2187,14 +2180,13 @@ mlxsw_sp_bridge_8021d_vxlan_join(struct mlxsw_sp_bridge_device *bridge_device,
 		.type = MLXSW_SP_NVE_TYPE_VXLAN,
 		.vni = vxlan->cfg.vni,
 		.dev = vxlan_dev,
-		.ethertype = ETH_P_8021Q,
 	};
 	struct mlxsw_sp_fid *fid;
 	int err;
 
-	fid = mlxsw_sp_fid_8021d_get(mlxsw_sp, bridge_device->dev->ifindex);
-	if (IS_ERR(fid)) {
-		NL_SET_ERR_MSG_MOD(extack, "Failed to create 802.1D FID");
+	fid = mlxsw_sp_fid_8021d_lookup(mlxsw_sp, bridge_device->dev->ifindex);
+	if (!fid) {
+		NL_SET_ERR_MSG_MOD(extack, "Did not find a corresponding FID");
 		return -EINVAL;
 	}
 
@@ -2207,6 +2199,11 @@ mlxsw_sp_bridge_8021d_vxlan_join(struct mlxsw_sp_bridge_device *bridge_device,
 	err = mlxsw_sp_nve_fid_enable(mlxsw_sp, fid, &params, extack);
 	if (err)
 		goto err_nve_fid_enable;
+
+	/* The tunnel port does not hold a reference on the FID. Only
+	 * local ports and the router port
+	 */
+	mlxsw_sp_fid_put(fid);
 
 	return 0;
 
@@ -2221,8 +2218,34 @@ mlxsw_sp_bridge_8021d_fid_get(struct mlxsw_sp_bridge_device *bridge_device,
 			      u16 vid, struct netlink_ext_ack *extack)
 {
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_lower_get(bridge_device->dev);
+	struct net_device *vxlan_dev;
+	struct mlxsw_sp_fid *fid;
+	int err;
 
-	return mlxsw_sp_fid_8021d_get(mlxsw_sp, bridge_device->dev->ifindex);
+	fid = mlxsw_sp_fid_8021d_get(mlxsw_sp, bridge_device->dev->ifindex);
+	if (IS_ERR(fid))
+		return fid;
+
+	if (mlxsw_sp_fid_vni_is_set(fid))
+		return fid;
+
+	vxlan_dev = mlxsw_sp_bridge_vxlan_dev_find(bridge_device->dev);
+	if (!vxlan_dev)
+		return fid;
+
+	if (!netif_running(vxlan_dev))
+		return fid;
+
+	err = mlxsw_sp_bridge_8021d_vxlan_join(bridge_device, vxlan_dev, 0,
+					       extack);
+	if (err)
+		goto err_vxlan_join;
+
+	return fid;
+
+err_vxlan_join:
+	mlxsw_sp_fid_put(fid);
+	return ERR_PTR(err);
 }
 
 static struct mlxsw_sp_fid *
@@ -2254,57 +2277,6 @@ static const struct mlxsw_sp_bridge_ops mlxsw_sp_bridge_8021d_ops = {
 	.fid_vid	= mlxsw_sp_bridge_8021d_fid_vid,
 };
 
-static int
-mlxsw_sp_bridge_8021ad_port_join(struct mlxsw_sp_bridge_device *bridge_device,
-				 struct mlxsw_sp_bridge_port *bridge_port,
-				 struct mlxsw_sp_port *mlxsw_sp_port,
-				 struct netlink_ext_ack *extack)
-{
-	int err;
-
-	err = mlxsw_sp_port_vlan_classification_set(mlxsw_sp_port, true, false);
-	if (err)
-		return err;
-
-	err = mlxsw_sp_bridge_vlan_aware_port_join(bridge_port, mlxsw_sp_port,
-						   extack);
-	if (err)
-		goto err_bridge_vlan_aware_port_join;
-
-	return 0;
-
-err_bridge_vlan_aware_port_join:
-	mlxsw_sp_port_vlan_classification_set(mlxsw_sp_port, false, true);
-	return err;
-}
-
-static void
-mlxsw_sp_bridge_8021ad_port_leave(struct mlxsw_sp_bridge_device *bridge_device,
-				  struct mlxsw_sp_bridge_port *bridge_port,
-				  struct mlxsw_sp_port *mlxsw_sp_port)
-{
-	mlxsw_sp_bridge_vlan_aware_port_leave(mlxsw_sp_port);
-	mlxsw_sp_port_vlan_classification_set(mlxsw_sp_port, false, true);
-}
-
-static int
-mlxsw_sp_bridge_8021ad_vxlan_join(struct mlxsw_sp_bridge_device *bridge_device,
-				  const struct net_device *vxlan_dev, u16 vid,
-				  struct netlink_ext_ack *extack)
-{
-	return mlxsw_sp_bridge_vlan_aware_vxlan_join(bridge_device, vxlan_dev,
-						     vid, ETH_P_8021AD, extack);
-}
-
-static const struct mlxsw_sp_bridge_ops mlxsw_sp_bridge_8021ad_ops = {
-	.port_join	= mlxsw_sp_bridge_8021ad_port_join,
-	.port_leave	= mlxsw_sp_bridge_8021ad_port_leave,
-	.vxlan_join	= mlxsw_sp_bridge_8021ad_vxlan_join,
-	.fid_get	= mlxsw_sp_bridge_8021q_fid_get,
-	.fid_lookup	= mlxsw_sp_bridge_8021q_fid_lookup,
-	.fid_vid	= mlxsw_sp_bridge_8021q_fid_vid,
-};
-
 int mlxsw_sp_port_bridge_join(struct mlxsw_sp_port *mlxsw_sp_port,
 			      struct net_device *brport_dev,
 			      struct net_device *br_dev,
@@ -2315,8 +2287,7 @@ int mlxsw_sp_port_bridge_join(struct mlxsw_sp_port *mlxsw_sp_port,
 	struct mlxsw_sp_bridge_port *bridge_port;
 	int err;
 
-	bridge_port = mlxsw_sp_bridge_port_get(mlxsw_sp->bridge, brport_dev,
-					       extack);
+	bridge_port = mlxsw_sp_bridge_port_get(mlxsw_sp->bridge, brport_dev);
 	if (IS_ERR(bridge_port))
 		return PTR_ERR(bridge_port);
 	bridge_device = bridge_port->bridge_device;
@@ -2380,11 +2351,21 @@ void mlxsw_sp_bridge_vxlan_leave(struct mlxsw_sp *mlxsw_sp,
 		return;
 
 	mlxsw_sp_nve_fid_disable(mlxsw_sp, fid);
-	/* Drop both the reference we just took during lookup and the reference
-	 * the VXLAN device took.
-	 */
 	mlxsw_sp_fid_put(fid);
-	mlxsw_sp_fid_put(fid);
+}
+
+struct mlxsw_sp_fid *mlxsw_sp_bridge_fid_get(struct mlxsw_sp *mlxsw_sp,
+					     const struct net_device *br_dev,
+					     u16 vid,
+					     struct netlink_ext_ack *extack)
+{
+	struct mlxsw_sp_bridge_device *bridge_device;
+
+	bridge_device = mlxsw_sp_bridge_device_find(mlxsw_sp->bridge, br_dev);
+	if (WARN_ON(!bridge_device))
+		return ERR_PTR(-EINVAL);
+
+	return bridge_device->ops->fid_get(bridge_device, vid, extack);
 }
 
 static void
@@ -2737,24 +2718,19 @@ static void mlxsw_sp_fdb_notify_rec_process(struct mlxsw_sp *mlxsw_sp,
 	}
 }
 
-static void mlxsw_sp_fdb_notify_work_schedule(struct mlxsw_sp *mlxsw_sp,
-					      bool no_delay)
+static void mlxsw_sp_fdb_notify_work_schedule(struct mlxsw_sp *mlxsw_sp)
 {
 	struct mlxsw_sp_bridge *bridge = mlxsw_sp->bridge;
-	unsigned int interval = no_delay ? 0 : bridge->fdb_notify.interval;
 
 	mlxsw_core_schedule_dw(&bridge->fdb_notify.dw,
-			       msecs_to_jiffies(interval));
+			       msecs_to_jiffies(bridge->fdb_notify.interval));
 }
-
-#define MLXSW_SP_FDB_SFN_QUERIES_PER_SESSION 10
 
 static void mlxsw_sp_fdb_notify_work(struct work_struct *work)
 {
 	struct mlxsw_sp_bridge *bridge;
 	struct mlxsw_sp *mlxsw_sp;
 	char *sfn_pl;
-	int queries;
 	u8 num_rec;
 	int i;
 	int err;
@@ -2767,26 +2743,20 @@ static void mlxsw_sp_fdb_notify_work(struct work_struct *work)
 	mlxsw_sp = bridge->mlxsw_sp;
 
 	rtnl_lock();
-	queries = MLXSW_SP_FDB_SFN_QUERIES_PER_SESSION;
-	while (queries > 0) {
-		mlxsw_reg_sfn_pack(sfn_pl);
-		err = mlxsw_reg_query(mlxsw_sp->core, MLXSW_REG(sfn), sfn_pl);
-		if (err) {
-			dev_err_ratelimited(mlxsw_sp->bus_info->dev, "Failed to get FDB notifications\n");
-			goto out;
-		}
-		num_rec = mlxsw_reg_sfn_num_rec_get(sfn_pl);
-		for (i = 0; i < num_rec; i++)
-			mlxsw_sp_fdb_notify_rec_process(mlxsw_sp, sfn_pl, i);
-		if (num_rec != MLXSW_REG_SFN_REC_MAX_COUNT)
-			goto out;
-		queries--;
+	mlxsw_reg_sfn_pack(sfn_pl);
+	err = mlxsw_reg_query(mlxsw_sp->core, MLXSW_REG(sfn), sfn_pl);
+	if (err) {
+		dev_err_ratelimited(mlxsw_sp->bus_info->dev, "Failed to get FDB notifications\n");
+		goto out;
 	}
+	num_rec = mlxsw_reg_sfn_num_rec_get(sfn_pl);
+	for (i = 0; i < num_rec; i++)
+		mlxsw_sp_fdb_notify_rec_process(mlxsw_sp, sfn_pl, i);
 
 out:
 	rtnl_unlock();
 	kfree(sfn_pl);
-	mlxsw_sp_fdb_notify_work_schedule(mlxsw_sp, !queries);
+	mlxsw_sp_fdb_notify_work_schedule(mlxsw_sp);
 }
 
 struct mlxsw_sp_switchdev_event_work {
@@ -2933,7 +2903,7 @@ static void mlxsw_sp_switchdev_bridge_fdb_event_work(struct work_struct *work)
 		fdb_info = &switchdev_work->fdb_info;
 		mlxsw_sp_port_fdb_set(mlxsw_sp_port, fdb_info, false);
 		break;
-	case SWITCHDEV_FDB_ADD_TO_BRIDGE:
+	case SWITCHDEV_FDB_ADD_TO_BRIDGE: /* fall through */
 	case SWITCHDEV_FDB_DEL_TO_BRIDGE:
 		/* These events are only used to potentially update an existing
 		 * SPAN mirror.
@@ -3179,9 +3149,9 @@ static int mlxsw_sp_switchdev_event(struct notifier_block *unused,
 	switchdev_work->event = event;
 
 	switch (event) {
-	case SWITCHDEV_FDB_ADD_TO_DEVICE:
-	case SWITCHDEV_FDB_DEL_TO_DEVICE:
-	case SWITCHDEV_FDB_ADD_TO_BRIDGE:
+	case SWITCHDEV_FDB_ADD_TO_DEVICE: /* fall through */
+	case SWITCHDEV_FDB_DEL_TO_DEVICE: /* fall through */
+	case SWITCHDEV_FDB_ADD_TO_BRIDGE: /* fall through */
 	case SWITCHDEV_FDB_DEL_TO_BRIDGE:
 		fdb_info = container_of(info,
 					struct switchdev_notifier_fdb_info,
@@ -3201,7 +3171,7 @@ static int mlxsw_sp_switchdev_event(struct notifier_block *unused,
 		 */
 		dev_hold(dev);
 		break;
-	case SWITCHDEV_VXLAN_FDB_ADD_TO_DEVICE:
+	case SWITCHDEV_VXLAN_FDB_ADD_TO_DEVICE: /* fall through */
 	case SWITCHDEV_VXLAN_FDB_DEL_TO_DEVICE:
 		INIT_WORK(&switchdev_work->work,
 			  mlxsw_sp_switchdev_vxlan_fdb_event_work);
@@ -3265,8 +3235,8 @@ mlxsw_sp_switchdev_vxlan_vlan_add(struct mlxsw_sp *mlxsw_sp,
 	if (!fid) {
 		if (!flag_untagged || !flag_pvid)
 			return 0;
-		return bridge_device->ops->vxlan_join(bridge_device, vxlan_dev,
-						      vid, extack);
+		return mlxsw_sp_bridge_8021q_vxlan_join(bridge_device,
+							vxlan_dev, vid, extack);
 	}
 
 	/* Second case: FID is associated with the VNI and the VLAN associated
@@ -3305,14 +3275,16 @@ mlxsw_sp_switchdev_vxlan_vlan_add(struct mlxsw_sp *mlxsw_sp,
 	if (!flag_untagged)
 		return 0;
 
-	err = bridge_device->ops->vxlan_join(bridge_device, vxlan_dev, vid, extack);
+	err = mlxsw_sp_bridge_8021q_vxlan_join(bridge_device, vxlan_dev, vid,
+					       extack);
 	if (err)
 		goto err_vxlan_join;
 
 	return 0;
 
 err_vxlan_join:
-	bridge_device->ops->vxlan_join(bridge_device, vxlan_dev, old_vid, NULL);
+	mlxsw_sp_bridge_8021q_vxlan_join(bridge_device, vxlan_dev, old_vid,
+					 NULL);
 	return err;
 }
 
@@ -3351,10 +3323,12 @@ mlxsw_sp_switchdev_vxlan_vlans_add(struct net_device *vxlan_dev,
 		SWITCHDEV_OBJ_PORT_VLAN(port_obj_info->obj);
 	bool flag_untagged = vlan->flags & BRIDGE_VLAN_INFO_UNTAGGED;
 	bool flag_pvid = vlan->flags & BRIDGE_VLAN_INFO_PVID;
+	struct switchdev_trans *trans = port_obj_info->trans;
 	struct mlxsw_sp_bridge_device *bridge_device;
 	struct netlink_ext_ack *extack;
 	struct mlxsw_sp *mlxsw_sp;
 	struct net_device *br_dev;
+	u16 vid;
 
 	extack = switchdev_notifier_info_to_extack(&port_obj_info->info);
 	br_dev = netdev_master_upper_dev_get(vxlan_dev);
@@ -3367,6 +3341,9 @@ mlxsw_sp_switchdev_vxlan_vlans_add(struct net_device *vxlan_dev,
 
 	port_obj_info->handled = true;
 
+	if (switchdev_trans_ph_commit(trans))
+		return 0;
+
 	bridge_device = mlxsw_sp_bridge_device_find(mlxsw_sp->bridge, br_dev);
 	if (!bridge_device)
 		return -EINVAL;
@@ -3374,10 +3351,18 @@ mlxsw_sp_switchdev_vxlan_vlans_add(struct net_device *vxlan_dev,
 	if (!bridge_device->vlan_enabled)
 		return 0;
 
-	return mlxsw_sp_switchdev_vxlan_vlan_add(mlxsw_sp, bridge_device,
-						 vxlan_dev, vlan->vid,
-						 flag_untagged,
-						 flag_pvid, extack);
+	for (vid = vlan->vid_begin; vid <= vlan->vid_end; vid++) {
+		int err;
+
+		err = mlxsw_sp_switchdev_vxlan_vlan_add(mlxsw_sp, bridge_device,
+							vxlan_dev, vid,
+							flag_untagged,
+							flag_pvid, extack);
+		if (err)
+			return err;
+	}
+
+	return 0;
 }
 
 static void
@@ -3390,6 +3375,7 @@ mlxsw_sp_switchdev_vxlan_vlans_del(struct net_device *vxlan_dev,
 	struct mlxsw_sp_bridge_device *bridge_device;
 	struct mlxsw_sp *mlxsw_sp;
 	struct net_device *br_dev;
+	u16 vid;
 
 	br_dev = netdev_master_upper_dev_get(vxlan_dev);
 	if (!br_dev)
@@ -3408,8 +3394,9 @@ mlxsw_sp_switchdev_vxlan_vlans_del(struct net_device *vxlan_dev,
 	if (!bridge_device->vlan_enabled)
 		return;
 
-	mlxsw_sp_switchdev_vxlan_vlan_del(mlxsw_sp, bridge_device, vxlan_dev,
-					  vlan->vid);
+	for (vid = vlan->vid_begin; vid <= vlan->vid_end; vid++)
+		mlxsw_sp_switchdev_vxlan_vlan_del(mlxsw_sp, bridge_device,
+						  vxlan_dev, vid);
 }
 
 static int
@@ -3515,7 +3502,7 @@ static int mlxsw_sp_fdb_init(struct mlxsw_sp *mlxsw_sp)
 
 	INIT_DELAYED_WORK(&bridge->fdb_notify.dw, mlxsw_sp_fdb_notify_work);
 	bridge->fdb_notify.interval = MLXSW_SP_DEFAULT_LEARNING_INTERVAL;
-	mlxsw_sp_fdb_notify_work_schedule(mlxsw_sp, false);
+	mlxsw_sp_fdb_notify_work_schedule(mlxsw_sp);
 	return 0;
 
 err_register_switchdev_blocking_notifier:
@@ -3549,7 +3536,6 @@ int mlxsw_sp_switchdev_init(struct mlxsw_sp *mlxsw_sp)
 
 	bridge->bridge_8021q_ops = &mlxsw_sp_bridge_8021q_ops;
 	bridge->bridge_8021d_ops = &mlxsw_sp_bridge_8021d_ops;
-	bridge->bridge_8021ad_ops = &mlxsw_sp_bridge_8021ad_ops;
 
 	return mlxsw_sp_fdb_init(mlxsw_sp);
 }

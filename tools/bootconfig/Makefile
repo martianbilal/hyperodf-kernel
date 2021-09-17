@@ -1,30 +1,23 @@
 # SPDX-License-Identifier: GPL-2.0
 # Makefile for bootconfig command
-include ../scripts/Makefile.include
 
 bindir ?= /usr/bin
 
-ifeq ($(srctree),)
-srctree := $(patsubst %/,%,$(dir $(CURDIR)))
-srctree := $(patsubst %/,%,$(dir $(srctree)))
-endif
+HEADER = include/linux/bootconfig.h
+CFLAGS = -Wall -g -I./include
 
-LIBSRC = $(srctree)/lib/bootconfig.c $(srctree)/include/linux/bootconfig.h
-CFLAGS = -Wall -g -I$(CURDIR)/include
+PROGS = bootconfig
 
-ALL_TARGETS := bootconfig
-ALL_PROGRAMS := $(patsubst %,$(OUTPUT)%,$(ALL_TARGETS))
+all: $(PROGS)
 
-all: $(ALL_PROGRAMS)
-
-$(OUTPUT)bootconfig: main.c $(LIBSRC)
+bootconfig: ../../lib/bootconfig.c main.c $(HEADER)
 	$(CC) $(filter %.c,$^) $(CFLAGS) -o $@
 
-test: $(ALL_PROGRAMS) test-bootconfig.sh
-	./test-bootconfig.sh $(OUTPUT)
+install: $(PROGS)
+	install bootconfig $(DESTDIR)$(bindir)
 
-install: $(ALL_PROGRAMS)
-	install $(OUTPUT)bootconfig $(DESTDIR)$(bindir)
+test: bootconfig
+	./test-bootconfig.sh
 
 clean:
-	$(RM) -f $(OUTPUT)*.o $(ALL_PROGRAMS)
+	$(RM) -f *.o bootconfig

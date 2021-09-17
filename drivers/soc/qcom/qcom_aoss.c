@@ -65,7 +65,6 @@ struct qmp_cooling_device {
  * @tx_lock: provides synchronization between multiple callers of qmp_send()
  * @qdss_clk: QDSS clock hw struct
  * @pd_data: genpd data
- * @cooling_devs: thermal cooling devices
  */
 struct qmp {
 	void __iomem *msgram;
@@ -201,7 +200,7 @@ static irqreturn_t qmp_intr(int irq, void *data)
 {
 	struct qmp *qmp = data;
 
-	wake_up_all(&qmp->event);
+	wake_up_interruptible_all(&qmp->event);
 
 	return IRQ_HANDLED;
 }
@@ -240,9 +239,6 @@ static int qmp_send(struct qmp *qmp, const void *data, size_t len)
 	__iowrite32_copy(qmp->msgram + qmp->offset + sizeof(u32),
 			 data, len / sizeof(u32));
 	writel(len, qmp->msgram + qmp->offset);
-
-	/* Read back len to confirm data written in message RAM */
-	readl(qmp->msgram + qmp->offset);
 	qmp_kick(qmp);
 
 	time_left = wait_event_interruptible_timeout(qmp->event,
@@ -599,8 +595,6 @@ static const struct of_device_id qmp_dt_match[] = {
 	{ .compatible = "qcom,sc7180-aoss-qmp", },
 	{ .compatible = "qcom,sdm845-aoss-qmp", },
 	{ .compatible = "qcom,sm8150-aoss-qmp", },
-	{ .compatible = "qcom,sm8250-aoss-qmp", },
-	{ .compatible = "qcom,sm8350-aoss-qmp", },
 	{}
 };
 MODULE_DEVICE_TABLE(of, qmp_dt_match);

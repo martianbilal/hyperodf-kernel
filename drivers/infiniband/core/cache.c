@@ -46,7 +46,7 @@
 
 struct ib_pkey_cache {
 	int             table_len;
-	u16             table[];
+	u16             table[0];
 };
 
 struct ib_update_work {
@@ -133,11 +133,7 @@ static void dispatch_gid_change_event(struct ib_device *ib_dev, u8 port)
 }
 
 static const char * const gid_type_str[] = {
-	/* IB/RoCE v1 value is set for IB_GID_TYPE_IB and IB_GID_TYPE_ROCE for
-	 * user space compatibility reasons.
-	 */
 	[IB_GID_TYPE_IB]	= "IB/RoCE v1",
-	[IB_GID_TYPE_ROCE]	= "IB/RoCE v1",
 	[IB_GID_TYPE_ROCE_UDP_ENCAP]	= "RoCE v2",
 };
 
@@ -669,10 +665,11 @@ int ib_cache_gid_del_all_netdev_gids(struct ib_device *ib_dev, u8 port,
  * rdma_find_gid_by_port - Returns the GID entry attributes when it finds
  * a valid GID entry for given search parameters. It searches for the specified
  * GID value in the local software cache.
- * @ib_dev: The device to query.
+ * @device: The device to query.
  * @gid: The GID value to search for.
  * @gid_type: The GID type to search for.
- * @port: The port number of the device where the GID value should be searched.
+ * @port_num: The port number of the device where the GID value should be
+ *   searched.
  * @ndev: In RoCE, the net device of the device. NULL means ignore.
  *
  * Returns sgid attributes if the GID is found with valid reference or
@@ -718,7 +715,7 @@ EXPORT_SYMBOL(rdma_find_gid_by_port);
 /**
  * rdma_find_gid_by_filter - Returns the GID table attribute where a
  * specified GID value occurs
- * @ib_dev: The device to query.
+ * @device: The device to query.
  * @gid: The GID value to search for.
  * @port: The port number of the device where the GID value could be
  *   searched.
@@ -727,7 +724,6 @@ EXPORT_SYMBOL(rdma_find_gid_by_port);
  *   otherwise, we continue searching the GID table. It's guaranteed that
  *   while filter is executed, ndev field is valid and the structure won't
  *   change. filter is executed in an atomic context. filter must not be NULL.
- * @context: Private data to pass into the call-back.
  *
  * rdma_find_gid_by_filter() searches for the specified GID value
  * of which the filter function returns true in the port's GID table.
@@ -977,23 +973,6 @@ done:
 EXPORT_SYMBOL(rdma_query_gid);
 
 /**
- * rdma_read_gid_hw_context - Read the HW GID context from GID attribute
- * @attr:		Potinter to the GID attribute
- *
- * rdma_read_gid_hw_context() reads the drivers GID HW context corresponding
- * to the SGID attr. Callers are required to already be holding the reference
- * to an existing GID entry.
- *
- * Returns the HW GID context
- *
- */
-void *rdma_read_gid_hw_context(const struct ib_gid_attr *attr)
-{
-	return container_of(attr, struct ib_gid_table_entry, attr)->context;
-}
-EXPORT_SYMBOL(rdma_read_gid_hw_context);
-
-/**
  * rdma_find_gid - Returns SGID attributes if the matching GID is found.
  * @device: The device to query.
  * @gid: The GID value to search for.
@@ -1058,7 +1037,7 @@ int ib_get_cached_pkey(struct ib_device *device,
 
 	cache = device->port_data[port_num].cache.pkey;
 
-	if (!cache || index < 0 || index >= cache->table_len)
+	if (index < 0 || index >= cache->table_len)
 		ret = -EINVAL;
 	else
 		*pkey = cache->table[index];
@@ -1103,10 +1082,6 @@ int ib_find_cached_pkey(struct ib_device *device,
 	read_lock_irqsave(&device->cache_lock, flags);
 
 	cache = device->port_data[port_num].cache.pkey;
-	if (!cache) {
-		ret = -EINVAL;
-		goto err;
-	}
 
 	*index = -1;
 
@@ -1125,7 +1100,6 @@ int ib_find_cached_pkey(struct ib_device *device,
 		ret = 0;
 	}
 
-err:
 	read_unlock_irqrestore(&device->cache_lock, flags);
 
 	return ret;
@@ -1148,10 +1122,6 @@ int ib_find_exact_cached_pkey(struct ib_device *device,
 	read_lock_irqsave(&device->cache_lock, flags);
 
 	cache = device->port_data[port_num].cache.pkey;
-	if (!cache) {
-		ret = -EINVAL;
-		goto err;
-	}
 
 	*index = -1;
 
@@ -1162,7 +1132,6 @@ int ib_find_exact_cached_pkey(struct ib_device *device,
 			break;
 		}
 
-err:
 	read_unlock_irqrestore(&device->cache_lock, flags);
 
 	return ret;
@@ -1224,7 +1193,7 @@ EXPORT_SYMBOL(ib_get_cached_port_state);
 const struct ib_gid_attr *
 rdma_get_gid_attr(struct ib_device *device, u8 port_num, int index)
 {
-	const struct ib_gid_attr *attr = ERR_PTR(-ENODATA);
+	const struct ib_gid_attr *attr = ERR_PTR(-EINVAL);
 	struct ib_gid_table *table;
 	unsigned long flags;
 
@@ -1246,63 +1215,6 @@ done:
 	return attr;
 }
 EXPORT_SYMBOL(rdma_get_gid_attr);
-
-/**
- * rdma_query_gid_table - Reads GID table entries of all the ports of a device up to max_entries.
- * @device: The device to query.
- * @entries: Entries where GID entries are returned.
- * @max_entries: Maximum number of entries that can be returned.
- * Entries array must be allocated to hold max_entries number of entries.
- *
- * Returns number of entries on success or appropriate error code.
- */
-ssize_t rdma_query_gid_table(struct ib_device *device,
-			     struct ib_uverbs_gid_entry *entries,
-			     size_t max_entries)
-{
-	const struct ib_gid_attr *gid_attr;
-	ssize_t num_entries = 0, ret;
-	struct ib_gid_table *table;
-	unsigned int port_num, i;
-	struct net_device *ndev;
-	unsigned long flags;
-
-	rdma_for_each_port(device, port_num) {
-		table = rdma_gid_table(device, port_num);
-		read_lock_irqsave(&table->rwlock, flags);
-		for (i = 0; i < table->sz; i++) {
-			if (!is_gid_entry_valid(table->data_vec[i]))
-				continue;
-			if (num_entries >= max_entries) {
-				ret = -EINVAL;
-				goto err;
-			}
-
-			gid_attr = &table->data_vec[i]->attr;
-
-			memcpy(&entries->gid, &gid_attr->gid,
-			       sizeof(gid_attr->gid));
-			entries->gid_index = gid_attr->index;
-			entries->port_num = gid_attr->port_num;
-			entries->gid_type = gid_attr->gid_type;
-			ndev = rcu_dereference_protected(
-				gid_attr->ndev,
-				lockdep_is_held(&table->rwlock));
-			if (ndev)
-				entries->netdev_ifindex = ndev->ifindex;
-
-			num_entries++;
-			entries++;
-		}
-		read_unlock_irqrestore(&table->rwlock, flags);
-	}
-
-	return num_entries;
-err:
-	read_unlock_irqrestore(&table->rwlock, flags);
-	return ret;
-}
-EXPORT_SYMBOL(rdma_query_gid_table);
 
 /**
  * rdma_put_gid_attr - Release reference to the GID attribute
@@ -1360,7 +1272,7 @@ struct net_device *rdma_read_gid_attr_ndev_rcu(const struct ib_gid_attr *attr)
 	struct ib_gid_table_entry *entry =
 			container_of(attr, struct ib_gid_table_entry, attr);
 	struct ib_device *device = entry->attr.device;
-	struct net_device *ndev = ERR_PTR(-EINVAL);
+	struct net_device *ndev = ERR_PTR(-ENODEV);
 	u8 port_num = entry->attr.port_num;
 	struct ib_gid_table *table;
 	unsigned long flags;
@@ -1372,7 +1284,8 @@ struct net_device *rdma_read_gid_attr_ndev_rcu(const struct ib_gid_attr *attr)
 	valid = is_gid_entry_valid(table->data_vec[attr->index]);
 	if (valid) {
 		ndev = rcu_dereference(attr->ndev);
-		if (!ndev)
+		if (!ndev ||
+		    (ndev && ((READ_ONCE(ndev->flags) & IFF_UP) == 0)))
 			ndev = ERR_PTR(-ENODEV);
 	}
 	read_unlock_irqrestore(&table->rwlock, flags);
@@ -1380,10 +1293,9 @@ struct net_device *rdma_read_gid_attr_ndev_rcu(const struct ib_gid_attr *attr)
 }
 EXPORT_SYMBOL(rdma_read_gid_attr_ndev_rcu);
 
-static int get_lower_dev_vlan(struct net_device *lower_dev,
-			      struct netdev_nested_priv *priv)
+static int get_lower_dev_vlan(struct net_device *lower_dev, void *data)
 {
-	u16 *vlan_id = (u16 *)priv->data;
+	u16 *vlan_id = data;
 
 	if (is_vlan_dev(lower_dev))
 		*vlan_id = vlan_dev_vlan_id(lower_dev);
@@ -1409,9 +1321,6 @@ static int get_lower_dev_vlan(struct net_device *lower_dev,
 int rdma_read_gid_l2_fields(const struct ib_gid_attr *attr,
 			    u16 *vlan_id, u8 *smac)
 {
-	struct netdev_nested_priv priv = {
-		.data = (void *)vlan_id,
-	};
 	struct net_device *ndev;
 
 	rcu_read_lock();
@@ -1432,7 +1341,7 @@ int rdma_read_gid_l2_fields(const struct ib_gid_attr *attr,
 			 * the lower vlan device for this gid entry.
 			 */
 			netdev_walk_all_lower_dev_rcu(attr->ndev,
-					get_lower_dev_vlan, &priv);
+					get_lower_dev_vlan, vlan_id);
 		}
 	}
 	rcu_read_unlock();
@@ -1499,26 +1408,23 @@ ib_cache_update(struct ib_device *device, u8 port, bool enforce_security)
 			goto err;
 	}
 
-	if (tprops->pkey_tbl_len) {
-		pkey_cache = kmalloc(struct_size(pkey_cache, table,
-						 tprops->pkey_tbl_len),
-				     GFP_KERNEL);
-		if (!pkey_cache) {
-			ret = -ENOMEM;
+	pkey_cache = kmalloc(struct_size(pkey_cache, table,
+					 tprops->pkey_tbl_len),
+			     GFP_KERNEL);
+	if (!pkey_cache) {
+		ret = -ENOMEM;
+		goto err;
+	}
+
+	pkey_cache->table_len = tprops->pkey_tbl_len;
+
+	for (i = 0; i < pkey_cache->table_len; ++i) {
+		ret = ib_query_pkey(device, port, i, pkey_cache->table + i);
+		if (ret) {
+			dev_warn(&device->dev,
+				 "ib_query_pkey failed (%d) for index %d\n",
+				 ret, i);
 			goto err;
-		}
-
-		pkey_cache->table_len = tprops->pkey_tbl_len;
-
-		for (i = 0; i < pkey_cache->table_len; ++i) {
-			ret = ib_query_pkey(device, port, i,
-					    pkey_cache->table + i);
-			if (ret) {
-				dev_warn(&device->dev,
-					 "ib_query_pkey failed (%d) for index %d\n",
-					 ret, i);
-				goto err;
-			}
 		}
 	}
 

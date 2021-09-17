@@ -32,14 +32,30 @@
  *  "But they come in a choice of three flavours!"
  */
 #include <linux/compat.h>
+#include <linux/slab.h>
+#include <linux/poll.h>
+#include <linux/fs.h>
+#include <linux/file.h>
 #include <linux/jhash.h>
+#include <linux/init.h>
+#include <linux/futex.h>
+#include <linux/mount.h>
 #include <linux/pagemap.h>
 #include <linux/syscalls.h>
+#include <linux/signal.h>
+#include <linux/export.h>
+#include <linux/magic.h>
+#include <linux/pid.h>
+#include <linux/nsproxy.h>
+#include <linux/ptrace.h>
+#include <linux/sched/rt.h>
+#include <linux/sched/wake_q.h>
+#include <linux/sched/mm.h>
 #include <linux/hugetlb.h>
 #include <linux/freezer.h>
 #include <linux/memblock.h>
 #include <linux/fault-inject.h>
-#include <linux/time_namespace.h>
+#include <linux/refcount.h>
 
 #include <asm/futex.h>
 
@@ -119,7 +135,8 @@
  *
  * Where (A) orders the waiters increment and the futex value read through
  * atomic operations (see hb_waiters_inc) and where (B) orders the write
- * to futex and the waiters read (see hb_waiters_pending()).
+ * to futex and the waiters read -- this is done by the barriers for both
+ * shared and private futexes in get_futex_key_refs().
  *
  * This yields the following case (where X:=waiters, Y:=futex):
  *
@@ -310,7 +327,20 @@ static inline bool should_fail_futex(bool fshared)
 
 #ifdef CONFIG_COMPAT
 static void compat_exit_robust_list(struct task_struct *curr);
+#else
+static inline void compat_exit_robust_list(struct task_struct *curr) { }
 #endif
+
+static inline void futex_get_mm(union futex_key *key)
+{
+	mmgrab(key->private.mm);
+	/*
+	 * Ensure futex_get_mm() implies a full barrier such that
+	 * get_futex_key() implies a full barrier. This is relied upon
+	 * as smp_mb(); (B), see the ordering comment above.
+	 */
+	smp_mb__after_atomic();
+}
 
 /*
  * Reflects a new waiter being added to the waitqueue.
@@ -340,10 +370,6 @@ static inline void hb_waiters_dec(struct futex_hash_bucket *hb)
 static inline int hb_waiters_pending(struct futex_hash_bucket *hb)
 {
 #ifdef CONFIG_SMP
-	/*
-	 * Full barrier (B), see the ordering comment above.
-	 */
-	smp_mb();
 	return atomic_read(&hb->waiters);
 #else
 	return 1;
@@ -379,6 +405,69 @@ static inline int match_futex(union futex_key *key1, union futex_key *key2)
 		&& key1->both.word == key2->both.word
 		&& key1->both.ptr == key2->both.ptr
 		&& key1->both.offset == key2->both.offset);
+}
+
+/*
+ * Take a reference to the resource addressed by a key.
+ * Can be called while holding spinlocks.
+ *
+ */
+static void get_futex_key_refs(union futex_key *key)
+{
+	if (!key->both.ptr)
+		return;
+
+	/*
+	 * On MMU less systems futexes are always "private" as there is no per
+	 * process address space. We need the smp wmb nevertheless - yes,
+	 * arch/blackfin has MMU less SMP ...
+	 */
+	if (!IS_ENABLED(CONFIG_MMU)) {
+		smp_mb(); /* explicit smp_mb(); (B) */
+		return;
+	}
+
+	switch (key->both.offset & (FUT_OFF_INODE|FUT_OFF_MMSHARED)) {
+	case FUT_OFF_INODE:
+		smp_mb();		/* explicit smp_mb(); (B) */
+		break;
+	case FUT_OFF_MMSHARED:
+		futex_get_mm(key); /* implies smp_mb(); (B) */
+		break;
+	default:
+		/*
+		 * Private futexes do not hold reference on an inode or
+		 * mm, therefore the only purpose of calling get_futex_key_refs
+		 * is because we need the barrier for the lockless waiter check.
+		 */
+		smp_mb(); /* explicit smp_mb(); (B) */
+	}
+}
+
+/*
+ * Drop a reference to the resource addressed by a key.
+ * The hash bucket spinlock must not be held. This is
+ * a no-op for private futexes, see comment in the get
+ * counterpart.
+ */
+static void drop_futex_key_refs(union futex_key *key)
+{
+	if (!key->both.ptr) {
+		/* If we're here then we tried to put a key we failed to get */
+		WARN_ON_ONCE(1);
+		return;
+	}
+
+	if (!IS_ENABLED(CONFIG_MMU))
+		return;
+
+	switch (key->both.offset & (FUT_OFF_INODE|FUT_OFF_MMSHARED)) {
+	case FUT_OFF_INODE:
+		break;
+	case FUT_OFF_MMSHARED:
+		mmdrop(key->private.mm);
+		break;
+	}
 }
 
 enum futex_access {
@@ -458,7 +547,7 @@ static u64 get_inode_sequence_number(struct inode *inode)
 /**
  * get_futex_key() - Get parameters which are the keys for a futex
  * @uaddr:	virtual address of the futex
- * @fshared:	false for a PROCESS_PRIVATE futex, true for PROCESS_SHARED
+ * @fshared:	0 for a PROCESS_PRIVATE futex, 1 for PROCESS_SHARED
  * @key:	address where result is stored.
  * @rw:		mapping needs to be read/write (values: FUTEX_READ,
  *              FUTEX_WRITE)
@@ -468,13 +557,10 @@ static u64 get_inode_sequence_number(struct inode *inode)
  * The key words are stored in @key on success.
  *
  * For shared mappings (when @fshared), the key is:
- *
  *   ( inode->i_sequence, page->index, offset_within_page )
- *
  * [ also see get_inode_sequence_number() ]
  *
  * For private mappings (or when !@fshared), the key is:
- *
  *   ( current->mm, address, 0 )
  *
  * This allows (cross process, where applicable) identification of the futex
@@ -482,8 +568,8 @@ static u64 get_inode_sequence_number(struct inode *inode)
  *
  * lock_page() might sleep, the caller should not hold a spinlock.
  */
-static int get_futex_key(u32 __user *uaddr, bool fshared, union futex_key *key,
-			 enum futex_access rw)
+static int
+get_futex_key(u32 __user *uaddr, int fshared, union futex_key *key, enum futex_access rw)
 {
 	unsigned long address = (unsigned long)uaddr;
 	struct mm_struct *mm = current->mm;
@@ -515,12 +601,13 @@ static int get_futex_key(u32 __user *uaddr, bool fshared, union futex_key *key,
 	if (!fshared) {
 		key->private.mm = mm;
 		key->private.address = address;
+		get_futex_key_refs(key);  /* implies smp_mb(); (B) */
 		return 0;
 	}
 
 again:
 	/* Ignore any VERIFY_READ mapping (futex common case) */
-	if (unlikely(should_fail_futex(true)))
+	if (unlikely(should_fail_futex(fshared)))
 		return -EFAULT;
 
 	err = get_user_pages_fast(address, 1, FOLL_WRITE, &page);
@@ -608,7 +695,7 @@ again:
 		 * A RO anonymous page will never change and thus doesn't make
 		 * sense for futex operations.
 		 */
-		if (unlikely(should_fail_futex(true)) || ro) {
+		if (unlikely(should_fail_futex(fshared)) || ro) {
 			err = -EFAULT;
 			goto out;
 		}
@@ -654,9 +741,16 @@ again:
 		rcu_read_unlock();
 	}
 
+	get_futex_key_refs(key); /* implies smp_mb(); (B) */
+
 out:
 	put_page(page);
 	return err;
+}
+
+static inline void put_futex_key(union futex_key *key)
+{
+	drop_futex_key_refs(key);
 }
 
 /**
@@ -676,10 +770,10 @@ static int fault_in_user_writeable(u32 __user *uaddr)
 	struct mm_struct *mm = current->mm;
 	int ret;
 
-	mmap_read_lock(mm);
-	ret = fixup_user_fault(mm, (unsigned long)uaddr,
+	down_read(&mm->mmap_sem);
+	ret = fixup_user_fault(current, mm, (unsigned long)uaddr,
 			       FAULT_FLAG_WRITE, NULL);
-	mmap_read_unlock(mm);
+	up_read(&mm->mmap_sem);
 
 	return ret < 0 ? ret : 0;
 }
@@ -763,29 +857,6 @@ static struct futex_pi_state *alloc_pi_state(void)
 	return pi_state;
 }
 
-static void pi_state_update_owner(struct futex_pi_state *pi_state,
-				  struct task_struct *new_owner)
-{
-	struct task_struct *old_owner = pi_state->owner;
-
-	lockdep_assert_held(&pi_state->pi_mutex.wait_lock);
-
-	if (old_owner) {
-		raw_spin_lock(&old_owner->pi_lock);
-		WARN_ON(list_empty(&pi_state->list));
-		list_del_init(&pi_state->list);
-		raw_spin_unlock(&old_owner->pi_lock);
-	}
-
-	if (new_owner) {
-		raw_spin_lock(&new_owner->pi_lock);
-		WARN_ON(!list_empty(&pi_state->list));
-		list_add(&pi_state->list, &new_owner->pi_state_list);
-		pi_state->owner = new_owner;
-		raw_spin_unlock(&new_owner->pi_lock);
-	}
-}
-
 static void get_pi_state(struct futex_pi_state *pi_state)
 {
 	WARN_ON_ONCE(!refcount_inc_not_zero(&pi_state->refcount));
@@ -808,12 +879,17 @@ static void put_pi_state(struct futex_pi_state *pi_state)
 	 * and has cleaned up the pi_state already
 	 */
 	if (pi_state->owner) {
-		unsigned long flags;
+		struct task_struct *owner;
 
-		raw_spin_lock_irqsave(&pi_state->pi_mutex.wait_lock, flags);
-		pi_state_update_owner(pi_state, NULL);
-		rt_mutex_proxy_unlock(&pi_state->pi_mutex);
-		raw_spin_unlock_irqrestore(&pi_state->pi_mutex.wait_lock, flags);
+		raw_spin_lock_irq(&pi_state->pi_mutex.wait_lock);
+		owner = pi_state->owner;
+		if (owner) {
+			raw_spin_lock(&owner->pi_lock);
+			list_del_init(&pi_state->list);
+			raw_spin_unlock(&owner->pi_lock);
+		}
+		rt_mutex_proxy_unlock(&pi_state->pi_mutex, owner);
+		raw_spin_unlock_irq(&pi_state->pi_mutex.wait_lock);
 	}
 
 	if (current->pi_state_cache) {
@@ -933,7 +1009,7 @@ static inline void exit_pi_state_list(struct task_struct *curr) { }
  * [10] Found  | Found    | task      | !=taskTID | 0/1    | Invalid
  *
  * [1]	Indicates that the kernel can acquire the futex atomically. We
- *	came here due to a stale FUTEX_WAITERS/FUTEX_OWNER_DIED bit.
+ *	came came here due to a stale FUTEX_WAITERS/FUTEX_OWNER_DIED bit.
  *
  * [2]	Valid, if TID does not belong to a kernel thread. If no matching
  *      thread is found then it indicates that the owner TID has died.
@@ -958,8 +1034,7 @@ static inline void exit_pi_state_list(struct task_struct *curr) { }
  *	FUTEX_OWNER_DIED bit. See [4]
  *
  * [10] There is no transient state which leaves owner and user space
- *	TID out of sync. Except one error case where the kernel is denied
- *	write access to the user address, see fixup_pi_state_owner().
+ *	TID out of sync.
  *
  *
  * Serialization and lifetime rules:
@@ -1323,7 +1398,7 @@ static int lookup_pi_state(u32 __user *uaddr, u32 uval,
 static int lock_pi_update_atomic(u32 __user *uaddr, u32 uval, u32 newval)
 {
 	int err;
-	u32 curval;
+	u32 uninitialized_var(curval);
 
 	if (unlikely(should_fail_futex(true)))
 		return -EFAULT;
@@ -1493,7 +1568,7 @@ static void mark_wake_futex(struct wake_q_head *wake_q, struct futex_q *q)
  */
 static int wake_futex_pi(u32 __user *uaddr, u32 uval, struct futex_pi_state *pi_state)
 {
-	u32 curval, newval;
+	u32 uninitialized_var(curval), newval;
 	struct task_struct *new_owner;
 	bool postunlock = false;
 	DEFINE_WAKE_Q(wake_q);
@@ -1520,10 +1595,8 @@ static int wake_futex_pi(u32 __user *uaddr, u32 uval, struct futex_pi_state *pi_
 	 */
 	newval = FUTEX_WAITERS | task_pid_vnr(new_owner);
 
-	if (unlikely(should_fail_futex(true))) {
+	if (unlikely(should_fail_futex(true)))
 		ret = -EFAULT;
-		goto out_unlock;
-	}
 
 	ret = cmpxchg_futex_value_locked(&curval, uaddr, uval, newval);
 	if (!ret && (curval != uval)) {
@@ -1539,15 +1612,26 @@ static int wake_futex_pi(u32 __user *uaddr, u32 uval, struct futex_pi_state *pi_
 			ret = -EINVAL;
 	}
 
-	if (!ret) {
-		/*
-		 * This is a point of no return; once we modified the uval
-		 * there is no going back and subsequent operations must
-		 * not fail.
-		 */
-		pi_state_update_owner(pi_state, new_owner);
-		postunlock = __rt_mutex_futex_unlock(&pi_state->pi_mutex, &wake_q);
-	}
+	if (ret)
+		goto out_unlock;
+
+	/*
+	 * This is a point of no return; once we modify the uval there is no
+	 * going back and subsequent operations must not fail.
+	 */
+
+	raw_spin_lock(&pi_state->owner->pi_lock);
+	WARN_ON(list_empty(&pi_state->list));
+	list_del_init(&pi_state->list);
+	raw_spin_unlock(&pi_state->owner->pi_lock);
+
+	raw_spin_lock(&new_owner->pi_lock);
+	WARN_ON(!list_empty(&pi_state->list));
+	list_add(&pi_state->list, &new_owner->pi_state_list);
+	pi_state->owner = new_owner;
+	raw_spin_unlock(&new_owner->pi_lock);
+
+	postunlock = __rt_mutex_futex_unlock(&pi_state->pi_mutex, &wake_q);
 
 out_unlock:
 	raw_spin_unlock_irq(&pi_state->pi_mutex.wait_lock);
@@ -1599,13 +1683,13 @@ futex_wake(u32 __user *uaddr, unsigned int flags, int nr_wake, u32 bitset)
 
 	ret = get_futex_key(uaddr, flags & FLAGS_SHARED, &key, FUTEX_READ);
 	if (unlikely(ret != 0))
-		return ret;
+		goto out;
 
 	hb = hash_futex(&key);
 
 	/* Make sure we really have tasks to wakeup */
 	if (!hb_waiters_pending(hb))
-		return ret;
+		goto out_put_key;
 
 	spin_lock(&hb->lock);
 
@@ -1628,6 +1712,9 @@ futex_wake(u32 __user *uaddr, unsigned int flags, int nr_wake, u32 bitset)
 
 	spin_unlock(&hb->lock);
 	wake_up_q(&wake_q);
+out_put_key:
+	put_futex_key(&key);
+out:
 	return ret;
 }
 
@@ -1653,9 +1740,10 @@ static int futex_atomic_op_inuser(unsigned int encoded_op, u32 __user *uaddr)
 		oparg = 1 << oparg;
 	}
 
-	pagefault_disable();
+	if (!access_ok(uaddr, sizeof(u32)))
+		return -EFAULT;
+
 	ret = arch_futex_atomic_op_inuser(op, oparg, &oldval, uaddr);
-	pagefault_enable();
 	if (ret)
 		return ret;
 
@@ -1694,10 +1782,10 @@ futex_wake_op(u32 __user *uaddr1, unsigned int flags, u32 __user *uaddr2,
 retry:
 	ret = get_futex_key(uaddr1, flags & FLAGS_SHARED, &key1, FUTEX_READ);
 	if (unlikely(ret != 0))
-		return ret;
+		goto out;
 	ret = get_futex_key(uaddr2, flags & FLAGS_SHARED, &key2, FUTEX_WRITE);
 	if (unlikely(ret != 0))
-		return ret;
+		goto out_put_key1;
 
 	hb1 = hash_futex(&key1);
 	hb2 = hash_futex(&key2);
@@ -1715,13 +1803,13 @@ retry_private:
 			 * an MMU, but we might get them from range checking
 			 */
 			ret = op_ret;
-			return ret;
+			goto out_put_keys;
 		}
 
 		if (op_ret == -EFAULT) {
 			ret = fault_in_user_writeable(uaddr2);
 			if (ret)
-				return ret;
+				goto out_put_keys;
 		}
 
 		if (!(flags & FLAGS_SHARED)) {
@@ -1729,6 +1817,8 @@ retry_private:
 			goto retry_private;
 		}
 
+		put_futex_key(&key2);
+		put_futex_key(&key1);
 		cond_resched();
 		goto retry;
 	}
@@ -1764,6 +1854,11 @@ retry_private:
 out_unlock:
 	double_unlock_hb(hb1, hb2);
 	wake_up_q(&wake_q);
+out_put_keys:
+	put_futex_key(&key2);
+out_put_key1:
+	put_futex_key(&key1);
+out:
 	return ret;
 }
 
@@ -1790,6 +1885,7 @@ void requeue_futex(struct futex_q *q, struct futex_hash_bucket *hb1,
 		plist_add(&q->list, &hb2->chain);
 		q->lock_ptr = &hb2->lock;
 	}
+	get_futex_key_refs(key2);
 	q->key = *key2;
 }
 
@@ -1811,6 +1907,7 @@ static inline
 void requeue_pi_wake_futex(struct futex_q *q, union futex_key *key,
 			   struct futex_hash_bucket *hb)
 {
+	get_futex_key_refs(key);
 	q->key = *key;
 
 	__unqueue_futex(q);
@@ -1921,7 +2018,7 @@ static int futex_requeue(u32 __user *uaddr1, unsigned int flags,
 			 u32 *cmpval, int requeue_pi)
 {
 	union futex_key key1 = FUTEX_KEY_INIT, key2 = FUTEX_KEY_INIT;
-	int task_count = 0, ret;
+	int drop_count = 0, task_count = 0, ret;
 	struct futex_pi_state *pi_state = NULL;
 	struct futex_hash_bucket *hb1, *hb2;
 	struct futex_q *this, *next;
@@ -1970,18 +2067,20 @@ static int futex_requeue(u32 __user *uaddr1, unsigned int flags,
 retry:
 	ret = get_futex_key(uaddr1, flags & FLAGS_SHARED, &key1, FUTEX_READ);
 	if (unlikely(ret != 0))
-		return ret;
+		goto out;
 	ret = get_futex_key(uaddr2, flags & FLAGS_SHARED, &key2,
 			    requeue_pi ? FUTEX_WRITE : FUTEX_READ);
 	if (unlikely(ret != 0))
-		return ret;
+		goto out_put_key1;
 
 	/*
 	 * The check above which compares uaddrs is not sufficient for
 	 * shared futexes. We need to compare the keys:
 	 */
-	if (requeue_pi && match_futex(&key1, &key2))
-		return -EINVAL;
+	if (requeue_pi && match_futex(&key1, &key2)) {
+		ret = -EINVAL;
+		goto out_put_keys;
+	}
 
 	hb1 = hash_futex(&key1);
 	hb2 = hash_futex(&key2);
@@ -2001,11 +2100,13 @@ retry_private:
 
 			ret = get_user(curval, uaddr1);
 			if (ret)
-				return ret;
+				goto out_put_keys;
 
 			if (!(flags & FLAGS_SHARED))
 				goto retry_private;
 
+			put_futex_key(&key2);
+			put_futex_key(&key1);
 			goto retry;
 		}
 		if (curval != *cmpval) {
@@ -2038,6 +2139,7 @@ retry_private:
 		 */
 		if (ret > 0) {
 			WARN_ON(pi_state);
+			drop_count++;
 			task_count++;
 			/*
 			 * If we acquired the lock, then the user space value
@@ -2064,10 +2166,12 @@ retry_private:
 		case -EFAULT:
 			double_unlock_hb(hb1, hb2);
 			hb_waiters_dec(hb2);
+			put_futex_key(&key2);
+			put_futex_key(&key1);
 			ret = fault_in_user_writeable(uaddr2);
 			if (!ret)
 				goto retry;
-			return ret;
+			goto out;
 		case -EBUSY:
 		case -EAGAIN:
 			/*
@@ -2078,6 +2182,8 @@ retry_private:
 			 */
 			double_unlock_hb(hb1, hb2);
 			hb_waiters_dec(hb2);
+			put_futex_key(&key2);
+			put_futex_key(&key1);
 			/*
 			 * Handle the case where the owner is in the middle of
 			 * exiting. Wait for the exit to complete otherwise
@@ -2153,6 +2259,7 @@ retry_private:
 				 * doing so.
 				 */
 				requeue_pi_wake_futex(this, &key2, hb2);
+				drop_count++;
 				continue;
 			} else if (ret) {
 				/*
@@ -2173,6 +2280,7 @@ retry_private:
 			}
 		}
 		requeue_futex(this, hb1, hb2, &key2);
+		drop_count++;
 	}
 
 	/*
@@ -2186,6 +2294,21 @@ out_unlock:
 	double_unlock_hb(hb1, hb2);
 	wake_up_q(&wake_q);
 	hb_waiters_dec(hb2);
+
+	/*
+	 * drop_futex_key_refs() must be called outside the spinlocks. During
+	 * the requeue we moved futex_q's from the hash bucket at key1 to the
+	 * one at key2 and updated their key pointer.  We no longer need to
+	 * hold the references to key1.
+	 */
+	while (--drop_count >= 0)
+		drop_futex_key_refs(&key1);
+
+out_put_keys:
+	put_futex_key(&key2);
+out_put_key1:
+	put_futex_key(&key1);
+out:
 	return ret ? ret : task_count;
 }
 
@@ -2310,6 +2433,7 @@ retry:
 		ret = 1;
 	}
 
+	drop_futex_key_refs(&q->key);
 	return ret;
 }
 
@@ -2330,13 +2454,18 @@ static void unqueue_me_pi(struct futex_q *q)
 	spin_unlock(q->lock_ptr);
 }
 
-static int __fixup_pi_state_owner(u32 __user *uaddr, struct futex_q *q,
-				  struct task_struct *argowner)
+static int fixup_pi_state_owner(u32 __user *uaddr, struct futex_q *q,
+				struct task_struct *argowner)
 {
 	struct futex_pi_state *pi_state = q->pi_state;
+	u32 uval, uninitialized_var(curval), newval;
 	struct task_struct *oldowner, *newowner;
-	u32 uval, curval, newval, newtid;
-	int err = 0;
+	u32 newtid;
+	int ret, err = 0;
+
+	lockdep_assert_held(q->lock_ptr);
+
+	raw_spin_lock_irq(&pi_state->pi_mutex.wait_lock);
 
 	oldowner = pi_state->owner;
 
@@ -2370,31 +2499,21 @@ retry:
 			 * We raced against a concurrent self; things are
 			 * already fixed up. Nothing to do.
 			 */
-			return 0;
+			ret = 0;
+			goto out_unlock;
 		}
 
 		if (__rt_mutex_futex_trylock(&pi_state->pi_mutex)) {
-			/* We got the lock. pi_state is correct. Tell caller. */
-			return 1;
+			/* We got the lock after all, nothing to fix. */
+			ret = 0;
+			goto out_unlock;
 		}
 
 		/*
-		 * The trylock just failed, so either there is an owner or
-		 * there is a higher priority waiter than this one.
+		 * Since we just failed the trylock; there must be an owner.
 		 */
 		newowner = rt_mutex_owner(&pi_state->pi_mutex);
-		/*
-		 * If the higher priority waiter has not yet taken over the
-		 * rtmutex then newowner is NULL. We can't return here with
-		 * that state because it's inconsistent vs. the user space
-		 * state. So drop the locks and try again. It's a valid
-		 * situation and not any different from the other retry
-		 * conditions.
-		 */
-		if (unlikely(!newowner)) {
-			err = -EAGAIN;
-			goto handle_err;
-		}
+		BUG_ON(!newowner);
 	} else {
 		WARN_ON_ONCE(argowner != current);
 		if (oldowner == current) {
@@ -2402,7 +2521,8 @@ retry:
 			 * We raced against a concurrent self; things are
 			 * already fixed up. Nothing to do.
 			 */
-			return 1;
+			ret = 0;
+			goto out_unlock;
 		}
 		newowner = argowner;
 	}
@@ -2432,9 +2552,22 @@ retry:
 	 * We fixed up user space. Now we need to fix the pi_state
 	 * itself.
 	 */
-	pi_state_update_owner(pi_state, newowner);
+	if (pi_state->owner != NULL) {
+		raw_spin_lock(&pi_state->owner->pi_lock);
+		WARN_ON(list_empty(&pi_state->list));
+		list_del_init(&pi_state->list);
+		raw_spin_unlock(&pi_state->owner->pi_lock);
+	}
 
-	return argowner == current;
+	pi_state->owner = newowner;
+
+	raw_spin_lock(&newowner->pi_lock);
+	WARN_ON(!list_empty(&pi_state->list));
+	list_add(&pi_state->list, &newowner->pi_state_list);
+	raw_spin_unlock(&newowner->pi_lock);
+	raw_spin_unlock_irq(&pi_state->pi_mutex.wait_lock);
+
+	return 0;
 
 	/*
 	 * In order to reschedule or handle a page fault, we need to drop the
@@ -2455,16 +2588,17 @@ handle_err:
 
 	switch (err) {
 	case -EFAULT:
-		err = fault_in_user_writeable(uaddr);
+		ret = fault_in_user_writeable(uaddr);
 		break;
 
 	case -EAGAIN:
 		cond_resched();
-		err = 0;
+		ret = 0;
 		break;
 
 	default:
 		WARN_ON_ONCE(1);
+		ret = err;
 		break;
 	}
 
@@ -2474,44 +2608,17 @@ handle_err:
 	/*
 	 * Check if someone else fixed it for us:
 	 */
-	if (pi_state->owner != oldowner)
-		return argowner == current;
+	if (pi_state->owner != oldowner) {
+		ret = 0;
+		goto out_unlock;
+	}
 
-	/* Retry if err was -EAGAIN or the fault in succeeded */
-	if (!err)
-		goto retry;
+	if (ret)
+		goto out_unlock;
 
-	/*
-	 * fault_in_user_writeable() failed so user state is immutable. At
-	 * best we can make the kernel state consistent but user state will
-	 * be most likely hosed and any subsequent unlock operation will be
-	 * rejected due to PI futex rule [10].
-	 *
-	 * Ensure that the rtmutex owner is also the pi_state owner despite
-	 * the user space value claiming something different. There is no
-	 * point in unlocking the rtmutex if current is the owner as it
-	 * would need to wait until the next waiter has taken the rtmutex
-	 * to guarantee consistent state. Keep it simple. Userspace asked
-	 * for this wreckaged state.
-	 *
-	 * The rtmutex has an owner - either current or some other
-	 * task. See the EAGAIN loop above.
-	 */
-	pi_state_update_owner(pi_state, rt_mutex_owner(&pi_state->pi_mutex));
+	goto retry;
 
-	return err;
-}
-
-static int fixup_pi_state_owner(u32 __user *uaddr, struct futex_q *q,
-				struct task_struct *argowner)
-{
-	struct futex_pi_state *pi_state = q->pi_state;
-	int ret;
-
-	lockdep_assert_held(q->lock_ptr);
-
-	raw_spin_lock_irq(&pi_state->pi_mutex.wait_lock);
-	ret = __fixup_pi_state_owner(uaddr, q, argowner);
+out_unlock:
 	raw_spin_unlock_irq(&pi_state->pi_mutex.wait_lock);
 	return ret;
 }
@@ -2535,6 +2642,8 @@ static long futex_wait_restart(struct restart_block *restart);
  */
 static int fixup_owner(u32 __user *uaddr, struct futex_q *q, int locked)
 {
+	int ret = 0;
+
 	if (locked) {
 		/*
 		 * Got the lock. We might not be the anticipated owner if we
@@ -2545,8 +2654,8 @@ static int fixup_owner(u32 __user *uaddr, struct futex_q *q, int locked)
 		 * stable state, anything else needs more attention.
 		 */
 		if (q->pi_state->owner != current)
-			return fixup_pi_state_owner(uaddr, q, current);
-		return 1;
+			ret = fixup_pi_state_owner(uaddr, q, current);
+		goto out;
 	}
 
 	/*
@@ -2557,17 +2666,24 @@ static int fixup_owner(u32 __user *uaddr, struct futex_q *q, int locked)
 	 * Another speculative read; pi_state->owner == current is unstable
 	 * but needs our attention.
 	 */
-	if (q->pi_state->owner == current)
-		return fixup_pi_state_owner(uaddr, q, NULL);
+	if (q->pi_state->owner == current) {
+		ret = fixup_pi_state_owner(uaddr, q, NULL);
+		goto out;
+	}
 
 	/*
 	 * Paranoia check. If we did not take the lock, then we should not be
-	 * the owner of the rt_mutex. Warn and establish consistent state.
+	 * the owner of the rt_mutex.
 	 */
-	if (WARN_ON_ONCE(rt_mutex_owner(&q->pi_state->pi_mutex) == current))
-		return fixup_pi_state_owner(uaddr, q, current);
+	if (rt_mutex_owner(&q->pi_state->pi_mutex) == current) {
+		printk(KERN_ERR "fixup_owner: ret = %d pi-mutex: %p "
+				"pi-state %p\n", ret,
+				q->pi_state->pi_mutex.owner,
+				q->pi_state->owner);
+	}
 
-	return 0;
+out:
+	return ret ? ret : locked;
 }
 
 /**
@@ -2664,11 +2780,12 @@ retry_private:
 
 		ret = get_user(uval, uaddr);
 		if (ret)
-			return ret;
+			goto out;
 
 		if (!(flags & FLAGS_SHARED))
 			goto retry_private;
 
+		put_futex_key(&q->key);
 		goto retry;
 	}
 
@@ -2677,6 +2794,9 @@ retry_private:
 		ret = -EWOULDBLOCK;
 	}
 
+out:
+	if (ret)
+		put_futex_key(&q->key);
 	return ret;
 }
 
@@ -2728,13 +2848,14 @@ retry:
 		goto out;
 
 	restart = &current->restart_block;
+	restart->fn = futex_wait_restart;
 	restart->futex.uaddr = uaddr;
 	restart->futex.val = val;
 	restart->futex.time = *abs_time;
 	restart->futex.bitset = bitset;
 	restart->futex.flags = flags | FLAGS_HAS_TIMEOUT;
 
-	ret = set_restart_fn(restart, futex_wait_restart);
+	ret = -ERESTART_RESTARTBLOCK;
 
 out:
 	if (to) {
@@ -2774,6 +2895,7 @@ static int futex_lock_pi(u32 __user *uaddr, unsigned int flags,
 			 ktime_t *time, int trylock)
 {
 	struct hrtimer_sleeper timeout, *to;
+	struct futex_pi_state *pi_state = NULL;
 	struct task_struct *exiting = NULL;
 	struct rt_mutex_waiter rt_waiter;
 	struct futex_hash_bucket *hb;
@@ -2819,6 +2941,7 @@ retry_private:
 			 * - EAGAIN: The user space value changed.
 			 */
 			queue_unlock(hb);
+			put_futex_key(&q.key);
 			/*
 			 * Handle the case where the owner is in the middle of
 			 * exiting. Wait for the exit to complete otherwise
@@ -2909,13 +3032,30 @@ no_block:
 	if (res)
 		ret = (res < 0) ? res : 0;
 
+	/*
+	 * If fixup_owner() faulted and was unable to handle the fault, unlock
+	 * it and return the fault to userspace.
+	 */
+	if (ret && (rt_mutex_owner(&q.pi_state->pi_mutex) == current)) {
+		pi_state = q.pi_state;
+		get_pi_state(pi_state);
+	}
+
 	/* Unqueue and drop the lock */
 	unqueue_me_pi(&q);
-	goto out;
+
+	if (pi_state) {
+		rt_mutex_futex_unlock(&pi_state->pi_mutex);
+		put_pi_state(pi_state);
+	}
+
+	goto out_put_key;
 
 out_unlock_put_key:
 	queue_unlock(hb);
 
+out_put_key:
+	put_futex_key(&q.key);
 out:
 	if (to) {
 		hrtimer_cancel(&to->timer);
@@ -2928,11 +3068,12 @@ uaddr_faulted:
 
 	ret = fault_in_user_writeable(uaddr);
 	if (ret)
-		goto out;
+		goto out_put_key;
 
 	if (!(flags & FLAGS_SHARED))
 		goto retry_private;
 
+	put_futex_key(&q.key);
 	goto retry;
 }
 
@@ -2943,7 +3084,7 @@ uaddr_faulted:
  */
 static int futex_unlock_pi(u32 __user *uaddr, unsigned int flags)
 {
-	u32 curval, uval, vpid = task_pid_vnr(current);
+	u32 uninitialized_var(curval), uval, vpid = task_pid_vnr(current);
 	union futex_key key = FUTEX_KEY_INIT;
 	struct futex_hash_bucket *hb;
 	struct futex_q *top_waiter;
@@ -3011,7 +3152,7 @@ retry:
 		 * Success, we're done! No tricky corner cases.
 		 */
 		if (!ret)
-			return ret;
+			goto out_putkey;
 		/*
 		 * The atomic access to the futex value generated a
 		 * pagefault, so retry the user-access and the wakeup:
@@ -3028,7 +3169,7 @@ retry:
 		 * wake_futex_pi has detected invalid state. Tell user
 		 * space.
 		 */
-		return ret;
+		goto out_putkey;
 	}
 
 	/*
@@ -3049,7 +3190,7 @@ retry:
 
 		default:
 			WARN_ON_ONCE(1);
-			return ret;
+			goto out_putkey;
 		}
 	}
 
@@ -3060,13 +3201,17 @@ retry:
 
 out_unlock:
 	spin_unlock(&hb->lock);
+out_putkey:
+	put_futex_key(&key);
 	return ret;
 
 pi_retry:
+	put_futex_key(&key);
 	cond_resched();
 	goto retry;
 
 pi_faulted:
+	put_futex_key(&key);
 
 	ret = fault_in_user_writeable(uaddr);
 	if (!ret)
@@ -3169,6 +3314,7 @@ static int futex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,
 				 u32 __user *uaddr2)
 {
 	struct hrtimer_sleeper timeout, *to;
+	struct futex_pi_state *pi_state = NULL;
 	struct rt_mutex_waiter rt_waiter;
 	struct futex_hash_bucket *hb;
 	union futex_key key2 = FUTEX_KEY_INIT;
@@ -3207,7 +3353,7 @@ static int futex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,
 	 */
 	ret = futex_wait_setup(uaddr, val, flags, &q, &hb);
 	if (ret)
-		goto out;
+		goto out_key2;
 
 	/*
 	 * The check above which compares uaddrs is not sufficient for
@@ -3216,7 +3362,7 @@ static int futex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,
 	if (match_futex(&q.key, &key2)) {
 		queue_unlock(hb);
 		ret = -EINVAL;
-		goto out;
+		goto out_put_keys;
 	}
 
 	/* Queue the futex_q, drop the hb lock, wait for wakeup. */
@@ -3226,7 +3372,7 @@ static int futex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,
 	ret = handle_early_requeue_pi_wakeup(hb, &q, &key2, to);
 	spin_unlock(&hb->lock);
 	if (ret)
-		goto out;
+		goto out_put_keys;
 
 	/*
 	 * In order for us to be here, we know our q.key == key2, and since
@@ -3246,17 +3392,16 @@ static int futex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,
 		if (q.pi_state && (q.pi_state->owner != current)) {
 			spin_lock(q.lock_ptr);
 			ret = fixup_pi_state_owner(uaddr2, &q, current);
+			if (ret && rt_mutex_owner(&q.pi_state->pi_mutex) == current) {
+				pi_state = q.pi_state;
+				get_pi_state(pi_state);
+			}
 			/*
 			 * Drop the reference to the pi state which
 			 * the requeue_pi() code acquired for us.
 			 */
 			put_pi_state(q.pi_state);
 			spin_unlock(q.lock_ptr);
-			/*
-			 * Adjust the return value. It's either -EFAULT or
-			 * success (1) but the caller expects 0 for success.
-			 */
-			ret = ret < 0 ? ret : 0;
 		}
 	} else {
 		struct rt_mutex *pi_mutex;
@@ -3287,8 +3432,23 @@ static int futex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,
 		if (res)
 			ret = (res < 0) ? res : 0;
 
+		/*
+		 * If fixup_pi_state_owner() faulted and was unable to handle
+		 * the fault, unlock the rt_mutex and return the fault to
+		 * userspace.
+		 */
+		if (ret && rt_mutex_owner(&q.pi_state->pi_mutex) == current) {
+			pi_state = q.pi_state;
+			get_pi_state(pi_state);
+		}
+
 		/* Unqueue and drop the lock. */
 		unqueue_me_pi(&q);
+	}
+
+	if (pi_state) {
+		rt_mutex_futex_unlock(&pi_state->pi_mutex);
+		put_pi_state(pi_state);
 	}
 
 	if (ret == -EINTR) {
@@ -3301,6 +3461,11 @@ static int futex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,
 		 */
 		ret = -EWOULDBLOCK;
 	}
+
+out_put_keys:
+	put_futex_key(&q.key);
+out_key2:
+	put_futex_key(&key2);
 
 out:
 	if (to) {
@@ -3402,7 +3567,7 @@ err_unlock:
 static int handle_futex_death(u32 __user *uaddr, struct task_struct *curr,
 			      bool pi, bool pending_op)
 {
-	u32 uval, nval, mval;
+	u32 uval, uninitialized_var(nval), mval;
 	int err;
 
 	/* Futex address must be 32bit aligned */
@@ -3532,7 +3697,7 @@ static void exit_robust_list(struct task_struct *curr)
 	struct robust_list_head __user *head = curr->robust_list;
 	struct robust_list __user *entry, *next_entry, *pending;
 	unsigned int limit = ROBUST_LIST_LIMIT, pi, pip;
-	unsigned int next_pi;
+	unsigned int uninitialized_var(next_pi);
 	unsigned long futex_offset;
 	int rc;
 
@@ -3711,7 +3876,8 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 
 	if (op & FUTEX_CLOCK_REALTIME) {
 		flags |= FLAGS_CLOCKRT;
-		if (cmd != FUTEX_WAIT_BITSET &&	cmd != FUTEX_WAIT_REQUEUE_PI)
+		if (cmd != FUTEX_WAIT && cmd != FUTEX_WAIT_BITSET && \
+		    cmd != FUTEX_WAIT_REQUEUE_PI)
 			return -ENOSYS;
 	}
 
@@ -3728,12 +3894,12 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 	switch (cmd) {
 	case FUTEX_WAIT:
 		val3 = FUTEX_BITSET_MATCH_ANY;
-		fallthrough;
+		/* fall through */
 	case FUTEX_WAIT_BITSET:
 		return futex_wait(uaddr, flags, val, timeout, val3);
 	case FUTEX_WAKE:
 		val3 = FUTEX_BITSET_MATCH_ANY;
-		fallthrough;
+		/* fall through */
 	case FUTEX_WAKE_BITSET:
 		return futex_wake(uaddr, flags, val, val3);
 	case FUTEX_REQUEUE:
@@ -3760,8 +3926,8 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 
 
 SYSCALL_DEFINE6(futex, u32 __user *, uaddr, int, op, u32, val,
-		const struct __kernel_timespec __user *, utime,
-		u32 __user *, uaddr2, u32, val3)
+		struct __kernel_timespec __user *, utime, u32 __user *, uaddr2,
+		u32, val3)
 {
 	struct timespec64 ts;
 	ktime_t t, *tp = NULL;
@@ -3781,8 +3947,6 @@ SYSCALL_DEFINE6(futex, u32 __user *, uaddr, int, op, u32, val,
 		t = timespec64_to_ktime(ts);
 		if (cmd == FUTEX_WAIT)
 			t = ktime_add_safe(ktime_get(), t);
-		else if (cmd != FUTEX_LOCK_PI && !(op & FUTEX_CLOCK_REALTIME))
-			t = timens_ktime_to_host(CLOCK_MONOTONIC, t);
 		tp = &t;
 	}
 	/*
@@ -3833,7 +3997,7 @@ static void compat_exit_robust_list(struct task_struct *curr)
 	struct compat_robust_list_head __user *head = curr->compat_robust_list;
 	struct robust_list __user *entry, *next_entry, *pending;
 	unsigned int limit = ROBUST_LIST_LIMIT, pi, pip;
-	unsigned int next_pi;
+	unsigned int uninitialized_var(next_pi);
 	compat_uptr_t uentry, next_uentry, upending;
 	compat_long_t futex_offset;
 	int rc;
@@ -3956,7 +4120,7 @@ err_unlock:
 
 #ifdef CONFIG_COMPAT_32BIT_TIME
 SYSCALL_DEFINE6(futex_time32, u32 __user *, uaddr, int, op, u32, val,
-		const struct old_timespec32 __user *, utime, u32 __user *, uaddr2,
+		struct old_timespec32 __user *, utime, u32 __user *, uaddr2,
 		u32, val3)
 {
 	struct timespec64 ts;
@@ -3975,8 +4139,6 @@ SYSCALL_DEFINE6(futex_time32, u32 __user *, uaddr, int, op, u32, val,
 		t = timespec64_to_ktime(ts);
 		if (cmd == FUTEX_WAIT)
 			t = ktime_add_safe(ktime_get(), t);
-		else if (cmd != FUTEX_LOCK_PI && !(op & FUTEX_CLOCK_REALTIME))
-			t = timens_ktime_to_host(CLOCK_MONOTONIC, t);
 		tp = &t;
 	}
 	if (cmd == FUTEX_REQUEUE || cmd == FUTEX_CMP_REQUEUE ||

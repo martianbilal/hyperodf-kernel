@@ -53,6 +53,7 @@
 #define MAX_BOARD 8		/* maximum of pc board possible */
 #define MAX_ISA_BOARD 4
 #define LEN_RAM_IO 0x800
+#define AC_MINOR 157
 
 #ifndef PCI_VENDOR_ID_APPLICOM
 #define PCI_VENDOR_ID_APPLICOM                0x1389
@@ -80,6 +81,9 @@ MODULE_AUTHOR("David Woodhouse & Applicom International");
 MODULE_DESCRIPTION("Driver for Applicom Profibus card");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_MISCDEV(AC_MINOR);
+
+MODULE_SUPPORTED_DEVICE("ac");
+
 
 static struct applicom_board {
 	unsigned long PhysIO;

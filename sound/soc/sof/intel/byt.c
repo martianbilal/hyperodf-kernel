@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause)
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-3-Clause)
 //
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
@@ -15,12 +15,8 @@
 #include <linux/module.h>
 #include <sound/sof.h>
 #include <sound/sof/xtensa.h>
-#include <sound/soc-acpi.h>
-#include <sound/soc-acpi-intel-match.h>
-#include <sound/intel-dsp-config.h>
 #include "../ops.h"
 #include "shim.h"
-#include "../sof-acpi-dev.h"
 #include "../sof-audio.h"
 #include "../../intel/common/soc-intel-quirks.h"
 
@@ -83,6 +79,33 @@ static const struct snd_sof_debugfs_map byt_debugfs[] = {
 	{"dram", BYT_DSP_BAR, DRAM_OFFSET, DRAM_SIZE,
 	 SOF_DEBUGFS_ACCESS_D0_ONLY},
 	{"shim", BYT_DSP_BAR, SHIM_OFFSET, SHIM_SIZE_BYT,
+	 SOF_DEBUGFS_ACCESS_ALWAYS},
+};
+
+static const struct snd_sof_debugfs_map cht_debugfs[] = {
+	{"dmac0", BYT_DSP_BAR, DMAC0_OFFSET, DMAC_SIZE,
+	 SOF_DEBUGFS_ACCESS_ALWAYS},
+	{"dmac1", BYT_DSP_BAR,  DMAC1_OFFSET, DMAC_SIZE,
+	 SOF_DEBUGFS_ACCESS_ALWAYS},
+	{"dmac2", BYT_DSP_BAR,  DMAC2_OFFSET, DMAC_SIZE,
+	 SOF_DEBUGFS_ACCESS_ALWAYS},
+	{"ssp0",  BYT_DSP_BAR, SSP0_OFFSET, SSP_SIZE,
+	 SOF_DEBUGFS_ACCESS_ALWAYS},
+	{"ssp1", BYT_DSP_BAR, SSP1_OFFSET, SSP_SIZE,
+	 SOF_DEBUGFS_ACCESS_ALWAYS},
+	{"ssp2", BYT_DSP_BAR, SSP2_OFFSET, SSP_SIZE,
+	 SOF_DEBUGFS_ACCESS_ALWAYS},
+	{"ssp3", BYT_DSP_BAR, SSP3_OFFSET, SSP_SIZE,
+	 SOF_DEBUGFS_ACCESS_ALWAYS},
+	{"ssp4", BYT_DSP_BAR, SSP4_OFFSET, SSP_SIZE,
+	 SOF_DEBUGFS_ACCESS_ALWAYS},
+	{"ssp5", BYT_DSP_BAR, SSP5_OFFSET, SSP_SIZE,
+	 SOF_DEBUGFS_ACCESS_ALWAYS},
+	{"iram", BYT_DSP_BAR, IRAM_OFFSET, IRAM_SIZE,
+	 SOF_DEBUGFS_ACCESS_D0_ONLY},
+	{"dram", BYT_DSP_BAR, DRAM_OFFSET, DRAM_SIZE,
+	 SOF_DEBUGFS_ACCESS_D0_ONLY},
+	{"shim", BYT_DSP_BAR, SHIM_OFFSET, SHIM_SIZE_CHT,
 	 SOF_DEBUGFS_ACCESS_ALWAYS},
 };
 
@@ -164,31 +187,13 @@ static void byt_dump(struct snd_sof_dev *sdev, u32 flags)
 static irqreturn_t byt_irq_handler(int irq, void *context)
 {
 	struct snd_sof_dev *sdev = context;
-	u64 ipcx, ipcd;
+	u64 isr;
 	int ret = IRQ_NONE;
 
-	ipcx = snd_sof_dsp_read64(sdev, BYT_DSP_BAR, SHIM_IPCX);
-	ipcd = snd_sof_dsp_read64(sdev, BYT_DSP_BAR, SHIM_IPCD);
-
-	if (ipcx & SHIM_BYT_IPCX_DONE) {
-
-		/* reply message from DSP, Mask Done interrupt first */
-		snd_sof_dsp_update_bits64_unlocked(sdev, BYT_DSP_BAR,
-						   SHIM_IMRX,
-						   SHIM_IMRX_DONE,
-						   SHIM_IMRX_DONE);
+	/* Interrupt arrived, check src */
+	isr = snd_sof_dsp_read64(sdev, BYT_DSP_BAR, SHIM_ISRX);
+	if (isr & (SHIM_ISRX_DONE | SHIM_ISRX_BUSY))
 		ret = IRQ_WAKE_THREAD;
-	}
-
-	if (ipcd & SHIM_BYT_IPCD_BUSY) {
-
-		/* new message from DSP, Mask Busy interrupt first */
-		snd_sof_dsp_update_bits64_unlocked(sdev, BYT_DSP_BAR,
-						   SHIM_IMRX,
-						   SHIM_IMRX_BUSY,
-						   SHIM_IMRX_BUSY);
-		ret = IRQ_WAKE_THREAD;
-	}
 
 	return ret;
 }
@@ -197,12 +202,19 @@ static irqreturn_t byt_irq_thread(int irq, void *context)
 {
 	struct snd_sof_dev *sdev = context;
 	u64 ipcx, ipcd;
+	u64 imrx;
 
+	imrx = snd_sof_dsp_read64(sdev, BYT_DSP_BAR, SHIM_IMRX);
 	ipcx = snd_sof_dsp_read64(sdev, BYT_DSP_BAR, SHIM_IPCX);
-	ipcd = snd_sof_dsp_read64(sdev, BYT_DSP_BAR, SHIM_IPCD);
 
 	/* reply message from DSP */
-	if (ipcx & SHIM_BYT_IPCX_DONE) {
+	if (ipcx & SHIM_BYT_IPCX_DONE &&
+	    !(imrx & SHIM_IMRX_DONE)) {
+		/* Mask Done interrupt before first */
+		snd_sof_dsp_update_bits64_unlocked(sdev, BYT_DSP_BAR,
+						   SHIM_IMRX,
+						   SHIM_IMRX_DONE,
+						   SHIM_IMRX_DONE);
 
 		spin_lock_irq(&sdev->ipc_lock);
 
@@ -222,7 +234,14 @@ static irqreturn_t byt_irq_thread(int irq, void *context)
 	}
 
 	/* new message from DSP */
-	if (ipcd & SHIM_BYT_IPCD_BUSY) {
+	ipcd = snd_sof_dsp_read64(sdev, BYT_DSP_BAR, SHIM_IPCD);
+	if (ipcd & SHIM_BYT_IPCD_BUSY &&
+	    !(imrx & SHIM_IMRX_BUSY)) {
+		/* Mask Busy interrupt before return */
+		snd_sof_dsp_update_bits64_unlocked(sdev, BYT_DSP_BAR,
+						   SHIM_IMRX,
+						   SHIM_IMRX_BUSY,
+						   SHIM_IMRX_BUSY);
 
 		/* Handle messages from DSP Core */
 		if ((ipcd & SOF_IPC_PANIC_MAGIC_MASK) == SOF_IPC_PANIC_MAGIC) {
@@ -240,10 +259,6 @@ static irqreturn_t byt_irq_thread(int irq, void *context)
 
 static int byt_send_msg(struct snd_sof_dev *sdev, struct snd_sof_ipc_msg *msg)
 {
-	/* unmask and prepare to receive Done interrupt */
-	snd_sof_dsp_update_bits64_unlocked(sdev, BYT_DSP_BAR, SHIM_IMRX,
-					   SHIM_IMRX_DONE, 0);
-
 	/* send the message */
 	sof_mailbox_write(sdev, sdev->host_box.offset, msg->msg_data,
 			  msg->msg_size);
@@ -309,7 +324,7 @@ static void byt_host_done(struct snd_sof_dev *sdev)
 					   SHIM_BYT_IPCD_DONE,
 					   SHIM_BYT_IPCD_DONE);
 
-	/* unmask and prepare to receive next new message */
+	/* unmask busy interrupt */
 	snd_sof_dsp_update_bits64_unlocked(sdev, BYT_DSP_BAR, SHIM_IMRX,
 					   SHIM_IMRX_BUSY, 0);
 }
@@ -319,6 +334,10 @@ static void byt_dsp_done(struct snd_sof_dev *sdev)
 	/* clear DONE bit - tell DSP we have completed */
 	snd_sof_dsp_update_bits64_unlocked(sdev, BYT_DSP_BAR, SHIM_IPCX,
 					   SHIM_BYT_IPCX_DONE, 0);
+
+	/* unmask Done interrupt */
+	snd_sof_dsp_update_bits64_unlocked(sdev, BYT_DSP_BAR, SHIM_IMRX,
+					   SHIM_IMRX_DONE, 0);
 }
 
 /*
@@ -340,7 +359,7 @@ static int byt_run(struct snd_sof_dev *sdev)
 	}
 	if (tries < 0) {
 		dev_err(sdev->dev, "error:  unable to run DSP firmware\n");
-		byt_dump(sdev, SOF_DBG_DUMP_REGS | SOF_DBG_DUMP_MBOX);
+		byt_dump(sdev, SOF_DBG_REGS | SOF_DBG_MBOX);
 		return -ENODEV;
 	}
 
@@ -440,69 +459,21 @@ static void byt_set_mach_params(const struct snd_soc_acpi_mach *mach,
 static struct snd_soc_dai_driver byt_dai[] = {
 {
 	.name = "ssp0-port",
-	.playback = {
-		.channels_min = 1,
-		.channels_max = 8,
-	},
-	.capture = {
-		.channels_min = 1,
-		.channels_max = 8,
-	},
 },
 {
 	.name = "ssp1-port",
-	.playback = {
-		.channels_min = 1,
-		.channels_max = 8,
-	},
-	.capture = {
-		.channels_min = 1,
-		.channels_max = 8,
-	},
 },
 {
 	.name = "ssp2-port",
-	.playback = {
-		.channels_min = 1,
-		.channels_max = 8,
-	},
-	.capture = {
-		.channels_min = 1,
-		.channels_max = 8,
-	}
 },
 {
 	.name = "ssp3-port",
-	.playback = {
-		.channels_min = 1,
-		.channels_max = 8,
-	},
-	.capture = {
-		.channels_min = 1,
-		.channels_max = 8,
-	},
 },
 {
 	.name = "ssp4-port",
-	.playback = {
-		.channels_min = 1,
-		.channels_max = 8,
-	},
-	.capture = {
-		.channels_min = 1,
-		.channels_max = 8,
-	},
 },
 {
 	.name = "ssp5-port",
-	.playback = {
-		.channels_min = 1,
-		.channels_max = 8,
-	},
-	.capture = {
-		.channels_min = 1,
-		.channels_max = 8,
-	},
 },
 };
 
@@ -575,10 +546,9 @@ irq:
 		return ret;
 	}
 
-	/* enable BUSY and disable DONE Interrupt by default */
-	snd_sof_dsp_update_bits64(sdev, BYT_DSP_BAR, SHIM_IMRX,
-				  SHIM_IMRX_BUSY | SHIM_IMRX_DONE,
-				  SHIM_IMRX_DONE);
+	/* enable Interrupt from both sides */
+	snd_sof_dsp_update_bits64(sdev, BYT_DSP_BAR, SHIM_IMRX, 0x3, 0x0);
+	snd_sof_dsp_update_bits64(sdev, BYT_DSP_BAR, SHIM_IMRD, 0x3, 0x0);
 
 	/* set default mailbox offset for FW ready message */
 	sdev->dsp_box.offset = MBOX_OFFSET;
@@ -655,76 +625,13 @@ EXPORT_SYMBOL_NS(sof_tng_ops, SND_SOC_SOF_MERRIFIELD);
 
 const struct sof_intel_dsp_desc tng_chip_info = {
 	.cores_num = 1,
-	.host_managed_cores_mask = 1,
+	.cores_mask = 1,
 };
 EXPORT_SYMBOL_NS(tng_chip_info, SND_SOC_SOF_MERRIFIELD);
 
 #endif /* CONFIG_SND_SOC_SOF_MERRIFIELD */
 
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_BAYTRAIL)
-
-static void byt_reset_dsp_disable_int(struct snd_sof_dev *sdev)
-{
-	/* Disable Interrupt from both sides */
-	snd_sof_dsp_update_bits64(sdev, BYT_DSP_BAR, SHIM_IMRX, 0x3, 0x3);
-	snd_sof_dsp_update_bits64(sdev, BYT_DSP_BAR, SHIM_IMRD, 0x3, 0x3);
-
-	/* Put DSP into reset, set reset vector */
-	snd_sof_dsp_update_bits64(sdev, BYT_DSP_BAR, SHIM_CSR,
-				  SHIM_BYT_CSR_RST | SHIM_BYT_CSR_VECTOR_SEL,
-				  SHIM_BYT_CSR_RST | SHIM_BYT_CSR_VECTOR_SEL);
-}
-
-static int byt_suspend(struct snd_sof_dev *sdev, u32 target_state)
-{
-	byt_reset_dsp_disable_int(sdev);
-
-	return 0;
-}
-
-static int byt_resume(struct snd_sof_dev *sdev)
-{
-	/* enable BUSY and disable DONE Interrupt by default */
-	snd_sof_dsp_update_bits64(sdev, BYT_DSP_BAR, SHIM_IMRX,
-				  SHIM_IMRX_BUSY | SHIM_IMRX_DONE,
-				  SHIM_IMRX_DONE);
-
-	return 0;
-}
-
-static int byt_remove(struct snd_sof_dev *sdev)
-{
-	byt_reset_dsp_disable_int(sdev);
-
-	return 0;
-}
-
-static const struct snd_sof_debugfs_map cht_debugfs[] = {
-	{"dmac0", BYT_DSP_BAR, DMAC0_OFFSET, DMAC_SIZE,
-	 SOF_DEBUGFS_ACCESS_ALWAYS},
-	{"dmac1", BYT_DSP_BAR,  DMAC1_OFFSET, DMAC_SIZE,
-	 SOF_DEBUGFS_ACCESS_ALWAYS},
-	{"dmac2", BYT_DSP_BAR,  DMAC2_OFFSET, DMAC_SIZE,
-	 SOF_DEBUGFS_ACCESS_ALWAYS},
-	{"ssp0",  BYT_DSP_BAR, SSP0_OFFSET, SSP_SIZE,
-	 SOF_DEBUGFS_ACCESS_ALWAYS},
-	{"ssp1", BYT_DSP_BAR, SSP1_OFFSET, SSP_SIZE,
-	 SOF_DEBUGFS_ACCESS_ALWAYS},
-	{"ssp2", BYT_DSP_BAR, SSP2_OFFSET, SSP_SIZE,
-	 SOF_DEBUGFS_ACCESS_ALWAYS},
-	{"ssp3", BYT_DSP_BAR, SSP3_OFFSET, SSP_SIZE,
-	 SOF_DEBUGFS_ACCESS_ALWAYS},
-	{"ssp4", BYT_DSP_BAR, SSP4_OFFSET, SSP_SIZE,
-	 SOF_DEBUGFS_ACCESS_ALWAYS},
-	{"ssp5", BYT_DSP_BAR, SSP5_OFFSET, SSP_SIZE,
-	 SOF_DEBUGFS_ACCESS_ALWAYS},
-	{"iram", BYT_DSP_BAR, IRAM_OFFSET, IRAM_SIZE,
-	 SOF_DEBUGFS_ACCESS_D0_ONLY},
-	{"dram", BYT_DSP_BAR, DRAM_OFFSET, DRAM_SIZE,
-	 SOF_DEBUGFS_ACCESS_D0_ONLY},
-	{"shim", BYT_DSP_BAR, SHIM_OFFSET, SHIM_SIZE_CHT,
-	 SOF_DEBUGFS_ACCESS_ALWAYS},
-};
 
 static int byt_acpi_probe(struct snd_sof_dev *sdev)
 {
@@ -814,10 +721,9 @@ irq:
 		return ret;
 	}
 
-	/* enable BUSY and disable DONE Interrupt by default */
-	snd_sof_dsp_update_bits64(sdev, BYT_DSP_BAR, SHIM_IMRX,
-				  SHIM_IMRX_BUSY | SHIM_IMRX_DONE,
-				  SHIM_IMRX_DONE);
+	/* enable Interrupt from both sides */
+	snd_sof_dsp_update_bits64(sdev, BYT_DSP_BAR, SHIM_IMRX, 0x3, 0x0);
+	snd_sof_dsp_update_bits64(sdev, BYT_DSP_BAR, SHIM_IMRD, 0x3, 0x0);
 
 	/* set default mailbox offset for FW ready message */
 	sdev->dsp_box.offset = MBOX_OFFSET;
@@ -826,10 +732,9 @@ irq:
 }
 
 /* baytrail ops */
-static const struct snd_sof_dsp_ops sof_byt_ops = {
+const struct snd_sof_dsp_ops sof_byt_ops = {
 	/* device init */
 	.probe		= byt_acpi_probe,
-	.remove		= byt_remove,
 
 	/* DSP core boot / reset */
 	.run		= byt_run,
@@ -879,10 +784,6 @@ static const struct snd_sof_dsp_ops sof_byt_ops = {
 	/*Firmware loading */
 	.load_firmware	= snd_sof_load_firmware_memcpy,
 
-	/* PM */
-	.suspend = byt_suspend,
-	.resume = byt_resume,
-
 	/* DAI drivers */
 	.drv = byt_dai,
 	.num_drv = 3, /* we have only 3 SSPs on byt*/
@@ -896,17 +797,18 @@ static const struct snd_sof_dsp_ops sof_byt_ops = {
 
 	.arch_ops = &sof_xtensa_arch_ops,
 };
+EXPORT_SYMBOL_NS(sof_byt_ops, SND_SOC_SOF_BAYTRAIL);
 
-static const struct sof_intel_dsp_desc byt_chip_info = {
+const struct sof_intel_dsp_desc byt_chip_info = {
 	.cores_num = 1,
-	.host_managed_cores_mask = 1,
+	.cores_mask = 1,
 };
+EXPORT_SYMBOL_NS(byt_chip_info, SND_SOC_SOF_BAYTRAIL);
 
 /* cherrytrail and braswell ops */
-static const struct snd_sof_dsp_ops sof_cht_ops = {
+const struct snd_sof_dsp_ops sof_cht_ops = {
 	/* device init */
 	.probe		= byt_acpi_probe,
-	.remove		= byt_remove,
 
 	/* DSP core boot / reset */
 	.run		= byt_run,
@@ -956,10 +858,6 @@ static const struct snd_sof_dsp_ops sof_cht_ops = {
 	/*Firmware loading */
 	.load_firmware	= snd_sof_load_firmware_memcpy,
 
-	/* PM */
-	.suspend = byt_suspend,
-	.resume = byt_resume,
-
 	/* DAI drivers */
 	.drv = byt_dai,
 	/* all 6 SSPs may be available for cherrytrail */
@@ -974,104 +872,16 @@ static const struct snd_sof_dsp_ops sof_cht_ops = {
 
 	.arch_ops = &sof_xtensa_arch_ops,
 };
+EXPORT_SYMBOL_NS(sof_cht_ops, SND_SOC_SOF_BAYTRAIL);
 
-static const struct sof_intel_dsp_desc cht_chip_info = {
+const struct sof_intel_dsp_desc cht_chip_info = {
 	.cores_num = 1,
-	.host_managed_cores_mask = 1,
+	.cores_mask = 1,
 };
-
-/* BYTCR uses different IRQ index */
-static const struct sof_dev_desc sof_acpi_baytrailcr_desc = {
-	.machines = snd_soc_acpi_intel_baytrail_machines,
-	.resindex_lpe_base = 0,
-	.resindex_pcicfg_base = 1,
-	.resindex_imr_base = 2,
-	.irqindex_host_ipc = 0,
-	.chip_info = &byt_chip_info,
-	.default_fw_path = "intel/sof",
-	.default_tplg_path = "intel/sof-tplg",
-	.default_fw_filename = "sof-byt.ri",
-	.nocodec_tplg_filename = "sof-byt-nocodec.tplg",
-	.ops = &sof_byt_ops,
-};
-
-static const struct sof_dev_desc sof_acpi_baytrail_desc = {
-	.machines = snd_soc_acpi_intel_baytrail_machines,
-	.resindex_lpe_base = 0,
-	.resindex_pcicfg_base = 1,
-	.resindex_imr_base = 2,
-	.irqindex_host_ipc = 5,
-	.chip_info = &byt_chip_info,
-	.default_fw_path = "intel/sof",
-	.default_tplg_path = "intel/sof-tplg",
-	.default_fw_filename = "sof-byt.ri",
-	.nocodec_tplg_filename = "sof-byt-nocodec.tplg",
-	.ops = &sof_byt_ops,
-};
-
-static const struct sof_dev_desc sof_acpi_cherrytrail_desc = {
-	.machines = snd_soc_acpi_intel_cherrytrail_machines,
-	.resindex_lpe_base = 0,
-	.resindex_pcicfg_base = 1,
-	.resindex_imr_base = 2,
-	.irqindex_host_ipc = 5,
-	.chip_info = &cht_chip_info,
-	.default_fw_path = "intel/sof",
-	.default_tplg_path = "intel/sof-tplg",
-	.default_fw_filename = "sof-cht.ri",
-	.nocodec_tplg_filename = "sof-cht-nocodec.tplg",
-	.ops = &sof_cht_ops,
-};
-
-static const struct acpi_device_id sof_baytrail_match[] = {
-	{ "80860F28", (unsigned long)&sof_acpi_baytrail_desc },
-	{ "808622A8", (unsigned long)&sof_acpi_cherrytrail_desc },
-	{ }
-};
-MODULE_DEVICE_TABLE(acpi, sof_baytrail_match);
-
-static int sof_baytrail_probe(struct platform_device *pdev)
-{
-	struct device *dev = &pdev->dev;
-	const struct sof_dev_desc *desc;
-	const struct acpi_device_id *id;
-	int ret;
-
-	id = acpi_match_device(dev->driver->acpi_match_table, dev);
-	if (!id)
-		return -ENODEV;
-
-	ret = snd_intel_acpi_dsp_driver_probe(dev, id->id);
-	if (ret != SND_INTEL_DSP_DRIVER_ANY && ret != SND_INTEL_DSP_DRIVER_SOF) {
-		dev_dbg(dev, "SOF ACPI driver not selected, aborting probe\n");
-		return -ENODEV;
-	}
-
-	desc = device_get_match_data(&pdev->dev);
-	if (!desc)
-		return -ENODEV;
-
-	if (desc == &sof_acpi_baytrail_desc && soc_intel_is_byt_cr(pdev))
-		desc = &sof_acpi_baytrailcr_desc;
-
-	return sof_acpi_probe(pdev, desc);
-}
-
-/* acpi_driver definition */
-static struct platform_driver snd_sof_acpi_intel_byt_driver = {
-	.probe = sof_baytrail_probe,
-	.remove = sof_acpi_remove,
-	.driver = {
-		.name = "sof-audio-acpi-intel-byt",
-		.pm = &sof_acpi_pm,
-		.acpi_match_table = sof_baytrail_match,
-	},
-};
-module_platform_driver(snd_sof_acpi_intel_byt_driver);
+EXPORT_SYMBOL_NS(cht_chip_info, SND_SOC_SOF_BAYTRAIL);
 
 #endif /* CONFIG_SND_SOC_SOF_BAYTRAIL */
 
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_IMPORT_NS(SND_SOC_SOF_INTEL_HIFI_EP_IPC);
 MODULE_IMPORT_NS(SND_SOC_SOF_XTENSA);
-MODULE_IMPORT_NS(SND_SOC_SOF_ACPI_DEV);

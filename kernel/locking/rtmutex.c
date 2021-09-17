@@ -57,7 +57,7 @@ rt_mutex_set_owner(struct rt_mutex *lock, struct task_struct *owner)
 	if (rt_mutex_has_waiters(lock))
 		val |= RT_MUTEX_HAS_WAITERS;
 
-	WRITE_ONCE(lock->owner, (struct task_struct *)val);
+	lock->owner = (struct task_struct *)val;
 }
 
 static inline void clear_rt_mutex_waiters(struct rt_mutex *lock)
@@ -141,6 +141,7 @@ static void fixup_rt_mutex_waiters(struct rt_mutex *lock)
  * set up.
  */
 #ifndef CONFIG_DEBUG_RT_MUTEXES
+# define rt_mutex_cmpxchg_relaxed(l,c,n) (cmpxchg_relaxed(&l->owner, c, n) == c)
 # define rt_mutex_cmpxchg_acquire(l,c,n) (cmpxchg_acquire(&l->owner, c, n) == c)
 # define rt_mutex_cmpxchg_release(l,c,n) (cmpxchg_release(&l->owner, c, n) == c)
 
@@ -201,6 +202,7 @@ static inline bool unlock_rt_mutex_safe(struct rt_mutex *lock,
 }
 
 #else
+# define rt_mutex_cmpxchg_relaxed(l,c,n)	(0)
 # define rt_mutex_cmpxchg_acquire(l,c,n)	(0)
 # define rt_mutex_cmpxchg_release(l,c,n)	(0)
 
@@ -267,18 +269,27 @@ rt_mutex_waiter_equal(struct rt_mutex_waiter *left,
 	return 1;
 }
 
-#define __node_2_waiter(node) \
-	rb_entry((node), struct rt_mutex_waiter, tree_entry)
-
-static inline bool __waiter_less(struct rb_node *a, const struct rb_node *b)
-{
-	return rt_mutex_waiter_less(__node_2_waiter(a), __node_2_waiter(b));
-}
-
 static void
 rt_mutex_enqueue(struct rt_mutex *lock, struct rt_mutex_waiter *waiter)
 {
-	rb_add_cached(&waiter->tree_entry, &lock->waiters, __waiter_less);
+	struct rb_node **link = &lock->waiters.rb_root.rb_node;
+	struct rb_node *parent = NULL;
+	struct rt_mutex_waiter *entry;
+	bool leftmost = true;
+
+	while (*link) {
+		parent = *link;
+		entry = rb_entry(parent, struct rt_mutex_waiter, tree_entry);
+		if (rt_mutex_waiter_less(waiter, entry)) {
+			link = &parent->rb_left;
+		} else {
+			link = &parent->rb_right;
+			leftmost = false;
+		}
+	}
+
+	rb_link_node(&waiter->tree_entry, parent, link);
+	rb_insert_color_cached(&waiter->tree_entry, &lock->waiters, leftmost);
 }
 
 static void
@@ -291,18 +302,27 @@ rt_mutex_dequeue(struct rt_mutex *lock, struct rt_mutex_waiter *waiter)
 	RB_CLEAR_NODE(&waiter->tree_entry);
 }
 
-#define __node_2_pi_waiter(node) \
-	rb_entry((node), struct rt_mutex_waiter, pi_tree_entry)
-
-static inline bool __pi_waiter_less(struct rb_node *a, const struct rb_node *b)
-{
-	return rt_mutex_waiter_less(__node_2_pi_waiter(a), __node_2_pi_waiter(b));
-}
-
 static void
 rt_mutex_enqueue_pi(struct task_struct *task, struct rt_mutex_waiter *waiter)
 {
-	rb_add_cached(&waiter->pi_tree_entry, &task->pi_waiters, __pi_waiter_less);
+	struct rb_node **link = &task->pi_waiters.rb_root.rb_node;
+	struct rb_node *parent = NULL;
+	struct rt_mutex_waiter *entry;
+	bool leftmost = true;
+
+	while (*link) {
+		parent = *link;
+		entry = rb_entry(parent, struct rt_mutex_waiter, pi_tree_entry);
+		if (rt_mutex_waiter_less(waiter, entry)) {
+			link = &parent->rb_left;
+		} else {
+			link = &parent->rb_right;
+			leftmost = false;
+		}
+	}
+
+	rb_link_node(&waiter->pi_tree_entry, parent, link);
+	rb_insert_color_cached(&waiter->pi_tree_entry, &task->pi_waiters, leftmost);
 }
 
 static void
@@ -1420,7 +1440,7 @@ rt_mutex_fasttrylock(struct rt_mutex *lock,
 }
 
 /*
- * Performs the wakeup of the top-waiter and re-enables preemption.
+ * Performs the wakeup of the the top-waiter and re-enables preemption.
  */
 void rt_mutex_postunlock(struct wake_q_head *wake_q)
 {
@@ -1586,11 +1606,8 @@ void __sched rt_mutex_unlock(struct rt_mutex *lock)
 EXPORT_SYMBOL_GPL(rt_mutex_unlock);
 
 /**
- * __rt_mutex_futex_unlock - Futex variant, that since futex variants
- * do not use the fast-path, can be simple and will not need to retry.
- *
- * @lock:	The rt_mutex to be unlocked
- * @wake_q:	The wake queue head from which to get the next lock waiter
+ * Futex variant, that since futex variants do not use the fast-path, can be
+ * simple and will not need to retry.
  */
 bool __sched __rt_mutex_futex_unlock(struct rt_mutex *lock,
 				    struct wake_q_head *wake_q)
@@ -1647,15 +1664,13 @@ void rt_mutex_destroy(struct rt_mutex *lock)
 EXPORT_SYMBOL_GPL(rt_mutex_destroy);
 
 /**
- * __rt_mutex_init - initialize the rt_mutex
+ * __rt_mutex_init - initialize the rt lock
  *
- * @lock:	The rt_mutex to be initialized
- * @name:	The lock name used for debugging
- * @key:	The lock class key used for debugging
+ * @lock: the rt lock to be initialized
  *
- * Initialize the rt_mutex to unlocked state.
+ * Initialize the rt lock to unlocked state.
  *
- * Initializing of a locked rt_mutex is not allowed
+ * Initializing of a locked rt lock is not allowed
  */
 void __rt_mutex_init(struct rt_mutex *lock, const char *name,
 		     struct lock_class_key *key)
@@ -1703,7 +1718,8 @@ void rt_mutex_init_proxy_locked(struct rt_mutex *lock,
  * possible because it belongs to the pi_state which is about to be freed
  * and it is not longer visible to other tasks.
  */
-void rt_mutex_proxy_unlock(struct rt_mutex *lock)
+void rt_mutex_proxy_unlock(struct rt_mutex *lock,
+			   struct task_struct *proxy_owner)
 {
 	debug_rt_mutex_proxy_unlock(lock);
 	rt_mutex_set_owner(lock, NULL);
@@ -1819,7 +1835,7 @@ struct task_struct *rt_mutex_next_owner(struct rt_mutex *lock)
  *			been started.
  * @waiter:		the pre-initialized rt_mutex_waiter
  *
- * Wait for the lock acquisition started on our behalf by
+ * Wait for the the lock acquisition started on our behalf by
  * rt_mutex_start_proxy_lock(). Upon failure, the caller must call
  * rt_mutex_cleanup_proxy_lock().
  *

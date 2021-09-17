@@ -21,9 +21,8 @@
 #include <linux/types.h>
 #include <linux/watchdog.h>
 #include <asm/nmi.h>
-#include <linux/crash_dump.h>
 
-#define HPWDT_VERSION			"2.0.4"
+#define HPWDT_VERSION			"2.0.3"
 #define SECS_TO_TICKS(secs)		((secs) * 1000 / 128)
 #define TICKS_TO_SECS(ticks)		((ticks) * 128 / 1000)
 #define HPWDT_MAX_TICKS			65535
@@ -123,7 +122,7 @@ static int hpwdt_settimeout(struct watchdog_device *wdd, unsigned int val)
 	if (val <= wdd->pretimeout) {
 		dev_dbg(wdd->parent, "pretimeout < timeout. Setting to zero\n");
 		wdd->pretimeout = 0;
-		pretimeout = false;
+		pretimeout = 0;
 		if (watchdog_active(wdd))
 			hpwdt_start(wdd);
 	}
@@ -335,14 +334,9 @@ static int hpwdt_init_one(struct pci_dev *dev,
 	watchdog_set_nowayout(&hpwdt_dev, nowayout);
 	watchdog_init_timeout(&hpwdt_dev, soft_margin, NULL);
 
-	if (is_kdump_kernel()) {
-		pretimeout = false;
-		kdumptimeout = 0;
-	}
-
 	if (pretimeout && hpwdt_dev.timeout <= PRETIMEOUT_SEC) {
 		dev_warn(&dev->dev, "timeout <= pretimeout. Setting pretimeout to zero\n");
-		pretimeout = false;
+		pretimeout = 0;
 	}
 	hpwdt_dev.pretimeout = pretimeout ? PRETIMEOUT_SEC : 0;
 	kdumptimeout = min(kdumptimeout, HPWDT_MAX_TIMER);

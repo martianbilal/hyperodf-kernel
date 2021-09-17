@@ -388,6 +388,12 @@ static enum aux_channel_operation_result get_channel_status(
 	}
 }
 
+enum i2caux_engine_type get_engine_type(
+		const struct dce_aux *engine)
+{
+	return I2CAUX_ENGINE_TYPE_AUX;
+}
+
 static bool acquire(
 	struct dce_aux *engine,
 	struct ddc *ddc)
@@ -576,7 +582,7 @@ int dce_aux_transfer_raw(struct ddc_service *ddc,
 	*operation_result = get_channel_status(aux_engine, &returned_bytes);
 
 	if (*operation_result == AUX_CHANNEL_OPERATION_SUCCEEDED) {
-		int __maybe_unused bytes_replied = 0;
+		int bytes_replied = 0;
 		bytes_replied = read_channel_reply(aux_engine, payload->length,
 					 payload->data, payload->reply,
 					 &status);
@@ -639,17 +645,15 @@ bool dce_aux_transfer_with_retries(struct ddc_service *ddc,
 			case AUX_TRANSACTION_REPLY_AUX_DEFER:
 			case AUX_TRANSACTION_REPLY_I2C_OVER_AUX_DEFER:
 				retry_on_defer = true;
-				fallthrough;
+				/* fall through */
 			case AUX_TRANSACTION_REPLY_I2C_OVER_AUX_NACK:
 				if (++aux_defer_retries >= AUX_MAX_DEFER_RETRIES) {
 					goto fail;
 				} else {
 					if ((*payload->reply == AUX_TRANSACTION_REPLY_AUX_DEFER) ||
 						(*payload->reply == AUX_TRANSACTION_REPLY_I2C_OVER_AUX_DEFER)) {
-						if (payload->defer_delay > 1)
+						if (payload->defer_delay > 0)
 							msleep(payload->defer_delay);
-						else if (payload->defer_delay <= 1)
-							udelay(payload->defer_delay * 1000);
 					}
 				}
 				break;

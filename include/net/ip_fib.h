@@ -153,7 +153,7 @@ struct fib_info {
 	bool			nh_updated;
 	struct nexthop		*nh;
 	struct rcu_head		rcu;
-	struct fib_nh		fib_nh[];
+	struct fib_nh		fib_nh[0];
 };
 
 
@@ -213,8 +213,7 @@ struct fib_rt_info {
 	u8			type;
 	u8			offload:1,
 				trap:1,
-				offload_failed:1,
-				unused:5;
+				unused:6;
 };
 
 struct fib_entry_notifier_info {
@@ -251,7 +250,7 @@ struct fib_table {
 	int			tb_num_default;
 	struct rcu_head		rcu;
 	unsigned long 		*tb_data;
-	unsigned long		__data[];
+	unsigned long		__data[0];
 };
 
 struct fib_dump_filter {
@@ -480,9 +479,8 @@ int fib_nh_init(struct net *net, struct fib_nh *fib_nh,
 		struct fib_config *cfg, int nh_weight,
 		struct netlink_ext_ack *extack);
 void fib_nh_release(struct net *net, struct fib_nh *fib_nh);
-int fib_nh_common_init(struct net *net, struct fib_nh_common *nhc,
-		       struct nlattr *fc_encap, u16 fc_encap_type,
-		       void *cfg, gfp_t gfp_flags,
+int fib_nh_common_init(struct fib_nh_common *nhc, struct nlattr *fc_encap,
+		       u16 fc_encap_type, void *cfg, gfp_t gfp_flags,
 		       struct netlink_ext_ack *extack);
 void fib_nh_common_release(struct fib_nh_common *nhc);
 
@@ -490,8 +488,6 @@ void fib_nh_common_release(struct fib_nh_common *nhc);
 void fib_alias_hw_flags_set(struct net *net, const struct fib_rt_info *fri);
 void fib_trie_init(void);
 struct fib_table *fib_trie_table(u32 id, struct fib_table *alias);
-bool fib_lookup_good_nhc(const struct fib_nh_common *nhc, int fib_flags,
-			 const struct flowi4 *flp);
 
 static inline void fib_combine_itag(u32 *itag, const struct fib_result *res)
 {

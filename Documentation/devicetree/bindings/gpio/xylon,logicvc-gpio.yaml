@@ -49,8 +49,6 @@ required:
   - "#gpio-cells"
   - gpio-controller
 
-additionalProperties: false
-
 examples:
   - |
     logicvc: logicvc@43c00000 {

@@ -57,7 +57,6 @@
 #include <linux/rcupdate.h>
 
 #include <linux/uaccess.h>
-#include <linux/nfs_ssc.h>
 
 #include "nfs4_fs.h"
 #include "callback.h"
@@ -86,12 +85,6 @@ const struct super_operations nfs_sops = {
 };
 EXPORT_SYMBOL_GPL(nfs_sops);
 
-#ifdef CONFIG_NFS_V4_2
-static const struct nfs_ssc_client_ops nfs_ssc_clnt_ops_tbl = {
-	.sco_sb_deactive = nfs_sb_deactive,
-};
-#endif
-
 #if IS_ENABLED(CONFIG_NFS_V4)
 static int __init register_nfs4_fs(void)
 {
@@ -112,22 +105,6 @@ static void unregister_nfs4_fs(void)
 {
 }
 #endif
-
-#ifdef CONFIG_NFS_V4_2
-static void nfs_ssc_register_ops(void)
-{
-#ifdef CONFIG_NFSD_V4
-	nfs_ssc_register(&nfs_ssc_clnt_ops_tbl);
-#endif
-}
-
-static void nfs_ssc_unregister_ops(void)
-{
-#ifdef CONFIG_NFSD_V4
-	nfs_ssc_unregister(&nfs_ssc_clnt_ops_tbl);
-#endif
-}
-#endif /* CONFIG_NFS_V4_2 */
 
 static struct shrinker acl_shrinker = {
 	.count_objects	= nfs_access_cache_count,
@@ -156,9 +133,6 @@ int __init register_nfs_fs(void)
 	ret = register_shrinker(&acl_shrinker);
 	if (ret < 0)
 		goto error_3;
-#ifdef CONFIG_NFS_V4_2
-	nfs_ssc_register_ops();
-#endif
 	return 0;
 error_3:
 	nfs_unregister_sysctl();
@@ -178,9 +152,6 @@ void __exit unregister_nfs_fs(void)
 	unregister_shrinker(&acl_shrinker);
 	nfs_unregister_sysctl();
 	unregister_nfs4_fs();
-#ifdef CONFIG_NFS_V4_2
-	nfs_ssc_unregister_ops();
-#endif
 	unregister_filesystem(&nfs_fs_type);
 }
 
@@ -204,41 +175,6 @@ void nfs_sb_deactive(struct super_block *sb)
 		deactivate_super(sb);
 }
 EXPORT_SYMBOL_GPL(nfs_sb_deactive);
-
-static int __nfs_list_for_each_server(struct list_head *head,
-		int (*fn)(struct nfs_server *, void *),
-		void *data)
-{
-	struct nfs_server *server, *last = NULL;
-	int ret = 0;
-
-	rcu_read_lock();
-	list_for_each_entry_rcu(server, head, client_link) {
-		if (!(server->super && nfs_sb_active(server->super)))
-			continue;
-		rcu_read_unlock();
-		if (last)
-			nfs_sb_deactive(last->super);
-		last = server;
-		ret = fn(server, data);
-		if (ret)
-			goto out;
-		rcu_read_lock();
-	}
-	rcu_read_unlock();
-out:
-	if (last)
-		nfs_sb_deactive(last->super);
-	return ret;
-}
-
-int nfs_client_for_each_server(struct nfs_client *clp,
-		int (*fn)(struct nfs_server *, void *),
-		void *data)
-{
-	return __nfs_list_for_each_server(&clp->cl_superblocks, fn, data);
-}
-EXPORT_SYMBOL_GPL(nfs_client_for_each_server);
 
 /*
  * Deliver file system statistics to userspace
@@ -523,13 +459,6 @@ static void nfs_show_mount_options(struct seq_file *m, struct nfs_server *nfss,
 		seq_puts(m, ",local_lock=flock");
 	else
 		seq_puts(m, ",local_lock=posix");
-
-	if (nfss->flags & NFS_MOUNT_WRITE_EAGER) {
-		if (nfss->flags & NFS_MOUNT_WRITE_WAIT)
-			seq_puts(m, ",write=wait");
-		else
-			seq_puts(m, ",write=eager");
-	}
 }
 
 /*
@@ -925,7 +854,7 @@ static struct nfs_server *nfs_try_mount_request(struct fs_context *fc)
 		default:
 			if (rpcauth_get_gssinfo(flavor, &info) != 0)
 				continue;
-			break;
+			/* Fallthrough */
 		}
 		dfprintk(MOUNT, "NFS: attempting to use auth flavor %u\n", flavor);
 		ctx->selected_flavor = flavor;
@@ -1236,12 +1165,20 @@ static void nfs_get_cache_cookie(struct super_block *sb,
 }
 #endif
 
+static void nfs_set_readahead(struct backing_dev_info *bdi,
+			      unsigned long iomax_pages)
+{
+	bdi->ra_pages = VM_READAHEAD_PAGES;
+	bdi->io_pages = iomax_pages;
+}
+
 int nfs_get_tree_common(struct fs_context *fc)
 {
 	struct nfs_fs_context *ctx = nfs_fc2context(fc);
 	struct super_block *s;
 	int (*compare_super)(struct super_block *, struct fs_context *) = nfs_compare_super;
 	struct nfs_server *server = ctx->server;
+	unsigned long kflags = 0, kflags_out = 0;
 	int error;
 
 	ctx->server = NULL;
@@ -1280,7 +1217,7 @@ int nfs_get_tree_common(struct fs_context *fc)
 					     MINOR(server->s_dev));
 		if (error)
 			goto error_splat_super;
-		s->s_bdi->io_pages = server->rpages;
+		nfs_set_readahead(s->s_bdi, server->rpages);
 		server->super = s;
 	}
 
@@ -1301,6 +1238,26 @@ int nfs_get_tree_common(struct fs_context *fc)
 		goto error_splat_super;
 	}
 
+	if (NFS_SB(s)->caps & NFS_CAP_SECURITY_LABEL)
+		kflags |= SECURITY_LSM_NATIVE_LABELS;
+	if (ctx->clone_data.sb) {
+		if (d_inode(fc->root)->i_fop != &nfs_dir_operations) {
+			error = -ESTALE;
+			goto error_splat_root;
+		}
+		/* clone any lsm security options from the parent to the new sb */
+		error = security_sb_clone_mnt_opts(ctx->clone_data.sb, s, kflags,
+				&kflags_out);
+	} else {
+		error = security_sb_set_mnt_opts(s, fc->security,
+							kflags, &kflags_out);
+	}
+	if (error)
+		goto error_splat_root;
+	if (NFS_SB(s)->caps & NFS_CAP_SECURITY_LABEL &&
+		!(kflags_out & SECURITY_LSM_NATIVE_LABELS))
+		NFS_SB(s)->caps &= ~NFS_CAP_SECURITY_LABEL;
+
 	s->s_flags |= SB_ACTIVE;
 	error = 0;
 
@@ -1310,6 +1267,10 @@ out:
 out_err_nosb:
 	nfs_free_server(server);
 	goto out;
+
+error_splat_root:
+	dput(fc->root);
+	fc->root = NULL;
 error_splat_super:
 	deactivate_locked_super(s);
 	goto out;

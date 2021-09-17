@@ -568,7 +568,8 @@ vmci_transport_queue_pair_alloc(struct vmci_qp **qpair,
 			       peer, flags, VMCI_NO_PRIVILEGE_FLAGS);
 out:
 	if (err < 0) {
-		pr_err_once("Could not attach to queue pair with %d\n", err);
+		pr_err("Could not attach to queue pair with %d\n",
+		       err);
 		err = vmci_transport_error_to_vsock_error(err);
 	}
 
@@ -2054,7 +2055,7 @@ static bool vmci_check_transport(struct vsock_sock *vsk)
 	return vsk->transport == &vmci_transport;
 }
 
-static void vmci_vsock_transport_cb(bool is_host)
+void vmci_vsock_transport_cb(bool is_host)
 {
 	int features;
 
