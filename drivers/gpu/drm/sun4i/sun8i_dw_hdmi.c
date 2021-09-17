@@ -10,7 +10,6 @@
 
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_of.h>
-#include <drm/drm_simple_kms_helper.h>
 
 #include "sun8i_dw_hdmi.h"
 #include "sun8i_tcon_top.h"
@@ -21,7 +20,8 @@ static void sun8i_dw_hdmi_encoder_mode_set(struct drm_encoder *encoder,
 {
 	struct sun8i_dw_hdmi *hdmi = encoder_to_sun8i_dw_hdmi(encoder);
 
-	clk_set_rate(hdmi->clk_tmds, mode->crtc_clock * 1000);
+	if (hdmi->quirks->set_rate)
+		clk_set_rate(hdmi->clk_tmds, mode->crtc_clock * 1000);
 }
 
 static const struct drm_encoder_helper_funcs
@@ -29,9 +29,12 @@ sun8i_dw_hdmi_encoder_helper_funcs = {
 	.mode_set = sun8i_dw_hdmi_encoder_mode_set,
 };
 
+static const struct drm_encoder_funcs sun8i_dw_hdmi_encoder_funcs = {
+	.destroy = drm_encoder_cleanup,
+};
+
 static enum drm_mode_status
-sun8i_dw_hdmi_mode_valid_a83t(struct dw_hdmi *hdmi, void *data,
-			      const struct drm_display_info *info,
+sun8i_dw_hdmi_mode_valid_a83t(struct drm_connector *connector,
 			      const struct drm_display_mode *mode)
 {
 	if (mode->clock > 297000)
@@ -41,15 +44,16 @@ sun8i_dw_hdmi_mode_valid_a83t(struct dw_hdmi *hdmi, void *data,
 }
 
 static enum drm_mode_status
-sun8i_dw_hdmi_mode_valid_h6(struct dw_hdmi *hdmi, void *data,
-			    const struct drm_display_info *info,
+sun8i_dw_hdmi_mode_valid_h6(struct drm_connector *connector,
 			    const struct drm_display_mode *mode)
 {
 	/*
 	 * Controller support maximum of 594 MHz, which correlates to
-	 * 4K@60Hz 4:4:4 or RGB.
+	 * 4K@60Hz 4:4:4 or RGB. However, for frequencies greater than
+	 * 340 MHz scrambling has to be enabled. Because scrambling is
+	 * not yet implemented, just limit to 340 MHz for now.
 	 */
-	if (mode->clock > 594000)
+	if (mode->clock > 340000)
 		return MODE_CLOCK_HIGH;
 
 	return MODE_OK;
@@ -205,7 +209,6 @@ static int sun8i_dw_hdmi_bind(struct device *dev, struct device *master,
 	phy_node = of_parse_phandle(dev->of_node, "phys", 0);
 	if (!phy_node) {
 		dev_err(dev, "Can't found PHY phandle\n");
-		ret = -EINVAL;
 		goto err_disable_clk_tmds;
 	}
 
@@ -217,7 +220,8 @@ static int sun8i_dw_hdmi_bind(struct device *dev, struct device *master,
 	}
 
 	drm_encoder_helper_add(encoder, &sun8i_dw_hdmi_encoder_helper_funcs);
-	drm_simple_encoder_init(drm, encoder, DRM_MODE_ENCODER_TMDS);
+	drm_encoder_init(drm, encoder, &sun8i_dw_hdmi_encoder_funcs,
+			 DRM_MODE_ENCODER_TMDS, NULL);
 
 	sun8i_hdmi_phy_init(hdmi->phy);
 
@@ -292,6 +296,7 @@ static int sun8i_dw_hdmi_remove(struct platform_device *pdev)
 
 static const struct sun8i_dw_hdmi_quirks sun8i_a83t_quirks = {
 	.mode_valid = sun8i_dw_hdmi_mode_valid_a83t,
+	.set_rate = true,
 };
 
 static const struct sun8i_dw_hdmi_quirks sun50i_h6_quirks = {

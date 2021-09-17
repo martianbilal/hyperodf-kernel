@@ -8,18 +8,14 @@
 #ifndef WILCO_EC_H
 #define WILCO_EC_H
 
-#include <linux/mutex.h>
-#include <linux/types.h>
+#include <linux/device.h>
+#include <linux/kernel.h>
 
 /* Message flags for using the mailbox() interface */
 #define WILCO_EC_FLAG_NO_RESPONSE	BIT(0) /* EC does not respond */
 
 /* Normal commands have a maximum 32 bytes of data */
 #define EC_MAILBOX_DATA_SIZE		32
-
-struct device;
-struct resource;
-struct platform_device;
 
 /**
  * struct wilco_ec_device - Wilco Embedded Controller handle.
@@ -83,7 +79,7 @@ struct wilco_ec_response {
 	u16 result;
 	u16 data_size;
 	u8 reserved[2];
-	u8 data[];
+	u8 data[0];
 } __packed;
 
 /**

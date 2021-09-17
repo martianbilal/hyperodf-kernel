@@ -479,7 +479,7 @@ static int gdrom_bdops_open(struct block_device *bdev, fmode_t mode)
 {
 	int ret;
 
-	bdev_check_media_change(bdev);
+	check_disk_change(bdev);
 
 	mutex_lock(&gdrom_mutex);
 	ret = cdrom_open(gd.cd_info, bdev, mode);
@@ -743,13 +743,6 @@ static const struct blk_mq_ops gdrom_mq_ops = {
 static int probe_gdrom(struct platform_device *devptr)
 {
 	int err;
-
-	/*
-	 * Ensure our "one" device is initialized properly in case of previous
-	 * usages of it
-	 */
-	memset(&gd, 0, sizeof(gd));
-
 	/* Start the device */
 	if (gdrom_execute_diagnostic() != 1) {
 		pr_warn("ATA Probe for GDROM failed\n");
@@ -777,7 +770,7 @@ static int probe_gdrom(struct platform_device *devptr)
 		goto probe_fail_no_disk;
 	}
 	probe_gdrom_setupdisk();
-	if (register_cdrom(gd.disk, gd.cd_info)) {
+	if (register_cdrom(gd.cd_info)) {
 		err = -ENODEV;
 		goto probe_fail_cdrom_register;
 	}
@@ -838,8 +831,6 @@ static int remove_gdrom(struct platform_device *devptr)
 	if (gdrom_major)
 		unregister_blkdev(gdrom_major, GDROM_DEV_NAME);
 	unregister_cdrom(gd.cd_info);
-	kfree(gd.cd_info);
-	kfree(gd.toc);
 
 	return 0;
 }
@@ -855,7 +846,7 @@ static struct platform_driver gdrom_driver = {
 static int __init init_gdrom(void)
 {
 	int rc;
-
+	gd.toc = NULL;
 	rc = platform_driver_register(&gdrom_driver);
 	if (rc)
 		return rc;
@@ -871,6 +862,8 @@ static void __exit exit_gdrom(void)
 {
 	platform_device_unregister(pd);
 	platform_driver_unregister(&gdrom_driver);
+	kfree(gd.toc);
+	kfree(gd.cd_info);
 }
 
 module_init(init_gdrom);

@@ -33,6 +33,3 @@ properties:
 
 required:
   - compatible
-additionalProperties: false
-
-...

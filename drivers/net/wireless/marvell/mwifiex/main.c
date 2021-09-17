@@ -1,10 +1,10 @@
 /*
- * NXP Wireless LAN device driver: major functions
+ * Marvell Wireless LAN device driver: major functions
  *
- * Copyright 2011-2020 NXP
+ * Copyright (C) 2011-2014, Marvell International Ltd.
  *
- * This software file (the "File") is distributed by NXP
- * under the terms of the GNU General Public License Version 2, June 1991
+ * This software file (the "File") is distributed by Marvell International
+ * Ltd. under the terms of the GNU General Public License Version 2, June 1991
  * (the "License").  You may use, redistribute and/or modify this File in
  * accordance with the terms and conditions of the License, a copy of which
  * is available by writing to the Free Software Foundation, Inc.,
@@ -47,8 +47,6 @@ MODULE_PARM_DESC(mfg_mode, "manufacturing mode enable:1, disable:0");
 bool aggr_ctrl;
 module_param(aggr_ctrl, bool, 0000);
 MODULE_PARM_DESC(aggr_ctrl, "usb tx aggregation enable:1, disable:0");
-
-const u16 mwifiex_1d_to_wmm_queue[8] = { 1, 0, 0, 1, 2, 2, 3, 3 };
 
 /*
  * This function registers the device and performs all the necessary
@@ -598,14 +596,12 @@ static int _mwifiex_fw_dpc(const struct firmware *firmware, void *context)
 	}
 
 	rtnl_lock();
-	wiphy_lock(adapter->wiphy);
 	/* Create station interface by default */
 	wdev = mwifiex_add_virtual_intf(adapter->wiphy, "mlan%d", NET_NAME_ENUM,
 					NL80211_IFTYPE_STATION, NULL);
 	if (IS_ERR(wdev)) {
 		mwifiex_dbg(adapter, ERROR,
 			    "cannot create default STA interface\n");
-		wiphy_unlock(adapter->wiphy);
 		rtnl_unlock();
 		goto err_add_intf;
 	}
@@ -616,7 +612,6 @@ static int _mwifiex_fw_dpc(const struct firmware *firmware, void *context)
 		if (IS_ERR(wdev)) {
 			mwifiex_dbg(adapter, ERROR,
 				    "cannot create AP interface\n");
-			wiphy_unlock(adapter->wiphy);
 			rtnl_unlock();
 			goto err_add_intf;
 		}
@@ -628,12 +623,10 @@ static int _mwifiex_fw_dpc(const struct firmware *firmware, void *context)
 		if (IS_ERR(wdev)) {
 			mwifiex_dbg(adapter, ERROR,
 				    "cannot create p2p client interface\n");
-			wiphy_unlock(adapter->wiphy);
 			rtnl_unlock();
 			goto err_add_intf;
 		}
 	}
-	wiphy_unlock(adapter->wiphy);
 	rtnl_unlock();
 
 	mwifiex_drv_get_driver_version(adapter, fmt, sizeof(fmt) - 1);
@@ -960,7 +953,7 @@ int mwifiex_set_mac_address(struct mwifiex_private *priv,
 	} else {
 		/* Internal mac address change */
 		if (priv->bss_type == MWIFIEX_BSS_TYPE_ANY)
-			return -EOPNOTSUPP;
+			return -ENOTSUPP;
 
 		mac_addr = old_mac_addr;
 
@@ -1445,11 +1438,9 @@ static void mwifiex_uninit_sw(struct mwifiex_adapter *adapter)
 		if (!priv)
 			continue;
 		rtnl_lock();
-		wiphy_lock(adapter->wiphy);
 		if (priv->netdev &&
 		    priv->wdev.iftype != NL80211_IFTYPE_UNSPECIFIED)
 			mwifiex_del_virtual_intf(adapter->wiphy, &priv->wdev);
-		wiphy_unlock(adapter->wiphy);
 		rtnl_unlock();
 	}
 
@@ -1462,7 +1453,7 @@ static void mwifiex_uninit_sw(struct mwifiex_adapter *adapter)
 }
 
 /*
- * This function can be used for shutting down the adapter SW.
+ * This function gets called during PCIe function level reset.
  */
 int mwifiex_shutdown_sw(struct mwifiex_adapter *adapter)
 {
@@ -1478,8 +1469,6 @@ int mwifiex_shutdown_sw(struct mwifiex_adapter *adapter)
 	priv = mwifiex_get_priv(adapter, MWIFIEX_BSS_ROLE_ANY);
 	mwifiex_deauthenticate(priv, NULL);
 
-	mwifiex_init_shutdown_fw(priv, MWIFIEX_FUNC_SHUTDOWN);
-
 	mwifiex_uninit_sw(adapter);
 	adapter->is_up = false;
 
@@ -1490,7 +1479,7 @@ int mwifiex_shutdown_sw(struct mwifiex_adapter *adapter)
 }
 EXPORT_SYMBOL_GPL(mwifiex_shutdown_sw);
 
-/* This function can be used for reinitting the adapter SW. Required
+/* This function gets called during PCIe function level reset. Required
  * code is extracted from mwifiex_add_card()
  */
 int

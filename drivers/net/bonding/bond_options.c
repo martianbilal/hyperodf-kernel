@@ -96,13 +96,12 @@ static const struct bond_opt_value bond_pps_tbl[] = {
 };
 
 static const struct bond_opt_value bond_xmit_hashtype_tbl[] = {
-	{ "layer2",      BOND_XMIT_POLICY_LAYER2,      BOND_VALFLAG_DEFAULT},
-	{ "layer3+4",    BOND_XMIT_POLICY_LAYER34,     0},
-	{ "layer2+3",    BOND_XMIT_POLICY_LAYER23,     0},
-	{ "encap2+3",    BOND_XMIT_POLICY_ENCAP23,     0},
-	{ "encap3+4",    BOND_XMIT_POLICY_ENCAP34,     0},
-	{ "vlan+srcmac", BOND_XMIT_POLICY_VLAN_SRCMAC, 0},
-	{ NULL,          -1,                           0},
+	{ "layer2",   BOND_XMIT_POLICY_LAYER2, BOND_VALFLAG_DEFAULT},
+	{ "layer3+4", BOND_XMIT_POLICY_LAYER34, 0},
+	{ "layer2+3", BOND_XMIT_POLICY_LAYER23, 0},
+	{ "encap2+3", BOND_XMIT_POLICY_ENCAP23, 0},
+	{ "encap3+4", BOND_XMIT_POLICY_ENCAP34, 0},
+	{ NULL,       -1,                       0},
 };
 
 static const struct bond_opt_value bond_arp_validate_tbl[] = {
@@ -746,32 +745,6 @@ const struct bond_option *bond_opt_get(unsigned int option)
 	return &bond_opts[option];
 }
 
-static bool bond_set_xfrm_features(struct bonding *bond)
-{
-	if (!IS_ENABLED(CONFIG_XFRM_OFFLOAD))
-		return false;
-
-	if (BOND_MODE(bond) == BOND_MODE_ACTIVEBACKUP)
-		bond->dev->wanted_features |= BOND_XFRM_FEATURES;
-	else
-		bond->dev->wanted_features &= ~BOND_XFRM_FEATURES;
-
-	return true;
-}
-
-static bool bond_set_tls_features(struct bonding *bond)
-{
-	if (!IS_ENABLED(CONFIG_TLS_DEVICE))
-		return false;
-
-	if (bond_sk_check(bond))
-		bond->dev->wanted_features |= BOND_TLS_FEATURES;
-	else
-		bond->dev->wanted_features &= ~BOND_TLS_FEATURES;
-
-	return true;
-}
-
 static int bond_option_mode_set(struct bonding *bond,
 				const struct bond_opt_value *newval)
 {
@@ -797,16 +770,6 @@ static int bond_option_mode_set(struct bonding *bond,
 	/* don't cache arp_validate between modes */
 	bond->params.arp_validate = BOND_ARP_VALIDATE_NONE;
 	bond->params.mode = newval->value;
-
-	if (bond->dev->reg_state == NETREG_REGISTERED) {
-		bool update = false;
-
-		update |= bond_set_xfrm_features(bond);
-		update |= bond_set_tls_features(bond);
-
-		if (update)
-			netdev_update_features(bond->dev);
-	}
 
 	return 0;
 }
@@ -1240,10 +1203,6 @@ static int bond_option_xmit_hash_policy_set(struct bonding *bond,
 		   newval->string, newval->value);
 	bond->params.xmit_policy = newval->value;
 
-	if (bond->dev->reg_state == NETREG_REGISTERED)
-		if (bond_set_tls_features(bond))
-			netdev_update_features(bond->dev);
-
 	return 0;
 }
 
@@ -1439,6 +1398,8 @@ static int bond_option_slaves_set(struct bonding *bond,
 	case '-':
 		slave_dbg(bond->dev, dev, "Releasing interface\n");
 		ret = bond_release(bond->dev, dev);
+		if (!ret)
+			netdev_update_lockdep_key(dev);
 		break;
 
 	default:

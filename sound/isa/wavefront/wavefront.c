@@ -21,6 +21,7 @@
 MODULE_AUTHOR("Paul Barton-Davis <pbd@op.net>");
 MODULE_DESCRIPTION("Turtle Beach Wavefront");
 MODULE_LICENSE("GPL");
+MODULE_SUPPORTED_DEVICE("{{Turtle Beach,Maui/Tropez/Tropez+}}");
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	    /* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	    /* ID for this card */
@@ -564,10 +565,11 @@ static int snd_wavefront_isa_probe(struct device *pdev,
 	return 0;
 }
 
-static void snd_wavefront_isa_remove(struct device *devptr,
+static int snd_wavefront_isa_remove(struct device *devptr,
 				    unsigned int dev)
 {
 	snd_card_free(dev_get_drvdata(devptr));
+	return 0;
 }
 
 #define DEV_NAME "wavefront"

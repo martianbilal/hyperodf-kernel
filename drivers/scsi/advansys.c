@@ -316,7 +316,7 @@ typedef struct asc_sg_head {
 	ushort queue_cnt;
 	ushort entry_to_copy;
 	ushort res;
-	ASC_SG_LIST sg_list[];
+	ASC_SG_LIST sg_list[0];
 } ASC_SG_HEAD;
 
 typedef struct asc_scsi_q {
@@ -2085,6 +2085,12 @@ do { \
 #define ASC_BUSY        0
 #define ASC_ERROR       (-1)
 
+/* struct scsi_cmnd function return codes */
+#define STATUS_BYTE(byte)   (byte)
+#define MSG_BYTE(byte)      ((byte) << 8)
+#define HOST_BYTE(byte)     ((byte) << 16)
+#define DRIVER_BYTE(byte)   ((byte) << 24)
+
 #define ASC_STATS(shost, counter) ASC_STATS_ADD(shost, counter, 1)
 #ifndef ADVANSYS_STATS
 #define ASC_STATS_ADD(shost, counter, count)
@@ -2870,15 +2876,15 @@ static int asc_get_eeprom_string(ushort *serialnum, uchar *cp)
 static void asc_prt_asc_board_eeprom(struct seq_file *m, struct Scsi_Host *shost)
 {
 	struct asc_board *boardp = shost_priv(shost);
+	ASC_DVC_VAR *asc_dvc_varp;
 	ASCEEP_CONFIG *ep;
 	int i;
-	uchar serialstr[13];
 #ifdef CONFIG_ISA
-	ASC_DVC_VAR *asc_dvc_varp;
 	int isa_dma_speed[] = { 10, 8, 7, 6, 5, 4, 3, 2 };
+#endif /* CONFIG_ISA */
+	uchar serialstr[13];
 
 	asc_dvc_varp = &boardp->dvc_var.asc_dvc_var;
-#endif /* CONFIG_ISA */
 	ep = &boardp->eep_config.asc_eep;
 
 	seq_printf(m,
@@ -3165,6 +3171,7 @@ static void asc_prt_adv_board_eeprom(struct seq_file *m, struct Scsi_Host *shost
 static void asc_prt_driver_conf(struct seq_file *m, struct Scsi_Host *shost)
 {
 	struct asc_board *boardp = shost_priv(shost);
+	int chip_scsi_id;
 
 	seq_printf(m,
 		"\nLinux Driver Configuration and Information for AdvanSys SCSI Host %d:\n",
@@ -3190,6 +3197,12 @@ static void asc_prt_driver_conf(struct seq_file *m, struct Scsi_Host *shost)
 		   boardp->asc_n_io_port);
 
 	seq_printf(m, " io_port 0x%lx\n", shost->io_port);
+
+	if (ASC_NARROW_BOARD(boardp)) {
+		chip_scsi_id = boardp->dvc_cfg.asc_dvc_cfg.chip_scsi_id;
+	} else {
+		chip_scsi_id = boardp->dvc_var.adv_dvc_var.chip_scsi_id;
+	}
 }
 
 /*
@@ -5980,10 +5993,10 @@ static void adv_isr_callback(ADV_DVC_VAR *adv_dvc_varp, ADV_SCSI_REQ_Q *scsiqp)
 	/*
 	 * 'done_status' contains the command's ending status.
 	 */
-	scp->result = 0;
 	switch (scsiqp->done_status) {
 	case QD_NO_ERROR:
 		ASC_DBG(2, "QD_NO_ERROR\n");
+		scp->result = 0;
 
 		/*
 		 * Check for an underrun condition.
@@ -6004,33 +6017,47 @@ static void adv_isr_callback(ADV_DVC_VAR *adv_dvc_varp, ADV_SCSI_REQ_Q *scsiqp)
 		ASC_DBG(2, "QD_WITH_ERROR\n");
 		switch (scsiqp->host_status) {
 		case QHSTA_NO_ERROR:
-			set_status_byte(scp, scsiqp->scsi_status);
 			if (scsiqp->scsi_status == SAM_STAT_CHECK_CONDITION) {
 				ASC_DBG(2, "SAM_STAT_CHECK_CONDITION\n");
 				ASC_DBG_PRT_SENSE(2, scp->sense_buffer,
 						  SCSI_SENSE_BUFFERSIZE);
-				set_driver_byte(scp, DRIVER_SENSE);
+				/*
+				 * Note: The 'status_byte()' macro used by
+				 * target drivers defined in scsi.h shifts the
+				 * status byte returned by host drivers right
+				 * by 1 bit.  This is why target drivers also
+				 * use right shifted status byte definitions.
+				 * For instance target drivers use
+				 * CHECK_CONDITION, defined to 0x1, instead of
+				 * the SCSI defined check condition value of
+				 * 0x2. Host drivers are supposed to return
+				 * the status byte as it is defined by SCSI.
+				 */
+				scp->result = DRIVER_BYTE(DRIVER_SENSE) |
+				    STATUS_BYTE(scsiqp->scsi_status);
+			} else {
+				scp->result = STATUS_BYTE(scsiqp->scsi_status);
 			}
 			break;
 
 		default:
 			/* Some other QHSTA error occurred. */
 			ASC_DBG(1, "host_status 0x%x\n", scsiqp->host_status);
-			set_host_byte(scp, DID_BAD_TARGET);
+			scp->result = HOST_BYTE(DID_BAD_TARGET);
 			break;
 		}
 		break;
 
 	case QD_ABORTED_BY_HOST:
 		ASC_DBG(1, "QD_ABORTED_BY_HOST\n");
-		set_status_byte(scp, scsiqp->scsi_status);
-		set_host_byte(scp, DID_ABORT);
+		scp->result =
+		    HOST_BYTE(DID_ABORT) | STATUS_BYTE(scsiqp->scsi_status);
 		break;
 
 	default:
 		ASC_DBG(1, "done_status 0x%x\n", scsiqp->done_status);
-		set_status_byte(scp, scsiqp->scsi_status);
-		set_host_byte(scp, DID_ERROR);
+		scp->result =
+		    HOST_BYTE(DID_ERROR) | STATUS_BYTE(scsiqp->scsi_status);
 		break;
 	}
 
@@ -6084,6 +6111,7 @@ static int AdvISR(ADV_DVC_VAR *asc_dvc)
 {
 	AdvPortAddr iop_base;
 	uchar int_stat;
+	ushort target_bit;
 	ADV_CARR_T *free_carrp;
 	__le32 irq_next_vpa;
 	ADV_SCSI_REQ_Q *scsiq;
@@ -6169,6 +6197,8 @@ static int AdvISR(ADV_DVC_VAR *asc_dvc)
 		free_carrp->next_vpa = asc_dvc->carr_freelist->carr_va;
 		asc_dvc->carr_freelist = free_carrp;
 		asc_dvc->carr_pending_cnt--;
+
+		target_bit = ADV_TID_TO_TIDMASK(scsiq->target_id);
 
 		/*
 		 * Clear request microcode control flag.
@@ -6732,10 +6762,10 @@ static void asc_isr_callback(ASC_DVC_VAR *asc_dvc_varp, ASC_QDONE_INFO *qdonep)
 	/*
 	 * 'qdonep' contains the command's ending status.
 	 */
-	scp->result = 0;
 	switch (qdonep->d3.done_stat) {
 	case QD_NO_ERROR:
 		ASC_DBG(2, "QD_NO_ERROR\n");
+		scp->result = 0;
 
 		/*
 		 * Check for an underrun condition.
@@ -6755,35 +6785,51 @@ static void asc_isr_callback(ASC_DVC_VAR *asc_dvc_varp, ASC_QDONE_INFO *qdonep)
 		ASC_DBG(2, "QD_WITH_ERROR\n");
 		switch (qdonep->d3.host_stat) {
 		case QHSTA_NO_ERROR:
-			set_status_byte(scp, qdonep->d3.scsi_stat);
 			if (qdonep->d3.scsi_stat == SAM_STAT_CHECK_CONDITION) {
 				ASC_DBG(2, "SAM_STAT_CHECK_CONDITION\n");
 				ASC_DBG_PRT_SENSE(2, scp->sense_buffer,
 						  SCSI_SENSE_BUFFERSIZE);
-				set_driver_byte(scp, DRIVER_SENSE);
+				/*
+				 * Note: The 'status_byte()' macro used by
+				 * target drivers defined in scsi.h shifts the
+				 * status byte returned by host drivers right
+				 * by 1 bit.  This is why target drivers also
+				 * use right shifted status byte definitions.
+				 * For instance target drivers use
+				 * CHECK_CONDITION, defined to 0x1, instead of
+				 * the SCSI defined check condition value of
+				 * 0x2. Host drivers are supposed to return
+				 * the status byte as it is defined by SCSI.
+				 */
+				scp->result = DRIVER_BYTE(DRIVER_SENSE) |
+				    STATUS_BYTE(qdonep->d3.scsi_stat);
+			} else {
+				scp->result = STATUS_BYTE(qdonep->d3.scsi_stat);
 			}
 			break;
 
 		default:
 			/* QHSTA error occurred */
 			ASC_DBG(1, "host_stat 0x%x\n", qdonep->d3.host_stat);
-			set_host_byte(scp, DID_BAD_TARGET);
+			scp->result = HOST_BYTE(DID_BAD_TARGET);
 			break;
 		}
 		break;
 
 	case QD_ABORTED_BY_HOST:
 		ASC_DBG(1, "QD_ABORTED_BY_HOST\n");
-		set_status_byte(scp, qdonep->d3.scsi_stat);
-		set_msg_byte(scp, qdonep->d3.scsi_msg);
-		set_host_byte(scp, DID_ABORT);
+		scp->result =
+		    HOST_BYTE(DID_ABORT) | MSG_BYTE(qdonep->d3.
+						    scsi_msg) |
+		    STATUS_BYTE(qdonep->d3.scsi_stat);
 		break;
 
 	default:
 		ASC_DBG(1, "done_stat 0x%x\n", qdonep->d3.done_stat);
-		set_status_byte(scp, qdonep->d3.scsi_stat);
-		set_msg_byte(scp, qdonep->d3.scsi_msg);
-		set_host_byte(scp, DID_ERROR);
+		scp->result =
+		    HOST_BYTE(DID_ERROR) | MSG_BYTE(qdonep->d3.
+						    scsi_msg) |
+		    STATUS_BYTE(qdonep->d3.scsi_stat);
 		break;
 	}
 
@@ -7522,7 +7568,7 @@ static int asc_build_req(struct asc_board *boardp, struct scsi_cmnd *scp,
 				"sg_tablesize %d\n", use_sg,
 				scp->device->host->sg_tablesize);
 			scsi_dma_unmap(scp);
-			set_host_byte(scp, DID_ERROR);
+			scp->result = HOST_BYTE(DID_ERROR);
 			return ASC_ERROR;
 		}
 
@@ -7530,7 +7576,7 @@ static int asc_build_req(struct asc_board *boardp, struct scsi_cmnd *scp,
 			use_sg * sizeof(struct asc_sg_list), GFP_ATOMIC);
 		if (!asc_sg_head) {
 			scsi_dma_unmap(scp);
-			set_host_byte(scp, DID_SOFT_ERROR);
+			scp->result = HOST_BYTE(DID_SOFT_ERROR);
 			return ASC_ERROR;
 		}
 
@@ -7773,7 +7819,7 @@ adv_build_req(struct asc_board *boardp, struct scsi_cmnd *scp,
 				   "ADV_MAX_SG_LIST %d\n", use_sg,
 				   scp->device->host->sg_tablesize);
 			scsi_dma_unmap(scp);
-			set_host_byte(scp, DID_ERROR);
+			scp->result = HOST_BYTE(DID_ERROR);
 			reqp->cmndp = NULL;
 			scp->host_scribble = NULL;
 
@@ -7785,7 +7831,7 @@ adv_build_req(struct asc_board *boardp, struct scsi_cmnd *scp,
 		ret = adv_get_sglist(boardp, reqp, scsiqp, scp, use_sg);
 		if (ret != ADV_SUCCESS) {
 			scsi_dma_unmap(scp);
-			set_host_byte(scp, DID_ERROR);
+			scp->result = HOST_BYTE(DID_ERROR);
 			reqp->cmndp = NULL;
 			scp->host_scribble = NULL;
 
@@ -8482,13 +8528,13 @@ static int asc_execute_scsi_cmnd(struct scsi_cmnd *scp)
 		scmd_printk(KERN_ERR, scp, "ExeScsiQueue() ASC_ERROR, "
 			"err_code 0x%x\n", err_code);
 		ASC_STATS(scp->device->host, exe_error);
-		set_host_byte(scp, DID_ERROR);
+		scp->result = HOST_BYTE(DID_ERROR);
 		break;
 	default:
 		scmd_printk(KERN_ERR, scp, "ExeScsiQueue() unknown, "
 			"err_code 0x%x\n", err_code);
 		ASC_STATS(scp->device->host, exe_unknown);
-		set_host_byte(scp, DID_ERROR);
+		scp->result = HOST_BYTE(DID_ERROR);
 		break;
 	}
 
@@ -11423,11 +11469,12 @@ static int advansys_isa_probe(struct device *dev, unsigned int id)
 	return err;
 }
 
-static void advansys_isa_remove(struct device *dev, unsigned int id)
+static int advansys_isa_remove(struct device *dev, unsigned int id)
 {
 	int ioport = _asc_def_iop_base[id];
 	advansys_release(dev_get_drvdata(dev));
 	release_region(ioport, ASC_IOADR_GAP);
+	return 0;
 }
 
 static struct isa_driver advansys_isa_driver = {

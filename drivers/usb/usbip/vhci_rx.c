@@ -27,7 +27,7 @@ struct urb *pickup_urb_and_free_priv(struct vhci_device *vdev, __u32 seqnum)
 
 		switch (status) {
 		case -ENOENT:
-			fallthrough;
+			/* fall through */
 		case -ECONNRESET:
 			dev_dbg(&urb->dev->dev,
 				 "urb seq# %u was unlinked %ssynchronously\n",
@@ -261,9 +261,7 @@ int vhci_rx_loop(void *data)
 		if (usbip_event_happened(ud))
 			break;
 
-		usbip_kcov_remote_start(ud);
 		vhci_rx_pdu(ud);
-		usbip_kcov_remote_stop();
 	}
 
 	return 0;

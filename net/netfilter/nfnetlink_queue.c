@@ -388,7 +388,7 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 	struct net_device *indev;
 	struct net_device *outdev;
 	struct nf_conn *ct = NULL;
-	enum ip_conntrack_info ctinfo;
+	enum ip_conntrack_info uninitialized_var(ctinfo);
 	struct nfnl_ct_hook *nfnl_ct;
 	bool csum_verify;
 	char *secdata = NULL;
@@ -444,15 +444,13 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 
 	nfnl_ct = rcu_dereference(nfnl_ct_hook);
 
-#if IS_ENABLED(CONFIG_NF_CONNTRACK)
 	if (queue->flags & NFQA_CFG_F_CONNTRACK) {
 		if (nfnl_ct != NULL) {
-			ct = nf_ct_get(entskb, &ctinfo);
+			ct = nfnl_ct->get_ct(entskb, &ctinfo);
 			if (ct != NULL)
 				size += nfnl_ct->build_size(ct);
 		}
 	}
-#endif
 
 	if (queue->flags & NFQA_CFG_F_UID_GID) {
 		size += (nla_total_size(sizeof(u_int32_t))	/* uid */
@@ -683,7 +681,7 @@ __nfqnl_enqueue_packet(struct net *net, struct nfqnl_instance *queue,
 	*packet_id_ptr = htonl(entry->id);
 
 	/* nfnetlink_unicast will either free the nskb or add it to a socket */
-	err = nfnetlink_unicast(nskb, net, queue->peer_portid);
+	err = nfnetlink_unicast(nskb, net, queue->peer_portid, MSG_DONTWAIT);
 	if (err < 0) {
 		if (queue->flags & NFQA_CFG_F_FAIL_OPEN) {
 			failopen = 1;
@@ -739,6 +737,12 @@ static void nf_bridge_adjust_segmented_data(struct sk_buff *skb)
 #define nf_bridge_adjust_segmented_data(s) do {} while (0)
 #endif
 
+static void free_entry(struct nf_queue_entry *entry)
+{
+	nf_queue_entry_release_refs(entry);
+	kfree(entry);
+}
+
 static int
 __nfqnl_enqueue_packet_gso(struct net *net, struct nfqnl_instance *queue,
 			   struct sk_buff *skb, struct nf_queue_entry *entry)
@@ -764,7 +768,7 @@ __nfqnl_enqueue_packet_gso(struct net *net, struct nfqnl_instance *queue,
 		entry_seg->skb = skb;
 		ret = __nfqnl_enqueue_packet(net, queue, entry_seg);
 		if (ret)
-			nf_queue_entry_free(entry_seg);
+			free_entry(entry_seg);
 	}
 	return ret;
 }
@@ -823,7 +827,7 @@ nfqnl_enqueue_packet(struct nf_queue_entry *entry, unsigned int queuenum)
 
 	if (queued) {
 		if (err) /* some segments are already queued */
-			nf_queue_entry_free(entry);
+			free_entry(entry);
 		kfree_skb(skb);
 		return 0;
 	}
@@ -1106,10 +1110,9 @@ static struct nf_conn *nfqnl_ct_parse(struct nfnl_ct_hook *nfnl_ct,
 				      struct nf_queue_entry *entry,
 				      enum ip_conntrack_info *ctinfo)
 {
-#if IS_ENABLED(CONFIG_NF_CONNTRACK)
 	struct nf_conn *ct;
 
-	ct = nf_ct_get(entry->skb, ctinfo);
+	ct = nfnl_ct->get_ct(entry->skb, ctinfo);
 	if (ct == NULL)
 		return NULL;
 
@@ -1121,9 +1124,6 @@ static struct nf_conn *nfqnl_ct_parse(struct nfnl_ct_hook *nfnl_ct,
 				      NETLINK_CB(entry->skb).portid,
 				      nlmsg_report(nlh));
 	return ct;
-#else
-	return NULL;
-#endif
 }
 
 static int nfqa_parse_bridge(struct nf_queue_entry *entry,
@@ -1174,7 +1174,7 @@ static int nfqnl_recv_verdict(struct net *net, struct sock *ctnl,
 	struct nfqnl_instance *queue;
 	unsigned int verdict;
 	struct nf_queue_entry *entry;
-	enum ip_conntrack_info ctinfo;
+	enum ip_conntrack_info uninitialized_var(ctinfo);
 	struct nfnl_ct_hook *nfnl_ct;
 	struct nf_conn *ct = NULL;
 	struct nfnl_queue_net *q = nfnl_queue_pernet(net);

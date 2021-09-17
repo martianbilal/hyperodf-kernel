@@ -32,7 +32,6 @@ struct host1x_subdev {
 /**
  * host1x_subdev_add() - add a new subdevice with an associated device node
  * @device: host1x device to add the subdevice to
- * @driver: host1x driver containing the subdevices
  * @np: device node
  */
 static int host1x_subdev_add(struct host1x_device *device,
@@ -687,16 +686,7 @@ EXPORT_SYMBOL(host1x_driver_register_full);
  */
 void host1x_driver_unregister(struct host1x_driver *driver)
 {
-	struct host1x *host1x;
-
 	driver_unregister(&driver->driver);
-
-	mutex_lock(&devices_lock);
-
-	list_for_each_entry(host1x, &devices, list)
-		host1x_detach_driver(host1x, driver);
-
-	mutex_unlock(&devices_lock);
 
 	mutex_lock(&drivers_lock);
 	list_del_init(&driver->list);
@@ -705,32 +695,8 @@ void host1x_driver_unregister(struct host1x_driver *driver)
 EXPORT_SYMBOL(host1x_driver_unregister);
 
 /**
- * __host1x_client_init() - initialize a host1x client
+ * host1x_client_register() - register a host1x client
  * @client: host1x client
- * @key: lock class key for the client-specific mutex
- */
-void __host1x_client_init(struct host1x_client *client, struct lock_class_key *key)
-{
-	INIT_LIST_HEAD(&client->list);
-	__mutex_init(&client->lock, "host1x client lock", key);
-	client->usecount = 0;
-}
-EXPORT_SYMBOL(__host1x_client_init);
-
-/**
- * host1x_client_exit() - uninitialize a host1x client
- * @client: host1x client
- */
-void host1x_client_exit(struct host1x_client *client)
-{
-	mutex_destroy(&client->lock);
-}
-EXPORT_SYMBOL(host1x_client_exit);
-
-/**
- * __host1x_client_register() - register a host1x client
- * @client: host1x client
- * @key: lock class key for the client-specific mutex
  *
  * Registers a host1x client with each host1x controller instance. Note that
  * each client will only match their parent host1x controller and will only be
@@ -739,10 +705,14 @@ EXPORT_SYMBOL(host1x_client_exit);
  * device and call host1x_device_init(), which will in turn call each client's
  * &host1x_client_ops.init implementation.
  */
-int __host1x_client_register(struct host1x_client *client)
+int host1x_client_register(struct host1x_client *client)
 {
 	struct host1x *host1x;
 	int err;
+
+	INIT_LIST_HEAD(&client->list);
+	mutex_init(&client->lock);
+	client->usecount = 0;
 
 	mutex_lock(&devices_lock);
 
@@ -762,7 +732,7 @@ int __host1x_client_register(struct host1x_client *client)
 
 	return 0;
 }
-EXPORT_SYMBOL(__host1x_client_register);
+EXPORT_SYMBOL(host1x_client_register);
 
 /**
  * host1x_client_unregister() - unregister a host1x client

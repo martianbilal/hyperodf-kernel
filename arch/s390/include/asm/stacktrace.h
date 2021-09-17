@@ -12,7 +12,6 @@ enum stack_type {
 	STACK_TYPE_IRQ,
 	STACK_TYPE_NODAT,
 	STACK_TYPE_RESTART,
-	STACK_TYPE_MCCK,
 };
 
 struct stack_info {

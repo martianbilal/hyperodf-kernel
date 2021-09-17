@@ -50,8 +50,6 @@ required:
   - '#reset-cells'
   - '#power-domain-cells'
 
-additionalProperties: false
-
 examples:
   - |
     #include <dt-bindings/clock/qcom,gcc-msm8998.h>

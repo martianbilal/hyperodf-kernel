@@ -34,7 +34,7 @@ struct uprobe_trace_entry_head {
 #define DATAOF_TRACE_ENTRY(entry, is_return)		\
 	((void*)(entry) + SIZEOF_TRACE_ENTRY(is_return))
 
-static int trace_uprobe_create(const char *raw_command);
+static int trace_uprobe_create(int argc, const char **argv);
 static int trace_uprobe_show(struct seq_file *m, struct dyn_event *ev);
 static int trace_uprobe_release(struct dyn_event *ev);
 static bool trace_uprobe_is_busy(struct dyn_event *ev);
@@ -528,9 +528,9 @@ end:
 
 /*
  * Argument syntax:
- *  - Add uprobe: p|r[:[GRP/]EVENT] PATH:OFFSET[%return][(REF)] [FETCHARGS]
+ *  - Add uprobe: p|r[:[GRP/]EVENT] PATH:OFFSET [FETCHARGS]
  */
-static int __trace_uprobe_create(int argc, const char **argv)
+static int trace_uprobe_create(int argc, const char **argv)
 {
 	struct trace_uprobe *tu;
 	const char *event = NULL, *group = UPROBE_EVENT_SYSTEM;
@@ -613,19 +613,6 @@ static int __trace_uprobe_create(int argc, const char **argv)
 		ret = kstrtoul(rctr, 0, &ref_ctr_offset);
 		if (ret) {
 			trace_probe_log_err(rctr - filename, BAD_REFCNT);
-			goto fail_address_parse;
-		}
-	}
-
-	/* Check if there is %return suffix */
-	tmp = strchr(arg, '%');
-	if (tmp) {
-		if (!strcmp(tmp, "%return")) {
-			*tmp = '\0';
-			is_return = true;
-		} else {
-			trace_probe_log_err(tmp - filename, BAD_ADDR_SUFFIX);
-			ret = -EINVAL;
 			goto fail_address_parse;
 		}
 	}
@@ -716,19 +703,14 @@ fail_address_parse:
 	return ret;
 }
 
-int trace_uprobe_create(const char *raw_command)
-{
-	return trace_probe_create(raw_command, __trace_uprobe_create);
-}
-
-static int create_or_delete_trace_uprobe(const char *raw_command)
+static int create_or_delete_trace_uprobe(int argc, char **argv)
 {
 	int ret;
 
-	if (raw_command[0] == '-')
-		return dyn_event_release(raw_command, &trace_uprobe_ops);
+	if (argv[0][0] == '-')
+		return dyn_event_release(argc, argv, &trace_uprobe_ops);
 
-	ret = trace_uprobe_create(raw_command);
+	ret = trace_uprobe_create(argc, (const char **)argv);
 	return ret == -ECANCELED ? -EINVAL : ret;
 }
 
@@ -966,7 +948,7 @@ static void __uprobe_trace_func(struct trace_uprobe *tu,
 	esize = SIZEOF_TRACE_ENTRY(is_ret_probe(tu));
 	size = esize + tu->tp.size + dsize;
 	event = trace_event_buffer_lock_reserve(&buffer, trace_file,
-						call->event.type, size, 0);
+						call->event.type, size, 0, 0);
 	if (!event)
 		return;
 
@@ -982,7 +964,7 @@ static void __uprobe_trace_func(struct trace_uprobe *tu,
 
 	memcpy(data, ucb->buf, tu->tp.size + dsize);
 
-	event_trigger_unlock_commit(trace_file, buffer, event, entry, 0);
+	event_trigger_unlock_commit(trace_file, buffer, event, entry, 0, 0);
 }
 
 /* uprobe handler */
@@ -1351,15 +1333,8 @@ static void __uprobe_perf_func(struct trace_uprobe *tu,
 	int size, esize;
 	int rctx;
 
-	if (bpf_prog_array_valid(call)) {
-		u32 ret;
-
-		preempt_disable();
-		ret = trace_call_bpf(call, regs);
-		preempt_enable();
-		if (!ret)
-			return;
-	}
+	if (bpf_prog_array_valid(call) && !trace_call_bpf(call, regs))
+		return;
 
 	esize = SIZEOF_TRACE_ENTRY(is_ret_probe(tu));
 
@@ -1430,7 +1405,7 @@ int bpf_get_uprobe_info(const struct perf_event *event, u32 *fd_type,
 	if (perf_type_tracepoint)
 		tu = find_probe_event(pevent, group);
 	else
-		tu = trace_uprobe_primary_from_call(event->tp_event);
+		tu = event->tp_event->data;
 	if (!tu)
 		return -EINVAL;
 
@@ -1474,6 +1449,7 @@ trace_uprobe_register(struct trace_event_call *event, enum trace_reg type,
 	default:
 		return 0;
 	}
+	return 0;
 }
 
 static int uprobe_dispatcher(struct uprobe_consumer *con, struct pt_regs *regs)
@@ -1640,23 +1616,24 @@ void destroy_local_trace_uprobe(struct trace_event_call *event_call)
 }
 #endif /* CONFIG_PERF_EVENTS */
 
-/* Make a trace interface for controlling probe points */
+/* Make a trace interface for controling probe points */
 static __init int init_uprobe_trace(void)
 {
+	struct dentry *d_tracer;
 	int ret;
 
 	ret = dyn_event_register(&trace_uprobe_ops);
 	if (ret)
 		return ret;
 
-	ret = tracing_init_dentry();
-	if (ret)
+	d_tracer = tracing_init_dentry();
+	if (IS_ERR(d_tracer))
 		return 0;
 
-	trace_create_file("uprobe_events", 0644, NULL,
+	trace_create_file("uprobe_events", 0644, d_tracer,
 				    NULL, &uprobe_events_ops);
 	/* Profile interface */
-	trace_create_file("uprobe_profile", 0444, NULL,
+	trace_create_file("uprobe_profile", 0444, d_tracer,
 				    NULL, &uprobe_profile_ops);
 	return 0;
 }

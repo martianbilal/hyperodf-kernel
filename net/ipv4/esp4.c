@@ -279,7 +279,7 @@ static void esp_output_done(struct crypto_async_request *base, int err)
 		    x->encap && x->encap->encap_type == TCP_ENCAP_ESPINTCP)
 			esp_output_tail_tcp(x, skb);
 		else
-			xfrm_output_resume(skb->sk, skb, err);
+			xfrm_output_resume(skb, err);
 	}
 }
 
@@ -339,6 +339,22 @@ static void esp_output_done_esn(struct crypto_async_request *base, int err)
 
 	esp_output_restore_header(skb);
 	esp_output_done(base, err);
+}
+
+static void esp_output_fill_trailer(u8 *tail, int tfclen, int plen, __u8 proto)
+{
+	/* Fill padding... */
+	if (tfclen) {
+		memset(tail, 0, tfclen);
+		tail += tfclen;
+	}
+	do {
+		int i;
+		for (i = 0; i < plen - 2; i++)
+			tail[i] = i + 1;
+	} while (0);
+	tail[plen - 2] = plen - 2;
+	tail[plen - 1] = proto;
 }
 
 static struct ip_esp_hdr *esp_output_udp_encap(struct sk_buff *skb,
@@ -443,6 +459,7 @@ static int esp_output_encap(struct xfrm_state *x, struct sk_buff *skb,
 int esp_output_head(struct xfrm_state *x, struct sk_buff *skb, struct esp_info *esp)
 {
 	u8 *tail;
+	u8 *vaddr;
 	int nfrags;
 	int esph_offset;
 	struct page *page;
@@ -484,9 +501,13 @@ int esp_output_head(struct xfrm_state *x, struct sk_buff *skb, struct esp_info *
 			page = pfrag->page;
 			get_page(page);
 
-			tail = page_address(page) + pfrag->offset;
+			vaddr = kmap_atomic(page);
+
+			tail = vaddr + pfrag->offset;
 
 			esp_output_fill_trailer(tail, esp->tfclen, esp->plen, esp->proto);
+
+			kunmap_atomic(vaddr);
 
 			nfrags = skb_shinfo(skb)->nr_frags;
 

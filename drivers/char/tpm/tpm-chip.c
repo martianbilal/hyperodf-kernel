@@ -386,8 +386,13 @@ struct tpm_chip *tpm_chip_alloc(struct device *pdev,
 	chip->cdev.owner = THIS_MODULE;
 	chip->cdevs.owner = THIS_MODULE;
 
-	rc = tpm2_init_space(&chip->work_space, TPM2_SPACE_BUFFER_SIZE);
-	if (rc) {
+	chip->work_space.context_buf = kzalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!chip->work_space.context_buf) {
+		rc = -ENOMEM;
+		goto out;
+	}
+	chip->work_space.session_buf = kzalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!chip->work_space.session_buf) {
 		rc = -ENOMEM;
 		goto out;
 	}
@@ -509,15 +514,15 @@ static int tpm_add_legacy_sysfs(struct tpm_chip *chip)
 	if (chip->flags & (TPM_CHIP_FLAG_TPM2 | TPM_CHIP_FLAG_VIRTUAL))
 		return 0;
 
-	rc = compat_only_sysfs_link_entry_to_kobj(
-		    &chip->dev.parent->kobj, &chip->dev.kobj, "ppi", NULL);
+	rc = __compat_only_sysfs_link_entry_to_kobj(
+		    &chip->dev.parent->kobj, &chip->dev.kobj, "ppi");
 	if (rc && rc != -ENOENT)
 		return rc;
 
 	/* All the names from tpm-sysfs */
 	for (i = chip->groups[0]->attrs; *i != NULL; ++i) {
-		rc = compat_only_sysfs_link_entry_to_kobj(
-		    &chip->dev.parent->kobj, &chip->dev.kobj, (*i)->name, NULL);
+		rc = __compat_only_sysfs_link_entry_to_kobj(
+		    &chip->dev.parent->kobj, &chip->dev.kobj, (*i)->name);
 		if (rc) {
 			tpm_del_legacy_sysfs(chip);
 			return rc;

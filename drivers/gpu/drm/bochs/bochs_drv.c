@@ -7,7 +7,6 @@
 
 #include <drm/drm_drv.h>
 #include <drm/drm_atomic_helper.h>
-#include <drm/drm_managed.h>
 
 #include "bochs.h"
 
@@ -22,7 +21,11 @@ static void bochs_unload(struct drm_device *dev)
 {
 	struct bochs_device *bochs = dev->dev_private;
 
+	bochs_kms_fini(bochs);
 	bochs_mm_fini(bochs);
+	bochs_hw_fini(dev);
+	kfree(bochs);
+	dev->dev_private = NULL;
 }
 
 static int bochs_load(struct drm_device *dev)
@@ -30,7 +33,7 @@ static int bochs_load(struct drm_device *dev)
 	struct bochs_device *bochs;
 	int ret;
 
-	bochs = drmm_kzalloc(dev, sizeof(*bochs), GFP_KERNEL);
+	bochs = kzalloc(sizeof(*bochs), GFP_KERNEL);
 	if (bochs == NULL)
 		return -ENOMEM;
 	dev->dev_private = bochs;
@@ -57,7 +60,7 @@ err:
 
 DEFINE_DRM_GEM_FOPS(bochs_fops);
 
-static const struct drm_driver bochs_driver = {
+static struct drm_driver bochs_driver = {
 	.driver_features	= DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops			= &bochs_fops,
 	.name			= "bochs-drm",
@@ -66,7 +69,6 @@ static const struct drm_driver bochs_driver = {
 	.major			= 1,
 	.minor			= 0,
 	DRM_GEM_VRAM_DRIVER,
-	.release                = bochs_unload,
 };
 
 /* ---------------------------------------------------------------------- */
@@ -121,6 +123,7 @@ static int bochs_pci_probe(struct pci_dev *pdev,
 	if (ret)
 		goto err_free_dev;
 
+	dev->pdev = pdev;
 	pci_set_drvdata(pdev, dev);
 
 	ret = bochs_load(dev);
@@ -145,9 +148,9 @@ static void bochs_pci_remove(struct pci_dev *pdev)
 {
 	struct drm_device *dev = pci_get_drvdata(pdev);
 
-	drm_dev_unplug(dev);
 	drm_atomic_helper_shutdown(dev);
-	bochs_hw_fini(dev);
+	drm_dev_unregister(dev);
+	bochs_unload(dev);
 	drm_dev_put(dev);
 }
 

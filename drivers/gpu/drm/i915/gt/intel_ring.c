@@ -5,11 +5,9 @@
  */
 
 #include "gem/i915_gem_object.h"
-
 #include "i915_drv.h"
 #include "i915_vma.h"
 #include "intel_engine.h"
-#include "intel_gpu_commands.h"
 #include "intel_ring.h"
 #include "intel_timeline.h"
 
@@ -23,13 +21,7 @@ unsigned int intel_ring_update_space(struct intel_ring *ring)
 	return space;
 }
 
-void __intel_ring_pin(struct intel_ring *ring)
-{
-	GEM_BUG_ON(!atomic_read(&ring->pin_count));
-	atomic_inc(&ring->pin_count);
-}
-
-int intel_ring_pin(struct intel_ring *ring, struct i915_gem_ww_ctx *ww)
+int intel_ring_pin(struct intel_ring *ring)
 {
 	struct i915_vma *vma = ring->vma;
 	unsigned int flags;
@@ -39,15 +31,17 @@ int intel_ring_pin(struct intel_ring *ring, struct i915_gem_ww_ctx *ww)
 	if (atomic_fetch_inc(&ring->pin_count))
 		return 0;
 
-	/* Ring wraparound at offset 0 sometimes hangs. No idea why. */
-	flags = PIN_OFFSET_BIAS | i915_ggtt_pin_bias(vma);
+	flags = PIN_GLOBAL;
 
-	if (i915_gem_object_is_stolen(vma->obj))
+	/* Ring wraparound at offset 0 sometimes hangs. No idea why. */
+	flags |= PIN_OFFSET_BIAS | i915_ggtt_pin_bias(vma);
+
+	if (vma->obj->stolen)
 		flags |= PIN_MAPPABLE;
 	else
 		flags |= PIN_HIGH;
 
-	ret = i915_ggtt_pin(vma, ww, 0, flags);
+	ret = i915_vma_pin(vma, 0, 0, flags);
 	if (unlikely(ret))
 		goto err_unpin;
 
@@ -323,7 +317,3 @@ int intel_ring_cacheline_align(struct i915_request *rq)
 	GEM_BUG_ON(rq->ring->emit & (CACHELINE_BYTES - 1));
 	return 0;
 }
-
-#if IS_ENABLED(CONFIG_DRM_I915_SELFTEST)
-#include "selftest_ring.c"
-#endif

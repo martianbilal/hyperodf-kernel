@@ -29,7 +29,6 @@
 #include <asm/hmi.h>
 #include <asm/cpuidle.h>
 #include <asm/atomic.h>
-#include <asm/mce.h>
 
 #include <asm-generic/mmiowb_types.h>
 
@@ -53,7 +52,6 @@ extern unsigned int debug_smp_processor_id(void); /* from linux/smp.h */
 #define get_slb_shadow()	(get_paca()->slb_shadow_ptr)
 
 struct task_struct;
-struct rtas_args;
 
 /*
  * Defines the layout of the paca.
@@ -109,7 +107,8 @@ struct paca_struct {
 	 */
 	/* used for most interrupts/exceptions */
 	u64 exgen[EX_SIZE] __attribute__((aligned(0x80)));
-
+	u64 exslb[EX_SIZE];	/* used for SLB/segment table misses
+ 				 * on the linear mapping */
 	/* SLB related definitions */
 	u16 vmalloc_sllp;
 	u8 slb_cache_ptr;
@@ -225,7 +224,6 @@ struct paca_struct {
 	u16 in_mce;
 	u8 hmi_event_available;		/* HMI event is available */
 	u8 hmi_p9_special_emu;		/* HMI P9 special emulation */
-	u32 hmi_irqs;			/* HMI irq stat */
 #endif
 	u8 ftrace_enabled;		/* Hard disable ftrace */
 
@@ -258,7 +256,6 @@ struct paca_struct {
 	u64 l1d_flush_size;
 #endif
 #ifdef CONFIG_PPC_PSERIES
-	struct rtas_args *rtas_args_reentrant;
 	u8 *mce_data_buf;		/* buffer to hold per cpu rtas errlog */
 #endif /* CONFIG_PPC_PSERIES */
 
@@ -273,9 +270,6 @@ struct paca_struct {
 #ifdef CONFIG_MMIOWB
 	struct mmiowb_state mmiowb_state;
 #endif
-#ifdef CONFIG_PPC_BOOK3S_64
-	struct mce_info *mce_info;
-#endif /* CONFIG_PPC_BOOK3S_64 */
 } ____cacheline_aligned;
 
 extern void copy_mm_to_paca(struct mm_struct *mm);
@@ -288,9 +282,9 @@ extern void free_unused_pacas(void);
 
 #else /* CONFIG_PPC64 */
 
-static inline void allocate_paca_ptrs(void) { }
-static inline void allocate_paca(int cpu) { }
-static inline void free_unused_pacas(void) { }
+static inline void allocate_paca_ptrs(void) { };
+static inline void allocate_paca(int cpu) { };
+static inline void free_unused_pacas(void) { };
 
 #endif /* CONFIG_PPC64 */
 

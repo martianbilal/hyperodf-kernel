@@ -36,7 +36,6 @@
 #include <linux/scatterlist.h>
 #include <asm/byteorder.h>
 #include <crypto/scatterwalk.h>
-#include <crypto/internal/cipher.h>
 #include <crypto/internal/hash.h>
 
 /*
@@ -621,10 +620,9 @@ static int vmac_create(struct crypto_template *tmpl, struct rtattr **tb)
 	struct shash_instance *inst;
 	struct crypto_cipher_spawn *spawn;
 	struct crypto_alg *alg;
-	u32 mask;
 	int err;
 
-	err = crypto_check_attr_type(tb, CRYPTO_ALG_TYPE_SHASH, &mask);
+	err = crypto_check_attr_type(tb, CRYPTO_ALG_TYPE_SHASH);
 	if (err)
 		return err;
 
@@ -634,7 +632,7 @@ static int vmac_create(struct crypto_template *tmpl, struct rtattr **tb)
 	spawn = shash_instance_ctx(inst);
 
 	err = crypto_grab_cipher(spawn, shash_crypto_instance(inst),
-				 crypto_attr_alg_name(tb[1]), 0, mask);
+				 crypto_attr_alg_name(tb[1]), 0, 0);
 	if (err)
 		goto err_free_inst;
 	alg = crypto_spawn_cipher_alg(spawn);
@@ -694,4 +692,3 @@ module_exit(vmac_module_exit);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("VMAC hash algorithm");
 MODULE_ALIAS_CRYPTO("vmac64");
-MODULE_IMPORT_NS(CRYPTO_INTERNAL);

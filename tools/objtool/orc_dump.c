@@ -4,11 +4,8 @@
  */
 
 #include <unistd.h>
-#include <linux/objtool.h>
-#include <asm/orc_types.h>
-#include <objtool/objtool.h>
-#include <objtool/warn.h>
-#include <objtool/endianness.h>
+#include "orc.h"
+#include "warn.h"
 
 static const char *reg_name(unsigned int reg)
 {
@@ -39,12 +36,12 @@ static const char *reg_name(unsigned int reg)
 static const char *orc_type_name(unsigned int type)
 {
 	switch (type) {
-	case UNWIND_HINT_TYPE_CALL:
+	case ORC_TYPE_CALL:
 		return "call";
-	case UNWIND_HINT_TYPE_REGS:
+	case ORC_TYPE_REGS:
 		return "regs";
-	case UNWIND_HINT_TYPE_REGS_PARTIAL:
-		return "regs (partial)";
+	case ORC_TYPE_REGS_IRET:
+		return "iret";
 	default:
 		return "?";
 	}
@@ -55,7 +52,7 @@ static void print_reg(unsigned int reg, int offset)
 	if (reg == ORC_REG_BP_INDIRECT)
 		printf("(bp%+d)", offset);
 	else if (reg == ORC_REG_SP_INDIRECT)
-		printf("(sp)%+d", offset);
+		printf("(sp%+d)", offset);
 	else if (reg == ORC_REG_UNDEFINED)
 		printf("(und)");
 	else
@@ -198,11 +195,11 @@ int orc_dump(const char *_objname)
 
 		printf(" sp:");
 
-		print_reg(orc[i].sp_reg, bswap_if_needed(orc[i].sp_offset));
+		print_reg(orc[i].sp_reg, orc[i].sp_offset);
 
 		printf(" bp:");
 
-		print_reg(orc[i].bp_reg, bswap_if_needed(orc[i].bp_offset));
+		print_reg(orc[i].bp_reg, orc[i].bp_offset);
 
 		printf(" type:%s end:%d\n",
 		       orc_type_name(orc[i].type), orc[i].end);

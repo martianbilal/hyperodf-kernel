@@ -548,8 +548,6 @@ struct sock *tcp_create_openreq_child(const struct sock *sk,
 	newtp->fastopen_req = NULL;
 	RCU_INIT_POINTER(newtp->fastopen_rsk, NULL);
 
-	tcp_bpf_clone(sk, newsk);
-
 	__TCP_INC_STATS(sock_net(sk), TCP_MIB_PASSIVEOPENS);
 
 	return newsk;
@@ -774,12 +772,6 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	if (!child)
 		goto listen_overflow;
 
-	if (own_req && rsk_drop_req(req)) {
-		reqsk_queue_removed(&inet_csk(sk)->icsk_accept_queue, req);
-		inet_csk_reqsk_queue_drop_and_put(sk, req);
-		return child;
-	}
-
 	sock_rps_save_rxhash(child, skb);
 	tcp_synack_rtt_meas(child, req);
 	*req_stolen = !own_req;
@@ -801,14 +793,11 @@ embryonic_reset:
 		req->rsk_ops->send_reset(sk, skb);
 	} else if (fastopen) { /* received a valid RST pkt */
 		reqsk_fastopen_remove(sk, req, true);
-		tcp_reset(sk, skb);
+		tcp_reset(sk);
 	}
 	if (!fastopen) {
-		bool unlinked = inet_csk_reqsk_queue_drop(sk, req);
-
-		if (unlinked)
-			__NET_INC_STATS(sock_net(sk), LINUX_MIB_EMBRYONICRSTS);
-		*req_stolen = !unlinked;
+		inet_csk_reqsk_queue_drop(sk, req);
+		__NET_INC_STATS(sock_net(sk), LINUX_MIB_EMBRYONICRSTS);
 	}
 	return NULL;
 }
@@ -828,7 +817,6 @@ EXPORT_SYMBOL(tcp_check_req);
 
 int tcp_child_process(struct sock *parent, struct sock *child,
 		      struct sk_buff *skb)
-	__releases(&((child)->sk_lock.slock))
 {
 	int ret = 0;
 	int state = child->sk_state;

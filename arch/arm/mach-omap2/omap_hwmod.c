@@ -627,9 +627,6 @@ static struct clockdomain *_get_clkdm(struct omap_hwmod *oh)
 {
 	struct clk_hw_omap *clk;
 
-	if (!oh)
-		return NULL;
-
 	if (oh->clkdm) {
 		return oh->clkdm;
 	} else if (oh->_clk) {
@@ -3151,14 +3148,15 @@ static int omap_hwmod_check_sysc(struct device *dev,
 /**
  * omap_hwmod_init_regbits - init sysconfig specific register bits
  * @dev: struct device
- * @oh: module
  * @data: module data
  * @sysc_fields: new sysc configuration
  */
-static int omap_hwmod_init_regbits(struct device *dev, struct omap_hwmod *oh,
+static int omap_hwmod_init_regbits(struct device *dev,
 				   const struct ti_sysc_module_data *data,
 				   struct sysc_regbits **sysc_fields)
 {
+	*sysc_fields = NULL;
+
 	switch (data->cap->type) {
 	case TI_SYSC_OMAP2:
 	case TI_SYSC_OMAP2_TIMER:
@@ -3193,12 +3191,6 @@ static int omap_hwmod_init_regbits(struct device *dev, struct omap_hwmod *oh,
 		*sysc_fields = &omap_hwmod_sysc_type_usb_host_fs;
 		break;
 	default:
-		*sysc_fields = NULL;
-		if (!oh->class->sysc->sysc_fields)
-			return 0;
-
-		dev_err(dev, "sysc_fields not found\n");
-
 		return -EINVAL;
 	}
 
@@ -3364,9 +3356,9 @@ static int omap_hwmod_check_module(struct device *dev,
 	if (!oh->class->sysc)
 		return -ENODEV;
 
-	if (oh->class->sysc->sysc_fields &&
-	    sysc_fields != oh->class->sysc->sysc_fields)
-		dev_warn(dev, "sysc_fields mismatch\n");
+	if (sysc_fields != oh->class->sysc->sysc_fields)
+		dev_warn(dev, "sysc_fields %p != %p\n", sysc_fields,
+			 oh->class->sysc->sysc_fields);
 
 	if (rev_offs != oh->class->sysc->rev_offs)
 		dev_warn(dev, "rev_offs %08x != %08x\n", rev_offs,
@@ -3438,7 +3430,7 @@ static int omap_hwmod_allocate_module(struct device *dev, struct omap_hwmod *oh,
 		regs = ioremap(data->module_pa,
 			       data->module_size);
 		if (!regs)
-			goto out_free_sysc;
+			return -ENOMEM;
 	}
 
 	/*
@@ -3448,13 +3440,13 @@ static int omap_hwmod_allocate_module(struct device *dev, struct omap_hwmod *oh,
 	if (oh->class->name && strcmp(oh->class->name, data->name)) {
 		class = kmemdup(oh->class, sizeof(*oh->class), GFP_KERNEL);
 		if (!class)
-			goto out_unmap;
+			return -ENOMEM;
 	}
 
 	if (list_empty(&oh->slave_ports)) {
 		oi = kcalloc(1, sizeof(*oi), GFP_KERNEL);
 		if (!oi)
-			goto out_free_class;
+			return -ENOMEM;
 
 		/*
 		 * Note that we assume interconnect interface clocks will be
@@ -3481,14 +3473,6 @@ static int omap_hwmod_allocate_module(struct device *dev, struct omap_hwmod *oh,
 	spin_unlock_irqrestore(&oh->_lock, flags);
 
 	return 0;
-
-out_free_class:
-	kfree(class);
-out_unmap:
-	iounmap(regs);
-out_free_sysc:
-	kfree(sysc);
-	return -ENOMEM;
 }
 
 static const struct omap_hwmod_reset omap24xx_reset_quirks[] = {
@@ -3500,7 +3484,7 @@ static const struct omap_hwmod_reset dra7_reset_quirks[] = {
 };
 
 static const struct omap_hwmod_reset omap_reset_quirks[] = {
-	{ .match = "dss_core", .len = 8, .reset = omap_dss_reset, },
+	{ .match = "dss", .len = 3, .reset = omap_dss_reset, },
 	{ .match = "hdq1w", .len = 5, .reset = omap_hdq1w_reset, },
 	{ .match = "i2c", .len = 3, .reset = omap_i2c_reset, },
 	{ .match = "wd_timer", .len = 8, .reset = omap2_wd_timer_reset, },
@@ -3590,7 +3574,7 @@ int omap_hwmod_init_module(struct device *dev,
 
 	cookie->data = oh;
 
-	error = omap_hwmod_init_regbits(dev, oh, data, &sysc_fields);
+	error = omap_hwmod_init_regbits(dev, data, &sysc_fields);
 	if (error)
 		return error;
 
@@ -3680,9 +3664,6 @@ static void __init omap_hwmod_setup_earlycon_flags(void)
  */
 static int __init omap_hwmod_setup_all(void)
 {
-	if (!inited)
-		return 0;
-
 	_ensure_mpu_hwmod_is_setup(NULL);
 
 	omap_hwmod_for_each(_init, NULL);

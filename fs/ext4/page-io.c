@@ -111,6 +111,9 @@ static void ext4_finish_bio(struct bio *bio)
 		unsigned under_io = 0;
 		unsigned long flags;
 
+		if (!page)
+			continue;
+
 		if (fscrypt_is_bounce_page(page)) {
 			bounce_page = page;
 			page = fscrypt_pagecache_page(bounce_page);
@@ -122,10 +125,11 @@ static void ext4_finish_bio(struct bio *bio)
 		}
 		bh = head = page_buffers(page);
 		/*
-		 * We check all buffers in the page under b_uptodate_lock
+		 * We check all buffers in the page under BH_Uptodate_Lock
 		 * to avoid races with other end io clearing async_write flags
 		 */
-		spin_lock_irqsave(&head->b_uptodate_lock, flags);
+		local_irq_save(flags);
+		bit_spin_lock(BH_Uptodate_Lock, &head->b_state);
 		do {
 			if (bh_offset(bh) < bio_start ||
 			    bh_offset(bh) + bh->b_size > bio_end) {
@@ -137,7 +141,8 @@ static void ext4_finish_bio(struct bio *bio)
 			if (bio->bi_status)
 				buffer_io_error(bh);
 		} while ((bh = bh->b_this_page) != head);
-		spin_unlock_irqrestore(&head->b_uptodate_lock, flags);
+		bit_spin_unlock(BH_Uptodate_Lock, &head->b_state);
+		local_irq_restore(flags);
 		if (!under_io) {
 			fscrypt_free_bounce_page(bounce_page);
 			end_page_writeback(page);
@@ -398,8 +403,7 @@ static void io_submit_init_bio(struct ext4_io_submit *io,
 	 * bio_alloc will _always_ be able to allocate a bio if
 	 * __GFP_DIRECT_RECLAIM is set, see comments for bio_alloc_bioset().
 	 */
-	bio = bio_alloc(GFP_NOIO, BIO_MAX_VECS);
-	fscrypt_set_bio_crypt_ctx_bh(bio, bh, GFP_NOIO);
+	bio = bio_alloc(GFP_NOIO, BIO_MAX_PAGES);
 	bio->bi_iter.bi_sector = bh->b_blocknr * (bh->b_size >> 9);
 	bio_set_dev(bio, bh->b_bdev);
 	bio->bi_end_io = ext4_end_bio;
@@ -416,8 +420,7 @@ static void io_submit_add_bh(struct ext4_io_submit *io,
 {
 	int ret;
 
-	if (io->io_bio && (bh->b_blocknr != io->io_next_block ||
-			   !fscrypt_mergeable_bio_bh(io->io_bio, bh))) {
+	if (io->io_bio && bh->b_blocknr != io->io_next_block) {
 submit_and_retry:
 		ext4_io_submit(io);
 	}
@@ -435,6 +438,7 @@ submit_and_retry:
 int ext4_bio_write_page(struct ext4_io_submit *io,
 			struct page *page,
 			int len,
+			struct writeback_control *wbc,
 			bool keep_towrite)
 {
 	struct page *bounce_page = NULL;
@@ -444,7 +448,6 @@ int ext4_bio_write_page(struct ext4_io_submit *io,
 	int ret = 0;
 	int nr_submitted = 0;
 	int nr_to_submit = 0;
-	struct writeback_control *wbc = io->io_wbc;
 
 	BUG_ON(!PageLocked(page));
 	BUG_ON(PageWriteback(page));
@@ -505,7 +508,7 @@ int ext4_bio_write_page(struct ext4_io_submit *io,
 	 * (e.g. holes) to be unnecessarily encrypted, but this is rare and
 	 * can't happen in the common case of blocksize == PAGE_SIZE.
 	 */
-	if (fscrypt_inode_uses_fs_layer_crypto(inode) && nr_to_submit) {
+	if (IS_ENCRYPTED(inode) && S_ISREG(inode->i_mode) && nr_to_submit) {
 		gfp_t gfp_flags = GFP_NOFS;
 		unsigned int enc_bytes = round_up(len, i_blocksize(inode));
 

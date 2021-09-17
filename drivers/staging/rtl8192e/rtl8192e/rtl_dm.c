@@ -456,7 +456,7 @@ static void _rtl92e_dm_bandwidth_autoswitch(struct net_device *dev)
 	if (priv->CurrentChannelBW == HT_CHANNEL_WIDTH_20 ||
 	   !priv->rtllib->bandwidth_auto_switch.bautoswitch_enable)
 		return;
-	if (!priv->rtllib->bandwidth_auto_switch.bforced_tx20Mhz) {
+	if (priv->rtllib->bandwidth_auto_switch.bforced_tx20Mhz == false) {
 		if (priv->undecorated_smoothed_pwdb <=
 		    priv->rtllib->bandwidth_auto_switch.threshold_40Mhzto20Mhz)
 			priv->rtllib->bandwidth_auto_switch.bforced_tx20Mhz = true;
@@ -1297,7 +1297,7 @@ static void _rtl92e_dm_dig_init(struct net_device *dev)
 static void _rtl92e_dm_ctrl_initgain_byrssi(struct net_device *dev)
 {
 
-	if (!dm_digtable.dig_enable_flag)
+	if (dm_digtable.dig_enable_flag == false)
 		return;
 
 	if (dm_digtable.dig_algorithm == DIG_ALGO_BY_FALSE_ALARM)
@@ -1332,7 +1332,7 @@ static void _rtl92e_dm_ctrl_initgain_byrssi_driver(struct net_device *dev)
 	u8 i;
 	static u8	fw_dig;
 
-	if (!dm_digtable.dig_enable_flag)
+	if (dm_digtable.dig_enable_flag == false)
 		return;
 
 	if (dm_digtable.dig_algorithm_switch)
@@ -1366,7 +1366,7 @@ static void _rtl92e_dm_ctrl_initgain_byrssi_false_alarm(struct net_device *dev)
 	static u32 reset_cnt;
 	u8 i;
 
-	if (!dm_digtable.dig_enable_flag)
+	if (dm_digtable.dig_enable_flag == false)
 		return;
 
 	if (dm_digtable.dig_algorithm_switch) {
@@ -1501,7 +1501,7 @@ static void _rtl92e_dm_initial_gain(struct net_device *dev)
 		reset_cnt = 0;
 	}
 
-	if (rtllib_act_scanning(priv->rtllib, true)) {
+	if (rtllib_act_scanning(priv->rtllib, true) == true) {
 		force_write = 1;
 		return;
 	}
@@ -1765,7 +1765,7 @@ static void _rtl92e_dm_cts_to_self(struct net_device *dev)
 	unsigned long curTxOkCnt = 0;
 	unsigned long curRxOkCnt = 0;
 
-	if (!priv->rtllib->bCTSToSelfEnable) {
+	if (priv->rtllib->bCTSToSelfEnable != true) {
 		pHTInfo->IOTAction &= ~HT_IOT_ACT_FORCED_CTS2SELF;
 		return;
 	}
@@ -2444,20 +2444,20 @@ static void _rtl92e_dm_init_dynamic_tx_power(struct net_device *dev)
 static void _rtl92e_dm_dynamic_tx_power(struct net_device *dev)
 {
 	struct r8192_priv *priv = rtllib_priv(dev);
-	unsigned int txhipower_threshold = 0;
+	unsigned int txhipower_threshhold = 0;
 	unsigned int txlowpower_threshold = 0;
 
-	if (!priv->rtllib->bdynamic_txpower_enable) {
+	if (priv->rtllib->bdynamic_txpower_enable != true) {
 		priv->bDynamicTxHighPower = false;
 		priv->bDynamicTxLowPower = false;
 		return;
 	}
 	if ((priv->rtllib->pHTInfo->IOTPeer == HT_IOT_PEER_ATHEROS) &&
 	    (priv->rtllib->mode == IEEE_G)) {
-		txhipower_threshold = TX_POWER_ATHEROAP_THRESH_HIGH;
+		txhipower_threshhold = TX_POWER_ATHEROAP_THRESH_HIGH;
 		txlowpower_threshold = TX_POWER_ATHEROAP_THRESH_LOW;
 	} else {
-		txhipower_threshold = TX_POWER_NEAR_FIELD_THRESH_HIGH;
+		txhipower_threshhold = TX_POWER_NEAR_FIELD_THRESH_HIGH;
 		txlowpower_threshold = TX_POWER_NEAR_FIELD_THRESH_LOW;
 	}
 
@@ -2465,7 +2465,7 @@ static void _rtl92e_dm_dynamic_tx_power(struct net_device *dev)
 		 priv->undecorated_smoothed_pwdb);
 
 	if (priv->rtllib->state == RTLLIB_LINKED) {
-		if (priv->undecorated_smoothed_pwdb >= txhipower_threshold) {
+		if (priv->undecorated_smoothed_pwdb >= txhipower_threshhold) {
 			priv->bDynamicTxHighPower = true;
 			priv->bDynamicTxLowPower = false;
 		} else {

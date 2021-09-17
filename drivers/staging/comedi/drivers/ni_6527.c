@@ -195,9 +195,7 @@ static irqreturn_t ni6527_interrupt(int irq, void *d)
 		return IRQ_NONE;
 
 	if (status & NI6527_STATUS_EDGE) {
-		unsigned short val = 0;
-
-		comedi_buf_write_samples(s, &val, 1);
+		comedi_buf_write_samples(s, &s->state, 1);
 		comedi_handle_events(dev, s);
 	}
 
@@ -334,7 +332,7 @@ static int ni6527_intr_insn_config(struct comedi_device *dev,
 		case COMEDI_DIGITAL_TRIG_ENABLE_EDGES:
 			/* check shift amount */
 			shift = data[3];
-			if (shift >= 32) {
+			if (shift >= s->n_chan) {
 				mask = 0;
 				rising = 0;
 				falling = 0;
@@ -488,6 +486,6 @@ static struct pci_driver ni6527_pci_driver = {
 };
 module_comedi_pci_driver(ni6527_driver, ni6527_pci_driver);
 
-MODULE_AUTHOR("Comedi https://www.comedi.org");
+MODULE_AUTHOR("Comedi http://www.comedi.org");
 MODULE_DESCRIPTION("Comedi driver for National Instruments PCI-6527");
 MODULE_LICENSE("GPL");

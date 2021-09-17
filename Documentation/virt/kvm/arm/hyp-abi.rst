@@ -11,11 +11,6 @@ hypervisor when running as a guest (under Xen, KVM or any other
 hypervisor), or any hypervisor-specific interaction when the kernel is
 used as a host.
 
-Note: KVM/arm has been removed from the kernel. The API described
-here is still valid though, as it allows the kernel to kexec when
-booted at HYP. It can also be used by a hypervisor other than KVM
-if necessary.
-
 On arm and arm64 (without VHE), the kernel doesn't run in hypervisor
 mode, but still needs to interact with it, allowing a built-in
 hypervisor to be either installed or torn down.
@@ -54,18 +49,9 @@ these functions (see arch/arm{,64}/include/asm/virt.h):
     x3 = x1's value when entering the next payload (arm64)
     x4 = x2's value when entering the next payload (arm64)
 
-  Mask all exceptions, disable the MMU, clear I+D bits, move the arguments
-  into place (arm64 only), and jump to the restart address while at HYP/EL2.
-  This hypercall is not expected to return to its caller.
-
-* ::
-
-    x0 = HVC_VHE_RESTART (arm64 only)
-
-  Attempt to upgrade the kernel's exception level from EL1 to EL2 by enabling
-  the VHE mode. This is conditioned by the CPU supporting VHE, the EL2 MMU
-  being off, and VHE not being disabled by any other means (command line
-  option, for example).
+  Mask all exceptions, disable the MMU, move the arguments into place
+  (arm64 only), and jump to the restart address while at HYP/EL2. This
+  hypercall is not expected to return to its caller.
 
 Any other value of r0/x0 triggers a hypervisor-specific handling,
 which is not documented here.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause)
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-3-Clause)
 //
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
@@ -27,10 +27,9 @@ static const struct snd_sof_debugfs_map apl_dsp_debugfs[] = {
 
 /* apollolake ops */
 const struct snd_sof_dsp_ops sof_apl_ops = {
-	/* probe/remove/shutdown */
+	/* probe and remove */
 	.probe		= hda_dsp_probe,
 	.remove		= hda_dsp_remove,
-	.shutdown	= hda_dsp_shutdown,
 
 	/* Register IO */
 	.write		= sof_io_write,
@@ -74,15 +73,6 @@ const struct snd_sof_dsp_ops sof_apl_ops = {
 	.pcm_trigger	= hda_dsp_pcm_trigger,
 	.pcm_pointer	= hda_dsp_pcm_pointer,
 
-#if IS_ENABLED(CONFIG_SND_SOC_SOF_HDA_PROBES)
-	/* probe callbacks */
-	.probe_assign	= hda_probe_compr_assign,
-	.probe_free	= hda_probe_compr_free,
-	.probe_set_params	= hda_probe_compr_set_params,
-	.probe_trigger	= hda_probe_compr_trigger,
-	.probe_pointer	= hda_probe_compr_pointer,
-#endif
-
 	/* firmware loading */
 	.load_firmware = snd_sof_load_firmware_raw,
 
@@ -92,9 +82,6 @@ const struct snd_sof_dsp_ops sof_apl_ops = {
 	/* pre/post fw run */
 	.pre_fw_run = hda_dsp_pre_fw_run,
 	.post_fw_run = hda_dsp_post_fw_run,
-
-	/* parse platform specific extended manifest */
-	.parse_platform_ext_manifest = hda_dsp_ext_man_get_cavs_config_data,
 
 	/* dsp core power up/down */
 	.core_power_up = hda_dsp_enable_core,
@@ -133,7 +120,7 @@ const struct sof_intel_dsp_desc apl_chip_info = {
 	/* Apollolake */
 	.cores_num = 2,
 	.init_core_mask = 1,
-	.host_managed_cores_mask = GENMASK(1, 0),
+	.cores_mask = HDA_DSP_CORE_MASK(0) | HDA_DSP_CORE_MASK(1),
 	.ipc_req = HDA_DSP_REG_HIPCI,
 	.ipc_req_mask = HDA_DSP_REG_HIPCI_BUSY,
 	.ipc_ack = HDA_DSP_REG_HIPCIE,

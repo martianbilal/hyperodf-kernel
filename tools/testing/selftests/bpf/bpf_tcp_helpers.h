@@ -6,7 +6,7 @@
 #include <linux/types.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
-#include <bpf/bpf_tracing.h>
+#include "bpf_trace_helpers.h"
 
 #define BPF_STRUCT_OPS(name, args...) \
 SEC("struct_ops/"#name) \
@@ -16,7 +16,6 @@ BPF_PROG(name, args)
 
 struct sock_common {
 	unsigned char	skc_state;
-	__u16		skc_num;
 } __attribute__((preserve_access_index));
 
 enum sk_pacing {
@@ -46,17 +45,12 @@ struct inet_connection_sock {
 	__u64			  icsk_ca_priv[104 / sizeof(__u64)];
 } __attribute__((preserve_access_index));
 
-struct request_sock {
-	struct sock_common		__req_common;
-} __attribute__((preserve_access_index));
-
 struct tcp_sock {
 	struct inet_connection_sock	inet_conn;
 
 	__u32	rcv_nxt;
 	__u32	snd_nxt;
 	__u32	snd_una;
-	__u32	window_clamp;
 	__u8	ecn_flags;
 	__u32	delivered;
 	__u32	delivered_ce;
@@ -121,6 +115,14 @@ enum tcp_ca_event {
 	CA_EVENT_ECN_IS_CE = 5,
 };
 
+enum tcp_ca_state {
+	TCP_CA_Open = 0,
+	TCP_CA_Disorder = 1,
+	TCP_CA_CWR = 2,
+	TCP_CA_Recovery = 3,
+	TCP_CA_Loss = 4
+};
+
 struct ack_sample {
 	__u32 pkts_acked;
 	__s32 rtt_us;
@@ -177,7 +179,6 @@ struct tcp_congestion_ops {
 	 * after all the ca_state processing. (optional)
 	 */
 	void (*cong_control)(struct sock *sk, const struct rate_sample *rs);
-	void *owner;
 };
 
 #define min(a, b) ((a) < (b) ? (a) : (b))

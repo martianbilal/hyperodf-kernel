@@ -19,4 +19,4 @@ extern void do_suspend_lowlevel(void);
 
 extern int x86_acpi_suspend_lowlevel(void);
 
-asmlinkage acpi_status x86_acpi_enter_sleep_state(u8 state);
+acpi_status asmlinkage x86_acpi_enter_sleep_state(u8 state);

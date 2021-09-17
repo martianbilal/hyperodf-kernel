@@ -59,7 +59,7 @@ long reiserfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			if (err)
 				break;
 
-			if (!inode_owner_or_capable(&init_user_ns, inode)) {
+			if (!inode_owner_or_capable(inode)) {
 				err = -EPERM;
 				goto setflags_out;
 			}
@@ -101,7 +101,7 @@ setflags_out:
 		err = put_user(inode->i_generation, (int __user *)arg);
 		break;
 	case REISERFS_IOC_SETVERSION:
-		if (!inode_owner_or_capable(&init_user_ns, inode)) {
+		if (!inode_owner_or_capable(inode)) {
 			err = -EPERM;
 			break;
 		}
@@ -184,12 +184,11 @@ int reiserfs_unpack(struct inode *inode, struct file *filp)
 	}
 
 	/* we need to make sure nobody is changing the file size beneath us */
-	{
-		int depth = reiserfs_write_unlock_nested(inode->i_sb);
-
-		inode_lock(inode);
-		reiserfs_write_lock_nested(inode->i_sb, depth);
-	}
+{
+	int depth = reiserfs_write_unlock_nested(inode->i_sb);
+	inode_lock(inode);
+	reiserfs_write_lock_nested(inode->i_sb, depth);
+}
 
 	reiserfs_write_lock(inode->i_sb);
 

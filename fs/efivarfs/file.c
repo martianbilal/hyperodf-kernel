@@ -51,7 +51,6 @@ static ssize_t efivarfs_file_write(struct file *file,
 	} else {
 		inode_lock(inode);
 		i_size_write(inode, datasize + sizeof(attributes));
-		inode->i_mtime = current_time(inode);
 		inode_unlock(inode);
 	}
 
@@ -73,8 +72,10 @@ static ssize_t efivarfs_file_read(struct file *file, char __user *userbuf,
 	ssize_t size = 0;
 	int err;
 
-	while (!__ratelimit(&file->f_cred->user->ratelimit))
-		msleep(50);
+	while (!__ratelimit(&file->f_cred->user->ratelimit)) {
+		if (!msleep_interruptible(50))
+			return -EINTR;
+	}
 
 	err = efivar_entry_size(var, &datasize);
 
@@ -137,7 +138,7 @@ efivarfs_ioc_setxflags(struct file *file, void __user *arg)
 	unsigned int oldflags = efivarfs_getflags(inode);
 	int error;
 
-	if (!inode_owner_or_capable(&init_user_ns, inode))
+	if (!inode_owner_or_capable(inode))
 		return -EACCES;
 
 	if (copy_from_user(&flags, arg, sizeof(flags)))

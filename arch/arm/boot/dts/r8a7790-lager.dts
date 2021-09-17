@@ -53,9 +53,6 @@
 		i2c11 = &i2cexio1;
 		i2c12 = &i2chdmi;
 		i2c13 = &i2cpwr;
-		mmc0 = &mmcif1;
-		mmc1 = &sdhi0;
-		mmc2 = &sdhi2;
 	};
 
 	chosen {
@@ -346,6 +343,7 @@
 		composite-in@20 {
 			compatible = "adi,adv7180";
 			reg = <0x20>;
+			remote = <&vin1>;
 
 			port {
 				adv7180: endpoint {
@@ -366,6 +364,8 @@
 			adi,input-depth = <8>;
 			adi,input-colorspace = "rgb";
 			adi,input-clock = "1x";
+			adi,input-style = <1>;
+			adi,input-justification = "evenly";
 
 			ports {
 				#address-cells = <1>;
@@ -674,7 +674,6 @@
 		interrupt-parent = <&irqc0>;
 		interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
 		micrel,led-mode = <1>;
-		reset-gpios = <&gpio5 31 GPIO_ACTIVE_LOW>;
 	};
 };
 

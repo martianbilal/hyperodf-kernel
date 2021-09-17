@@ -589,7 +589,7 @@ static int deinterlace_start_streaming(struct vb2_queue *vq, unsigned int count)
 	int ret;
 
 	if (V4L2_TYPE_IS_OUTPUT(vq->type)) {
-		ret = pm_runtime_resume_and_get(dev);
+		ret = pm_runtime_get_sync(dev);
 		if (ret < 0) {
 			dev_err(dev, "Failed to enable module\n");
 
@@ -814,8 +814,11 @@ static int deinterlace_probe(struct platform_device *pdev)
 	dev->dev = &pdev->dev;
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq <= 0)
+	if (irq <= 0) {
+		dev_err(dev->dev, "Failed to get IRQ\n");
+
 		return irq;
+	}
 
 	ret = devm_request_irq(dev->dev, irq, deinterlace_irq,
 			       0, dev_name(dev->dev), dev);
@@ -824,6 +827,10 @@ static int deinterlace_probe(struct platform_device *pdev)
 
 		return ret;
 	}
+
+	ret = of_dma_configure(dev->dev, dev->dev->of_node, true);
+	if (ret)
+		return ret;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	dev->base = devm_ioremap_resource(&pdev->dev, res);
@@ -875,7 +882,7 @@ static int deinterlace_probe(struct platform_device *pdev)
 		 deinterlace_video_device.name);
 	video_set_drvdata(vfd, dev);
 
-	ret = video_register_device(vfd, VFL_TYPE_VIDEO, 0);
+	ret = video_register_device(vfd, VFL_TYPE_GRABBER, 0);
 	if (ret) {
 		v4l2_err(&dev->v4l2_dev, "Failed to register video device\n");
 
@@ -937,7 +944,7 @@ static int deinterlace_runtime_resume(struct device *device)
 	if (ret) {
 		dev_err(dev->dev, "Failed to enable bus clock\n");
 
-		goto err_exclusive_rate;
+		goto err_exlusive_rate;
 	}
 
 	ret = clk_prepare_enable(dev->mod_clk);
@@ -965,14 +972,14 @@ static int deinterlace_runtime_resume(struct device *device)
 
 	return 0;
 
+err_exlusive_rate:
+	clk_rate_exclusive_put(dev->mod_clk);
 err_ram_clk:
 	clk_disable_unprepare(dev->ram_clk);
 err_mod_clk:
 	clk_disable_unprepare(dev->mod_clk);
 err_bus_clk:
 	clk_disable_unprepare(dev->bus_clk);
-err_exclusive_rate:
-	clk_rate_exclusive_put(dev->mod_clk);
 
 	return ret;
 }

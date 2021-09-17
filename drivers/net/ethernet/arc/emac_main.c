@@ -92,6 +92,7 @@ static void arc_emac_get_drvinfo(struct net_device *ndev,
 	struct arc_emac_priv *priv = netdev_priv(ndev);
 
 	strlcpy(info->driver, priv->drv_name, sizeof(info->driver));
+	strlcpy(info->version, priv->drv_version, sizeof(info->version));
 }
 
 static const struct ethtool_ops arc_emac_ethtool_ops = {
@@ -673,7 +674,7 @@ static struct net_device_stats *arc_emac_stats(struct net_device *ndev)
  *
  * This function is invoked from upper layers to initiate transmission.
  */
-static netdev_tx_t arc_emac_tx(struct sk_buff *skb, struct net_device *ndev)
+static int arc_emac_tx(struct sk_buff *skb, struct net_device *ndev)
 {
 	struct arc_emac_priv *priv = netdev_priv(ndev);
 	unsigned int len, *txbd_curr = &priv->txbd_curr;

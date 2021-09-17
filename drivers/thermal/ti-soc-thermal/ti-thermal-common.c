@@ -166,11 +166,10 @@ int ti_thermal_expose_sensor(struct ti_bandgap *bgp, int id,
 			     char *domain)
 {
 	struct ti_thermal_data *data;
-	int interval;
 
 	data = ti_bandgap_get_sensor_data(bgp, id);
 
-	if (IS_ERR_OR_NULL(data))
+	if (!data || IS_ERR(data))
 		data = ti_thermal_build_data(bgp, id);
 
 	if (!data)
@@ -184,10 +183,9 @@ int ti_thermal_expose_sensor(struct ti_bandgap *bgp, int id,
 		return PTR_ERR(data->ti_thermal);
 	}
 
-	interval = jiffies_to_msecs(data->ti_thermal->polling_delay_jiffies);
-
 	ti_bandgap_set_sensor_data(bgp, id, data);
-	ti_bandgap_write_update_interval(bgp, data->sensor_id, interval);
+	ti_bandgap_write_update_interval(bgp, data->sensor_id,
+					data->ti_thermal->polling_delay);
 
 	return 0;
 }
@@ -198,7 +196,7 @@ int ti_thermal_remove_sensor(struct ti_bandgap *bgp, int id)
 
 	data = ti_bandgap_get_sensor_data(bgp, id);
 
-	if (!IS_ERR_OR_NULL(data) && data->ti_thermal) {
+	if (data && data->ti_thermal) {
 		if (data->our_zone)
 			thermal_zone_device_unregister(data->ti_thermal);
 	}
@@ -264,7 +262,7 @@ int ti_thermal_unregister_cpu_cooling(struct ti_bandgap *bgp, int id)
 
 	data = ti_bandgap_get_sensor_data(bgp, id);
 
-	if (!IS_ERR_OR_NULL(data)) {
+	if (data) {
 		cpufreq_cooling_unregister(data->cool_dev);
 		if (data->policy)
 			cpufreq_cpu_put(data->policy);

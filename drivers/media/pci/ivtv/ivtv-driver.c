@@ -275,6 +275,9 @@ MODULE_PARM_DESC(ivtv_first_minor, "Set device node number assigned to first car
 
 MODULE_AUTHOR("Kevin Thayer, Chris Kennedy, Hans Verkuil");
 MODULE_DESCRIPTION("CX23415/CX23416 driver");
+MODULE_SUPPORTED_DEVICE
+    ("CX23415/CX23416 MPEG2 encoder (WinTV PVR-150/250/350/500,\n"
+		"\t\t\tYuan MPG series and similar)");
 MODULE_LICENSE("GPL");
 
 MODULE_VERSION(IVTV_VERSION);
@@ -734,6 +737,8 @@ done:
  */
 static int ivtv_init_struct1(struct ivtv *itv)
 {
+	struct sched_param param = { .sched_priority = 99 };
+
 	itv->base_addr = pci_resource_start(itv->pdev, 0);
 	itv->enc_mbox.max_mbox = 2; /* the encoder has 3 mailboxes (0-2) */
 	itv->dec_mbox.max_mbox = 1; /* the decoder has 2 mailboxes (0-1) */
@@ -753,7 +758,7 @@ static int ivtv_init_struct1(struct ivtv *itv)
 		return -1;
 	}
 	/* must use the FIFO scheduler as it is realtime sensitive */
-	sched_set_fifo(itv->irq_worker_task);
+	sched_setscheduler(itv->irq_worker_task, SCHED_FIFO, &param);
 
 	kthread_init_work(&itv->irq_work, ivtv_irq_work_handler);
 
@@ -870,11 +875,6 @@ static int ivtv_setup_pci(struct ivtv *itv, struct pci_dev *pdev,
 		pci_read_config_word(pdev, PCI_COMMAND, &cmd);
 		if (!(cmd & PCI_COMMAND_MASTER)) {
 			IVTV_ERR("Bus Mastering is not enabled\n");
-			if (itv->has_cx23415)
-				release_mem_region(itv->base_addr + IVTV_DECODER_OFFSET,
-						   IVTV_DECODER_SIZE);
-			release_mem_region(itv->base_addr, IVTV_ENCODER_SIZE);
-			release_mem_region(itv->base_addr + IVTV_REG_OFFSET, IVTV_REG_SIZE);
 			return -ENXIO;
 		}
 	}

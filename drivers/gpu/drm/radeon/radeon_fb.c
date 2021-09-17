@@ -119,7 +119,7 @@ static void radeonfb_destroy_pinned_object(struct drm_gem_object *gobj)
 		radeon_bo_unpin(rbo);
 		radeon_bo_unreserve(rbo);
 	}
-	drm_gem_object_put(gobj);
+	drm_gem_object_put_unlocked(gobj);
 }
 
 static int radeonfb_create_pinned_object(struct radeon_fbdev *rfbdev,
@@ -290,7 +290,7 @@ static int radeonfb_create(struct drm_fb_helper *helper,
 	DRM_INFO("fb depth is %d\n", fb->format->depth);
 	DRM_INFO("   pitch is %d\n", fb->pitches[0]);
 
-	vga_switcheroo_client_fb_set(rdev->pdev, info);
+	vga_switcheroo_client_fb_set(rdev->ddev->pdev, info);
 	return 0;
 
 out:
@@ -298,7 +298,7 @@ out:
 
 	}
 	if (fb && ret) {
-		drm_gem_object_put(gobj);
+		drm_gem_object_put_unlocked(gobj);
 		drm_framebuffer_unregister_private(fb);
 		drm_framebuffer_cleanup(fb);
 		kfree(fb);
@@ -354,9 +354,14 @@ int radeon_fbdev_init(struct radeon_device *rdev)
 	drm_fb_helper_prepare(rdev->ddev, &rfbdev->helper,
 			      &radeon_fb_helper_funcs);
 
-	ret = drm_fb_helper_init(rdev->ddev, &rfbdev->helper);
+	ret = drm_fb_helper_init(rdev->ddev, &rfbdev->helper,
+				 RADEONFB_CONN_LIMIT);
 	if (ret)
 		goto free;
+
+	ret = drm_fb_helper_single_add_all_connectors(&rfbdev->helper);
+	if (ret)
+		goto fini;
 
 	/* disable all the possible outputs/crtcs before entering KMS mode */
 	drm_helper_disable_unused_functions(rdev->ddev);
@@ -398,4 +403,16 @@ bool radeon_fbdev_robj_is_fb(struct radeon_device *rdev, struct radeon_bo *robj)
 	if (robj == gem_to_radeon_bo(rdev->mode_info.rfbdev->fb.obj[0]))
 		return true;
 	return false;
+}
+
+void radeon_fb_add_connector(struct radeon_device *rdev, struct drm_connector *connector)
+{
+	if (rdev->mode_info.rfbdev)
+		drm_fb_helper_add_one_connector(&rdev->mode_info.rfbdev->helper, connector);
+}
+
+void radeon_fb_remove_connector(struct radeon_device *rdev, struct drm_connector *connector)
+{
+	if (rdev->mode_info.rfbdev)
+		drm_fb_helper_remove_one_connector(&rdev->mode_info.rfbdev->helper, connector);
 }

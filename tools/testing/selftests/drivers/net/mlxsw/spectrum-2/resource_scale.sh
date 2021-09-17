@@ -8,9 +8,8 @@ source $lib_dir/lib.sh
 source $lib_dir/tc_common.sh
 source $lib_dir/devlink_lib.sh
 
-if [[ "$DEVLINK_VIDDID" != "15b3:cf6c" && \
-	"$DEVLINK_VIDDID" != "15b3:cf70" ]]; then
-	echo "SKIP: test is tailored for Mellanox Spectrum-2 and Spectrum-3"
+if [ "$DEVLINK_VIDDID" != "15b3:cf6c" ]; then
+	echo "SKIP: test is tailored for Mellanox Spectrum-2"
 	exit 1
 fi
 
@@ -28,7 +27,7 @@ cleanup()
 
 trap cleanup EXIT
 
-ALL_TESTS="router tc_flower mirror_gre tc_police port"
+ALL_TESTS="router tc_flower mirror_gre"
 for current_test in ${TESTS:-$ALL_TESTS}; do
 	source ${current_test}_scale.sh
 

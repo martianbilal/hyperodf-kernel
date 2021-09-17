@@ -194,7 +194,7 @@ static int ocfs2_sync_file(struct file *file, loff_t start, loff_t end,
 		needs_barrier = true;
 	err = jbd2_complete_transaction(journal, commit_tid);
 	if (needs_barrier) {
-		ret = blkdev_issue_flush(inode->i_sb->s_bdev);
+		ret = blkdev_issue_flush(inode->i_sb->s_bdev, GFP_KERNEL, NULL);
 		if (!err)
 			err = ret;
 	}
@@ -1112,8 +1112,7 @@ out:
 	return ret;
 }
 
-int ocfs2_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
-		  struct iattr *attr)
+int ocfs2_setattr(struct dentry *dentry, struct iattr *attr)
 {
 	int status = 0, size_change;
 	int inode_locked = 0;
@@ -1143,7 +1142,7 @@ int ocfs2_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 	if (!(attr->ia_valid & OCFS2_VALID_ATTRS))
 		return 0;
 
-	status = setattr_prepare(&init_user_ns, dentry, attr);
+	status = setattr_prepare(dentry, attr);
 	if (status)
 		return status;
 
@@ -1245,28 +1244,26 @@ int ocfs2_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 				goto bail_unlock;
 			}
 		}
-		down_write(&OCFS2_I(inode)->ip_alloc_sem);
 		handle = ocfs2_start_trans(osb, OCFS2_INODE_UPDATE_CREDITS +
 					   2 * ocfs2_quota_trans_credits(sb));
 		if (IS_ERR(handle)) {
 			status = PTR_ERR(handle);
 			mlog_errno(status);
-			goto bail_unlock_alloc;
+			goto bail_unlock;
 		}
 		status = __dquot_transfer(inode, transfer_to);
 		if (status < 0)
 			goto bail_commit;
 	} else {
-		down_write(&OCFS2_I(inode)->ip_alloc_sem);
 		handle = ocfs2_start_trans(osb, OCFS2_INODE_UPDATE_CREDITS);
 		if (IS_ERR(handle)) {
 			status = PTR_ERR(handle);
 			mlog_errno(status);
-			goto bail_unlock_alloc;
+			goto bail_unlock;
 		}
 	}
 
-	setattr_copy(&init_user_ns, inode, attr);
+	setattr_copy(inode, attr);
 	mark_inode_dirty(inode);
 
 	status = ocfs2_mark_inode_dirty(handle, inode, bh);
@@ -1275,8 +1272,6 @@ int ocfs2_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 
 bail_commit:
 	ocfs2_commit_trans(osb, handle);
-bail_unlock_alloc:
-	up_write(&OCFS2_I(inode)->ip_alloc_sem);
 bail_unlock:
 	if (status && inode_locked) {
 		ocfs2_inode_unlock_tracker(inode, 1, &oh, had_lock);
@@ -1303,8 +1298,8 @@ bail:
 	return status;
 }
 
-int ocfs2_getattr(struct user_namespace *mnt_userns, const struct path *path,
-		  struct kstat *stat, u32 request_mask, unsigned int flags)
+int ocfs2_getattr(const struct path *path, struct kstat *stat,
+		  u32 request_mask, unsigned int flags)
 {
 	struct inode *inode = d_inode(path->dentry);
 	struct super_block *sb = path->dentry->d_sb;
@@ -1318,7 +1313,7 @@ int ocfs2_getattr(struct user_namespace *mnt_userns, const struct path *path,
 		goto bail;
 	}
 
-	generic_fillattr(&init_user_ns, inode, stat);
+	generic_fillattr(inode, stat);
 	/*
 	 * If there is inline data in the inode, the inode will normally not
 	 * have data blocks allocated (it may have an external xattr block).
@@ -1335,8 +1330,7 @@ bail:
 	return err;
 }
 
-int ocfs2_permission(struct user_namespace *mnt_userns, struct inode *inode,
-		     int mask)
+int ocfs2_permission(struct inode *inode, int mask)
 {
 	int ret, had_lock;
 	struct ocfs2_lock_holder oh;
@@ -1361,7 +1355,7 @@ int ocfs2_permission(struct user_namespace *mnt_userns, struct inode *inode,
 		dump_stack();
 	}
 
-	ret = generic_permission(&init_user_ns, inode, mask);
+	ret = generic_permission(inode, mask);
 
 	ocfs2_inode_unlock_tracker(inode, 0, &oh, had_lock);
 out:
@@ -1858,45 +1852,6 @@ out:
 }
 
 /*
- * zero out partial blocks of one cluster.
- *
- * start: file offset where zero starts, will be made upper block aligned.
- * len: it will be trimmed to the end of current cluster if "start + len"
- *      is bigger than it.
- */
-static int ocfs2_zeroout_partial_cluster(struct inode *inode,
-					u64 start, u64 len)
-{
-	int ret;
-	u64 start_block, end_block, nr_blocks;
-	u64 p_block, offset;
-	u32 cluster, p_cluster, nr_clusters;
-	struct super_block *sb = inode->i_sb;
-	u64 end = ocfs2_align_bytes_to_clusters(sb, start);
-
-	if (start + len < end)
-		end = start + len;
-
-	start_block = ocfs2_blocks_for_bytes(sb, start);
-	end_block = ocfs2_blocks_for_bytes(sb, end);
-	nr_blocks = end_block - start_block;
-	if (!nr_blocks)
-		return 0;
-
-	cluster = ocfs2_bytes_to_clusters(sb, start);
-	ret = ocfs2_get_clusters(inode, cluster, &p_cluster,
-				&nr_clusters, NULL);
-	if (ret)
-		return ret;
-	if (!p_cluster)
-		return 0;
-
-	offset = start_block - ocfs2_clusters_to_blocks(sb, cluster);
-	p_block = ocfs2_clusters_to_blocks(sb, p_cluster) + offset;
-	return sb_issue_zeroout(sb, p_block, nr_blocks, GFP_NOFS);
-}
-
-/*
  * Parts of this function taken from xfs_change_file_space()
  */
 static int __ocfs2_change_file_space(struct file *file, struct inode *inode,
@@ -1906,7 +1861,7 @@ static int __ocfs2_change_file_space(struct file *file, struct inode *inode,
 {
 	int ret;
 	s64 llen;
-	loff_t size, orig_isize;
+	loff_t size;
 	struct ocfs2_super *osb = OCFS2_SB(inode->i_sb);
 	struct buffer_head *di_bh = NULL;
 	handle_t *handle;
@@ -1937,7 +1892,6 @@ static int __ocfs2_change_file_space(struct file *file, struct inode *inode,
 		goto out_inode_unlock;
 	}
 
-	orig_isize = i_size_read(inode);
 	switch (sr->l_whence) {
 	case 0: /*SEEK_SET*/
 		break;
@@ -1945,7 +1899,7 @@ static int __ocfs2_change_file_space(struct file *file, struct inode *inode,
 		sr->l_start += f_pos;
 		break;
 	case 2: /*SEEK_END*/
-		sr->l_start += orig_isize;
+		sr->l_start += i_size_read(inode);
 		break;
 	default:
 		ret = -EINVAL;
@@ -1999,14 +1953,6 @@ static int __ocfs2_change_file_space(struct file *file, struct inode *inode,
 	default:
 		ret = -EINVAL;
 	}
-
-	/* zeroout eof blocks in the cluster. */
-	if (!ret && change_size && orig_isize < size) {
-		ret = ocfs2_zeroout_partial_cluster(inode, orig_isize,
-					size - orig_isize);
-		if (!ret)
-			i_size_write(inode, size);
-	}
 	up_write(&OCFS2_I(inode)->ip_alloc_sem);
 	if (ret) {
 		mlog_errno(ret);
@@ -2022,6 +1968,9 @@ static int __ocfs2_change_file_space(struct file *file, struct inode *inode,
 		mlog_errno(ret);
 		goto out_inode_unlock;
 	}
+
+	if (change_size && i_size_read(inode) < size)
+		i_size_write(inode, size);
 
 	inode->i_ctime = inode->i_mtime = current_time(inode);
 	ret = ocfs2_mark_inode_dirty(handle, inode, di_bh);

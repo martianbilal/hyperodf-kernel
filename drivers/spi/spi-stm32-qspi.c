@@ -16,7 +16,6 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/pinctrl/consumer.h>
-#include <linux/pm_runtime.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/sizes.h>
@@ -88,7 +87,6 @@
 #define STM32_BUSY_TIMEOUT_US 100000
 #define STM32_ABT_TIMEOUT_US 100000
 #define STM32_COMP_TIMEOUT_MS 1000
-#define STM32_AUTOSUSPEND_DELAY -1
 
 struct stm32_qspi_flash {
 	struct stm32_qspi *qspi;
@@ -433,18 +431,9 @@ static int stm32_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 	struct stm32_qspi *qspi = spi_controller_get_devdata(mem->spi->master);
 	int ret;
 
-	ret = pm_runtime_get_sync(qspi->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(qspi->dev);
-		return ret;
-	}
-
 	mutex_lock(&qspi->lock);
 	ret = stm32_qspi_send(mem, op);
 	mutex_unlock(&qspi->lock);
-
-	pm_runtime_mark_last_busy(qspi->dev);
-	pm_runtime_put_autosuspend(qspi->dev);
 
 	return ret;
 }
@@ -455,19 +444,12 @@ static int stm32_qspi_setup(struct spi_device *spi)
 	struct stm32_qspi *qspi = spi_controller_get_devdata(ctrl);
 	struct stm32_qspi_flash *flash;
 	u32 presc;
-	int ret;
 
 	if (ctrl->busy)
 		return -EBUSY;
 
 	if (!spi->max_speed_hz)
 		return -EINVAL;
-
-	ret = pm_runtime_get_sync(qspi->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(qspi->dev);
-		return ret;
-	}
 
 	presc = DIV_ROUND_UP(qspi->clk_rate, spi->max_speed_hz) - 1;
 
@@ -484,9 +466,6 @@ static int stm32_qspi_setup(struct spi_device *spi)
 	qspi->dcr_reg = DCR_FSIZE_MASK;
 	writel_relaxed(qspi->dcr_reg, qspi->io_base + QSPI_DCR);
 	mutex_unlock(&qspi->lock);
-
-	pm_runtime_mark_last_busy(qspi->dev);
-	pm_runtime_put_autosuspend(qspi->dev);
 
 	return 0;
 }
@@ -557,6 +536,15 @@ static const struct spi_controller_mem_ops stm32_qspi_mem_ops = {
 	.exec_op = stm32_qspi_exec_op,
 };
 
+static void stm32_qspi_release(struct stm32_qspi *qspi)
+{
+	/* disable qspi */
+	writel_relaxed(0, qspi->io_base + QSPI_CR);
+	stm32_qspi_dma_free(qspi);
+	mutex_destroy(&qspi->lock);
+	clk_disable_unprepare(qspi->clk);
+}
+
 static int stm32_qspi_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -577,7 +565,7 @@ static int stm32_qspi_probe(struct platform_device *pdev)
 	qspi->io_base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(qspi->io_base)) {
 		ret = PTR_ERR(qspi->io_base);
-		goto err_master_put;
+		goto err;
 	}
 
 	qspi->phys_base = res->start;
@@ -586,26 +574,24 @@ static int stm32_qspi_probe(struct platform_device *pdev)
 	qspi->mm_base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(qspi->mm_base)) {
 		ret = PTR_ERR(qspi->mm_base);
-		goto err_master_put;
+		goto err;
 	}
 
 	qspi->mm_size = resource_size(res);
 	if (qspi->mm_size > STM32_QSPI_MAX_MMAP_SZ) {
 		ret = -EINVAL;
-		goto err_master_put;
+		goto err;
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		ret = irq;
-		goto err_master_put;
-	}
+	if (irq < 0)
+		return irq;
 
 	ret = devm_request_irq(dev, irq, stm32_qspi_irq, 0,
 			       dev_name(dev), qspi);
 	if (ret) {
 		dev_err(dev, "failed to request irq\n");
-		goto err_master_put;
+		goto err;
 	}
 
 	init_completion(&qspi->data_completion);
@@ -613,27 +599,23 @@ static int stm32_qspi_probe(struct platform_device *pdev)
 	qspi->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(qspi->clk)) {
 		ret = PTR_ERR(qspi->clk);
-		goto err_master_put;
+		goto err;
 	}
 
 	qspi->clk_rate = clk_get_rate(qspi->clk);
 	if (!qspi->clk_rate) {
 		ret = -EINVAL;
-		goto err_master_put;
+		goto err;
 	}
 
 	ret = clk_prepare_enable(qspi->clk);
 	if (ret) {
 		dev_err(dev, "can not enable the clock\n");
-		goto err_master_put;
+		goto err;
 	}
 
 	rstc = devm_reset_control_get_exclusive(dev, NULL);
-	if (IS_ERR(rstc)) {
-		ret = PTR_ERR(rstc);
-		if (ret == -EPROBE_DEFER)
-			goto err_clk_disable;
-	} else {
+	if (!IS_ERR(rstc)) {
 		reset_control_assert(rstc);
 		udelay(2);
 		reset_control_deassert(rstc);
@@ -643,7 +625,7 @@ static int stm32_qspi_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, qspi);
 	ret = stm32_qspi_dma_setup(qspi);
 	if (ret)
-		goto err_dma_free;
+		goto err;
 
 	mutex_init(&qspi->lock);
 
@@ -655,35 +637,12 @@ static int stm32_qspi_probe(struct platform_device *pdev)
 	ctrl->num_chipselect = STM32_QSPI_MAX_NORCHIP;
 	ctrl->dev.of_node = dev->of_node;
 
-	pm_runtime_set_autosuspend_delay(dev, STM32_AUTOSUSPEND_DELAY);
-	pm_runtime_use_autosuspend(dev);
-	pm_runtime_set_active(dev);
-	pm_runtime_enable(dev);
-	pm_runtime_get_noresume(dev);
-
 	ret = devm_spi_register_master(dev, ctrl);
-	if (ret)
-		goto err_pm_runtime_free;
+	if (!ret)
+		return 0;
 
-	pm_runtime_mark_last_busy(dev);
-	pm_runtime_put_autosuspend(dev);
-
-	return 0;
-
-err_pm_runtime_free:
-	pm_runtime_get_sync(qspi->dev);
-	/* disable qspi */
-	writel_relaxed(0, qspi->io_base + QSPI_CR);
-	mutex_destroy(&qspi->lock);
-	pm_runtime_put_noidle(qspi->dev);
-	pm_runtime_disable(qspi->dev);
-	pm_runtime_set_suspended(qspi->dev);
-	pm_runtime_dont_use_autosuspend(qspi->dev);
-err_dma_free:
-	stm32_qspi_dma_free(qspi);
-err_clk_disable:
-	clk_disable_unprepare(qspi->clk);
-err_master_put:
+err:
+	stm32_qspi_release(qspi);
 	spi_master_put(qspi->ctrl);
 
 	return ret;
@@ -693,74 +652,34 @@ static int stm32_qspi_remove(struct platform_device *pdev)
 {
 	struct stm32_qspi *qspi = platform_get_drvdata(pdev);
 
-	pm_runtime_get_sync(qspi->dev);
-	/* disable qspi */
-	writel_relaxed(0, qspi->io_base + QSPI_CR);
-	stm32_qspi_dma_free(qspi);
-	mutex_destroy(&qspi->lock);
-	pm_runtime_put_noidle(qspi->dev);
-	pm_runtime_disable(qspi->dev);
-	pm_runtime_set_suspended(qspi->dev);
-	pm_runtime_dont_use_autosuspend(qspi->dev);
-	clk_disable_unprepare(qspi->clk);
-
+	stm32_qspi_release(qspi);
 	return 0;
-}
-
-static int __maybe_unused stm32_qspi_runtime_suspend(struct device *dev)
-{
-	struct stm32_qspi *qspi = dev_get_drvdata(dev);
-
-	clk_disable_unprepare(qspi->clk);
-
-	return 0;
-}
-
-static int __maybe_unused stm32_qspi_runtime_resume(struct device *dev)
-{
-	struct stm32_qspi *qspi = dev_get_drvdata(dev);
-
-	return clk_prepare_enable(qspi->clk);
 }
 
 static int __maybe_unused stm32_qspi_suspend(struct device *dev)
 {
+	struct stm32_qspi *qspi = dev_get_drvdata(dev);
+
+	clk_disable_unprepare(qspi->clk);
 	pinctrl_pm_select_sleep_state(dev);
 
-	return pm_runtime_force_suspend(dev);
+	return 0;
 }
 
 static int __maybe_unused stm32_qspi_resume(struct device *dev)
 {
 	struct stm32_qspi *qspi = dev_get_drvdata(dev);
-	int ret;
-
-	ret = pm_runtime_force_resume(dev);
-	if (ret < 0)
-		return ret;
 
 	pinctrl_pm_select_default_state(dev);
-
-	ret = pm_runtime_get_sync(dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(dev);
-		return ret;
-	}
+	clk_prepare_enable(qspi->clk);
 
 	writel_relaxed(qspi->cr_reg, qspi->io_base + QSPI_CR);
 	writel_relaxed(qspi->dcr_reg, qspi->io_base + QSPI_DCR);
 
-	pm_runtime_mark_last_busy(dev);
-	pm_runtime_put_autosuspend(dev);
-
 	return 0;
 }
 
-static const struct dev_pm_ops stm32_qspi_pm_ops = {
-	SET_RUNTIME_PM_OPS(stm32_qspi_runtime_suspend,
-			   stm32_qspi_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(stm32_qspi_suspend, stm32_qspi_resume)
-};
+static SIMPLE_DEV_PM_OPS(stm32_qspi_pm_ops, stm32_qspi_suspend, stm32_qspi_resume);
 
 static const struct of_device_id stm32_qspi_match[] = {
 	{.compatible = "st,stm32f469-qspi"},

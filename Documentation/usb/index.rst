@@ -22,7 +22,6 @@ USB support
     misc_usbsevseg
     mtouchusb
     ohci
-    raw-gadget
     usbip_protocol
     usbmon
     usb-serial

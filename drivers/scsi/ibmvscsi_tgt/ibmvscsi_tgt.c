@@ -1581,7 +1581,7 @@ static long ibmvscsis_adapter_info(struct scsi_info *vscsi,
 	case H_PERMISSION:
 		if (connection_broken(vscsi))
 			flag_bits = (RESPONSE_Q_DOWN | CLIENT_FAILED);
-		fallthrough;
+		/* Fall through */
 	default:
 		dev_err(&vscsi->dev, "adapter_info: h_copy_rdma to client failed, rc %ld\n",
 			rc);
@@ -2489,10 +2489,10 @@ static long ibmvscsis_ping_response(struct scsi_info *vscsi)
 		break;
 	case H_CLOSED:
 		vscsi->flags |= CLIENT_FAILED;
-		fallthrough;
+		/* Fall through */
 	case H_DROPPED:
 		vscsi->flags |= RESPONSE_Q_DOWN;
-		fallthrough;
+		/* Fall through */
 	case H_REMOTE_PARM:
 		dev_err(&vscsi->dev, "ping_response: h_send_crq failed, rc %ld\n",
 			rc);
@@ -3595,7 +3595,7 @@ free_adapter:
 	return rc;
 }
 
-static void ibmvscsis_remove(struct vio_dev *vdev)
+static int ibmvscsis_remove(struct vio_dev *vdev)
 {
 	struct scsi_info *vscsi = dev_get_drvdata(&vdev->dev);
 
@@ -3622,6 +3622,8 @@ static void ibmvscsis_remove(struct vio_dev *vdev)
 	list_del(&vscsi->list);
 	spin_unlock_bh(&ibmvscsis_dev_lock);
 	kfree(vscsi);
+
+	return 0;
 }
 
 static ssize_t system_id_show(struct device *dev,

@@ -35,10 +35,8 @@ properties:
     description: label associated with this uart
 
   st,hw-flow-ctrl:
-    description: enable hardware flow control (deprecated)
+    description: enable hardware flow control
     $ref: /schemas/types.yaml#/definitions/flag
-
-  uart-has-rtscts: true
 
   dmas:
     minItems: 1
@@ -50,15 +48,6 @@ properties:
     minItems: 1
     maxItems: 2
 
-# cts-gpios and rts-gpios properties can be used instead of 'uart-has-rtscts'
-# or 'st,hw-flow-ctrl' (deprecated) for making use of any gpio pins for flow
-# control instead of dedicated pins.
-#
-# It should be noted that both cts-gpios/rts-gpios and 'uart-has-rtscts' or
-# 'st,hw-flow-ctrl' (deprecated) properties cannot co-exist in a design.
-  cts-gpios: true
-  rts-gpios: true
-
   wakeup-source: true
 
   rs485-rts-delay: true
@@ -66,22 +55,13 @@ properties:
   linux,rs485-enabled-at-boot-time: true
   rs485-rx-during-tx: true
 
-if:
-  required:
-    - st,hw-flow-ctrl
-then:
-  properties:
-    cts-gpios: false
-    rts-gpios: false
-
 required:
   - compatible
   - reg
   - interrupts
   - clocks
 
-additionalProperties:
-  type: object
+additionalProperties: false
 
 examples:
   - |

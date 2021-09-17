@@ -41,15 +41,6 @@ static int pxe1610_identify(struct i2c_client *client,
 				info->vrm_version[i] = vr13;
 				break;
 			default:
-				/*
-				 * If prior pages are available limit operation
-				 * to them
-				 */
-				if (i != 0) {
-					info->pages = i;
-					return 0;
-				}
-
 				return -ENODEV;
 			}
 		}
@@ -87,7 +78,8 @@ static struct pmbus_driver_info pxe1610_info = {
 	.identify = pxe1610_identify,
 };
 
-static int pxe1610_probe(struct i2c_client *client)
+static int pxe1610_probe(struct i2c_client *client,
+			  const struct i2c_device_id *id)
 {
 	struct pmbus_driver_info *info;
 	u8 buf[I2C_SMBUS_BLOCK_MAX];
@@ -123,7 +115,7 @@ static int pxe1610_probe(struct i2c_client *client)
 	if (!info)
 		return -ENOMEM;
 
-	return pmbus_do_probe(client, info);
+	return pmbus_do_probe(client, id, info);
 }
 
 static const struct i2c_device_id pxe1610_id[] = {
@@ -139,7 +131,8 @@ static struct i2c_driver pxe1610_driver = {
 	.driver = {
 			.name = "pxe1610",
 			},
-	.probe_new = pxe1610_probe,
+	.probe = pxe1610_probe,
+	.remove = pmbus_do_remove,
 	.id_table = pxe1610_id,
 };
 

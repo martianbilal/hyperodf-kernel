@@ -6,13 +6,13 @@
  * Wireless USB 1.0 (spread around).  Linux has several APIs in C that
  * need these:
  *
- * - the host side Linux-USB kernel driver API;
+ * - the master/host side Linux-USB kernel driver API;
  * - the "usbfs" user space API; and
- * - the Linux "gadget" device/peripheral side driver API.
+ * - the Linux "gadget" slave/device/peripheral side driver API.
  *
  * USB 2.0 adds an additional "On The Go" (OTG) mode, which lets systems
- * act either as a USB host or as a USB device.  That means the host and
- * device side APIs benefit from working well together.
+ * act either as a USB master/host or as a USB slave/device.  That means
+ * the master and slave side APIs benefit from working well together.
  *
  * There's also "Wireless USB", using low power short range radios for
  * peripheral interconnection but otherwise building on the USB framework.
@@ -35,15 +35,6 @@
 
 #include <linux/device.h>
 #include <uapi/linux/usb/ch9.h>
-
-/* USB 3.2 SuperSpeed Plus phy signaling rate generation and lane count */
-
-enum usb_ssp_rate {
-	USB_SSP_GEN_UNKNOWN = 0,
-	USB_SSP_GEN_2x1,
-	USB_SSP_GEN_1x2,
-	USB_SSP_GEN_2x2,
-};
 
 /**
  * usb_ep_type_string() - Returns human readable-name of the endpoint type.
@@ -70,17 +61,6 @@ extern const char *usb_speed_string(enum usb_device_speed speed);
  * and returns the corresponding enum usb_device_speed.
  */
 extern enum usb_device_speed usb_get_maximum_speed(struct device *dev);
-
-/**
- * usb_get_maximum_ssp_rate - Get the signaling rate generation and lane count
- *	of a SuperSpeed Plus capable device.
- * @dev: Pointer to the given USB controller device
- *
- * If the string from "maximum-speed" property is super-speed-plus-genXxY where
- * 'X' is the generation number and 'Y' is the number of lanes, then this
- * function returns the corresponding enum usb_ssp_rate.
- */
-extern enum usb_ssp_rate usb_get_maximum_ssp_rate(struct device *dev);
 
 /**
  * usb_state_string - Returns human readable name for the state.

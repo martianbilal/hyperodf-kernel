@@ -101,6 +101,7 @@ static int ipw_open(struct tty_struct *linux_tty, struct file *filp)
 
 	tty->port.tty = linux_tty;
 	linux_tty->driver_data = tty;
+	tty->port.low_latency = 1;
 
 	if (tty->tty_type == TTYTYPE_MODEM)
 		ipwireless_ppp_open(tty->network);
@@ -217,7 +218,7 @@ static int ipw_write(struct tty_struct *linux_tty,
 	ret = ipwireless_send_packet(tty->hardware, IPW_CHANNEL_RAS,
 			       buf, count,
 			       ipw_write_packet_sent_callback, tty);
-	if (ret < 0) {
+	if (ret == -1) {
 		mutex_unlock(&tty->ipw_tty_mutex);
 		return 0;
 	}

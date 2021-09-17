@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause)
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-3-Clause)
 //
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
@@ -29,7 +29,7 @@ static const struct snd_sof_debugfs_map cnl_dsp_debugfs[] = {
 static void cnl_ipc_host_done(struct snd_sof_dev *sdev);
 static void cnl_ipc_dsp_done(struct snd_sof_dev *sdev);
 
-irqreturn_t cnl_ipc_irq_thread(int irq, void *context)
+static irqreturn_t cnl_ipc_irq_thread(int irq, void *context)
 {
 	struct snd_sof_dev *sdev = context;
 	u32 hipci;
@@ -64,6 +64,11 @@ irqreturn_t cnl_ipc_irq_thread(int irq, void *context)
 		/* handle immediate reply from DSP core */
 		hda_dsp_ipc_get_reply(sdev);
 		snd_sof_ipc_reply(sdev, msg);
+
+		if (sdev->code_loading)	{
+			sdev->code_loading = 0;
+			wake_up(&sdev->waitq);
+		}
 
 		cnl_ipc_dsp_done(sdev);
 
@@ -163,54 +168,30 @@ static bool cnl_compact_ipc_compress(struct snd_sof_ipc_msg *msg,
 	return false;
 }
 
-int cnl_ipc_send_msg(struct snd_sof_dev *sdev, struct snd_sof_ipc_msg *msg)
+static int cnl_ipc_send_msg(struct snd_sof_dev *sdev,
+			    struct snd_sof_ipc_msg *msg)
 {
-	struct sof_intel_hda_dev *hdev = sdev->pdata->hw_pdata;
-	struct sof_ipc_cmd_hdr *hdr;
 	u32 dr = 0;
 	u32 dd = 0;
 
-	/*
-	 * Currently the only compact IPC supported is the PM_GATE
-	 * IPC which is used for transitioning the DSP between the
-	 * D0I0 and D0I3 states. And these are sent only during the
-	 * set_power_state() op. Therefore, there will never be a case
-	 * that a compact IPC results in the DSP exiting D0I3 without
-	 * the host and FW being in sync.
-	 */
 	if (cnl_compact_ipc_compress(msg, &dr, &dd)) {
 		/* send the message via IPC registers */
 		snd_sof_dsp_write(sdev, HDA_DSP_BAR, CNL_DSP_REG_HIPCIDD,
 				  dd);
 		snd_sof_dsp_write(sdev, HDA_DSP_BAR, CNL_DSP_REG_HIPCIDR,
 				  CNL_DSP_REG_HIPCIDR_BUSY | dr);
-		return 0;
+	} else {
+		/* send the message via mailbox */
+		sof_mailbox_write(sdev, sdev->host_box.offset, msg->msg_data,
+				  msg->msg_size);
+		snd_sof_dsp_write(sdev, HDA_DSP_BAR, CNL_DSP_REG_HIPCIDR,
+				  CNL_DSP_REG_HIPCIDR_BUSY);
 	}
-
-	/* send the message via mailbox */
-	sof_mailbox_write(sdev, sdev->host_box.offset, msg->msg_data,
-			  msg->msg_size);
-	snd_sof_dsp_write(sdev, HDA_DSP_BAR, CNL_DSP_REG_HIPCIDR,
-			  CNL_DSP_REG_HIPCIDR_BUSY);
-
-	hdr = msg->msg_data;
-
-	/*
-	 * Use mod_delayed_work() to schedule the delayed work
-	 * to avoid scheduling multiple workqueue items when
-	 * IPCs are sent at a high-rate. mod_delayed_work()
-	 * modifies the timer if the work is pending.
-	 * Also, a new delayed work should not be queued after the
-	 * CTX_SAVE IPC, which is sent before the DSP enters D3.
-	 */
-	if (hdr->cmd != (SOF_IPC_GLB_PM_MSG | SOF_IPC_PM_CTX_SAVE))
-		mod_delayed_work(system_wq, &hdev->d0i3_work,
-				 msecs_to_jiffies(SOF_HDA_D0I3_WORK_DELAY_MS));
 
 	return 0;
 }
 
-void cnl_ipc_dump(struct snd_sof_dev *sdev)
+static void cnl_ipc_dump(struct snd_sof_dev *sdev)
 {
 	u32 hipcctl;
 	u32 hipcida;
@@ -232,10 +213,9 @@ void cnl_ipc_dump(struct snd_sof_dev *sdev)
 
 /* cannonlake ops */
 const struct snd_sof_dsp_ops sof_cnl_ops = {
-	/* probe/remove/shutdown */
+	/* probe and remove */
 	.probe		= hda_dsp_probe,
 	.remove		= hda_dsp_remove,
-	.shutdown	= hda_dsp_shutdown,
 
 	/* Register IO */
 	.write		= sof_io_write,
@@ -279,24 +259,12 @@ const struct snd_sof_dsp_ops sof_cnl_ops = {
 	.pcm_trigger	= hda_dsp_pcm_trigger,
 	.pcm_pointer	= hda_dsp_pcm_pointer,
 
-#if IS_ENABLED(CONFIG_SND_SOC_SOF_HDA_PROBES)
-	/* probe callbacks */
-	.probe_assign	= hda_probe_compr_assign,
-	.probe_free	= hda_probe_compr_free,
-	.probe_set_params	= hda_probe_compr_set_params,
-	.probe_trigger	= hda_probe_compr_trigger,
-	.probe_pointer	= hda_probe_compr_pointer,
-#endif
-
 	/* firmware loading */
 	.load_firmware = snd_sof_load_firmware_raw,
 
 	/* pre/post fw run */
 	.pre_fw_run = hda_dsp_pre_fw_run,
 	.post_fw_run = hda_dsp_post_fw_run,
-
-	/* parse platform specific extended manifest */
-	.parse_platform_ext_manifest = hda_dsp_ext_man_get_cavs_config_data,
 
 	/* dsp core power up/down */
 	.core_power_up = hda_dsp_enable_core,
@@ -338,7 +306,10 @@ const struct sof_intel_dsp_desc cnl_chip_info = {
 	/* Cannonlake */
 	.cores_num = 4,
 	.init_core_mask = 1,
-	.host_managed_cores_mask = GENMASK(3, 0),
+	.cores_mask = HDA_DSP_CORE_MASK(0) |
+				HDA_DSP_CORE_MASK(1) |
+				HDA_DSP_CORE_MASK(2) |
+				HDA_DSP_CORE_MASK(3),
 	.ipc_req = CNL_DSP_REG_HIPCIDR,
 	.ipc_req_mask = CNL_DSP_REG_HIPCIDR_BUSY,
 	.ipc_ack = CNL_DSP_REG_HIPCIDA,
@@ -350,11 +321,63 @@ const struct sof_intel_dsp_desc cnl_chip_info = {
 };
 EXPORT_SYMBOL_NS(cnl_chip_info, SND_SOC_SOF_INTEL_HDA_COMMON);
 
+const struct sof_intel_dsp_desc icl_chip_info = {
+	/* Icelake */
+	.cores_num = 4,
+	.init_core_mask = 1,
+	.cores_mask = HDA_DSP_CORE_MASK(0) |
+				HDA_DSP_CORE_MASK(1) |
+				HDA_DSP_CORE_MASK(2) |
+				HDA_DSP_CORE_MASK(3),
+	.ipc_req = CNL_DSP_REG_HIPCIDR,
+	.ipc_req_mask = CNL_DSP_REG_HIPCIDR_BUSY,
+	.ipc_ack = CNL_DSP_REG_HIPCIDA,
+	.ipc_ack_mask = CNL_DSP_REG_HIPCIDA_DONE,
+	.ipc_ctl = CNL_DSP_REG_HIPCCTL,
+	.rom_init_timeout	= 300,
+	.ssp_count = ICL_SSP_COUNT,
+	.ssp_base_offset = CNL_SSP_BASE_OFFSET,
+};
+EXPORT_SYMBOL_NS(icl_chip_info, SND_SOC_SOF_INTEL_HDA_COMMON);
+
+const struct sof_intel_dsp_desc tgl_chip_info = {
+	/* Tigerlake */
+	.cores_num = 4,
+	.init_core_mask = 1,
+	.cores_mask = HDA_DSP_CORE_MASK(0),
+	.ipc_req = CNL_DSP_REG_HIPCIDR,
+	.ipc_req_mask = CNL_DSP_REG_HIPCIDR_BUSY,
+	.ipc_ack = CNL_DSP_REG_HIPCIDA,
+	.ipc_ack_mask = CNL_DSP_REG_HIPCIDA_DONE,
+	.ipc_ctl = CNL_DSP_REG_HIPCCTL,
+	.rom_init_timeout	= 300,
+	.ssp_count = ICL_SSP_COUNT,
+	.ssp_base_offset = CNL_SSP_BASE_OFFSET,
+};
+EXPORT_SYMBOL_NS(tgl_chip_info, SND_SOC_SOF_INTEL_HDA_COMMON);
+
+const struct sof_intel_dsp_desc ehl_chip_info = {
+	/* Elkhartlake */
+	.cores_num = 4,
+	.init_core_mask = 1,
+	.cores_mask = HDA_DSP_CORE_MASK(0),
+	.ipc_req = CNL_DSP_REG_HIPCIDR,
+	.ipc_req_mask = CNL_DSP_REG_HIPCIDR_BUSY,
+	.ipc_ack = CNL_DSP_REG_HIPCIDA,
+	.ipc_ack_mask = CNL_DSP_REG_HIPCIDA_DONE,
+	.ipc_ctl = CNL_DSP_REG_HIPCCTL,
+	.rom_init_timeout	= 300,
+	.ssp_count = ICL_SSP_COUNT,
+	.ssp_base_offset = CNL_SSP_BASE_OFFSET,
+};
+EXPORT_SYMBOL_NS(ehl_chip_info, SND_SOC_SOF_INTEL_HDA_COMMON);
+
 const struct sof_intel_dsp_desc jsl_chip_info = {
 	/* Jasperlake */
 	.cores_num = 2,
 	.init_core_mask = 1,
-	.host_managed_cores_mask = GENMASK(1, 0),
+	.cores_mask = HDA_DSP_CORE_MASK(0) |
+				HDA_DSP_CORE_MASK(1),
 	.ipc_req = CNL_DSP_REG_HIPCIDR,
 	.ipc_req_mask = CNL_DSP_REG_HIPCIDR_BUSY,
 	.ipc_ack = CNL_DSP_REG_HIPCIDA,

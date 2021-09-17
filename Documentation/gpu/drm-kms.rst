@@ -3,7 +3,7 @@ Kernel Mode Setting (KMS)
 =========================
 
 Drivers must initialize the mode setting core by calling
-drmm_mode_config_init() on the DRM device. The function
+drm_mode_config_init() on the DRM device. The function
 initializes the :c:type:`struct drm_device <drm_device>`
 mode_config field and never fails. Once done, mode configuration must
 be setup by initializing the following fields.
@@ -319,15 +319,6 @@ CRTC Functions Reference
 .. kernel-doc:: drivers/gpu/drm/drm_crtc.c
    :export:
 
-Color Management Functions Reference
-------------------------------------
-
-.. kernel-doc:: drivers/gpu/drm/drm_color_mgmt.c
-   :export:
-
-.. kernel-doc:: include/drm/drm_color_mgmt.h
-   :internal:
-
 Frame Buffer Abstraction
 ========================
 
@@ -379,21 +370,6 @@ Plane Functions Reference
 .. kernel-doc:: drivers/gpu/drm/drm_plane.c
    :export:
 
-Plane Composition Functions Reference
--------------------------------------
-
-.. kernel-doc:: drivers/gpu/drm/drm_blend.c
-   :export:
-
-Plane Damage Tracking Functions Reference
------------------------------------------
-
-.. kernel-doc:: drivers/gpu/drm/drm_damage_helper.c
-   :export:
-
-.. kernel-doc:: include/drm/drm_damage_helper.h
-   :internal:
-
 Display Modes Function Reference
 ================================
 
@@ -420,9 +396,6 @@ Connector Functions Reference
 
 Writeback Connectors
 --------------------
-
-.. kernel-doc:: include/drm/drm_writeback.h
-  :internal:
 
 .. kernel-doc:: drivers/gpu/drm/drm_writeback.c
   :doc: overview
@@ -460,9 +433,6 @@ KMS Locking
 KMS Properties
 ==============
 
-This section of the documentation is primarily aimed at user-space developers.
-For the driver APIs, see the other sections.
-
 Property Types and Blob Property Support
 ----------------------------------------
 
@@ -487,35 +457,38 @@ HDMI Specific Connector Properties
 .. kernel-doc:: drivers/gpu/drm/drm_connector.c
    :doc: HDMI connector properties
 
-Standard CRTC Properties
-------------------------
-
-.. kernel-doc:: drivers/gpu/drm/drm_crtc.c
-   :doc: standard CRTC properties
-
-Standard Plane Properties
--------------------------
-
-.. kernel-doc:: drivers/gpu/drm/drm_plane.c
-   :doc: standard plane properties
-
 Plane Composition Properties
 ----------------------------
 
 .. kernel-doc:: drivers/gpu/drm/drm_blend.c
    :doc: overview
 
-Damage Tracking Properties
---------------------------
+.. kernel-doc:: drivers/gpu/drm/drm_blend.c
+   :export:
+
+FB_DAMAGE_CLIPS
+~~~~~~~~~~~~~~~
 
 .. kernel-doc:: drivers/gpu/drm/drm_damage_helper.c
    :doc: overview
+
+.. kernel-doc:: drivers/gpu/drm/drm_damage_helper.c
+   :export:
+
+.. kernel-doc:: include/drm/drm_damage_helper.h
+   :internal:
 
 Color Management Properties
 ---------------------------
 
 .. kernel-doc:: drivers/gpu/drm/drm_color_mgmt.c
    :doc: overview
+
+.. kernel-doc:: drivers/gpu/drm/drm_color_mgmt.c
+   :export:
+
+.. kernel-doc:: include/drm/drm_color_mgmt.h
+   :internal:
 
 Tile Group Property
 -------------------
@@ -560,19 +533,4 @@ Vertical Blanking and Interrupt Handling Functions Reference
    :internal:
 
 .. kernel-doc:: drivers/gpu/drm/drm_vblank.c
-   :export:
-
-Vertical Blank Work
-===================
-
-.. kernel-doc:: drivers/gpu/drm/drm_vblank_work.c
-   :doc: vblank works
-
-Vertical Blank Work Functions Reference
----------------------------------------
-
-.. kernel-doc:: include/drm/drm_vblank_work.h
-   :internal:
-
-.. kernel-doc:: drivers/gpu/drm/drm_vblank_work.c
    :export:

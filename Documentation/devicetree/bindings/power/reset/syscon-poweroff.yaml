@@ -41,8 +41,6 @@ required:
   - regmap
   - offset
 
-additionalProperties: false
-
 allOf:
   - if:
       not:

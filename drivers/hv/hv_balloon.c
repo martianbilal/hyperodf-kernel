@@ -533,6 +533,7 @@ struct hv_dynmem_device {
 	 * State to synchronize hot-add.
 	 */
 	struct completion  ol_waitevent;
+	bool ha_waiting;
 	/*
 	 * This thread handles hot-add
 	 * requests from the host as well as notifying
@@ -633,7 +634,10 @@ static int hv_memory_notifier(struct notifier_block *nb, unsigned long val,
 	switch (val) {
 	case MEM_ONLINE:
 	case MEM_CANCEL_ONLINE:
-		complete(&dm_device.ol_waitevent);
+		if (dm_device.ha_waiting) {
+			dm_device.ha_waiting = false;
+			complete(&dm_device.ol_waitevent);
+		}
 		break;
 
 	case MEM_OFFLINE:
@@ -722,11 +726,12 @@ static void hv_mem_hot_add(unsigned long start, unsigned long size,
 		has->covered_end_pfn +=  processed_pfn;
 		spin_unlock_irqrestore(&dm_device.ha_lock, flags);
 
-		reinit_completion(&dm_device.ol_waitevent);
+		init_completion(&dm_device.ol_waitevent);
+		dm_device.ha_waiting = !memhp_auto_online;
 
 		nid = memory_add_physaddr_to_nid(PFN_PHYS(start_pfn));
 		ret = add_memory(nid, PFN_PHYS((start_pfn)),
-				(HA_CHUNK << PAGE_SHIFT), MHP_MERGE_RESOURCE);
+				(HA_CHUNK << PAGE_SHIFT));
 
 		if (ret) {
 			pr_err("hot_add memory failed error is %d\n", ret);
@@ -748,14 +753,15 @@ static void hv_mem_hot_add(unsigned long start, unsigned long size,
 		}
 
 		/*
-		 * Wait for memory to get onlined. If the kernel onlined the
-		 * memory when adding it, this will return directly. Otherwise,
-		 * it will wait for user space to online the memory. This helps
-		 * to avoid adding memory faster than it is getting onlined. As
-		 * adding succeeded, it is ok to proceed even if the memory was
-		 * not onlined in time.
+		 * Wait for the memory block to be onlined when memory onlining
+		 * is done outside of kernel (memhp_auto_online). Since the hot
+		 * add has succeeded, it is ok to proceed even if the pages in
+		 * the hot added region have not been "onlined" within the
+		 * allowed time.
 		 */
-		wait_for_completion_timeout(&dm_device.ol_waitevent, 5 * HZ);
+		if (dm_device.ha_waiting)
+			wait_for_completion_timeout(&dm_device.ol_waitevent,
+						    5*HZ);
 		post_status(&dm_device);
 	}
 }
@@ -1198,7 +1204,6 @@ static void free_balloon_pages(struct hv_dynmem_device *dm,
 		__ClearPageOffline(pg);
 		__free_page(pg);
 		dm->num_pages_ballooned--;
-		adjust_managed_page_count(pg, 1);
 	}
 }
 
@@ -1239,10 +1244,8 @@ static unsigned int alloc_balloon_pages(struct hv_dynmem_device *dm,
 			split_page(pg, get_order(alloc_unit << PAGE_SHIFT));
 
 		/* mark all pages offline */
-		for (j = 0; j < alloc_unit; j++) {
+		for (j = 0; j < (1 << get_order(alloc_unit << PAGE_SHIFT)); j++)
 			__SetPageOffline(pg + j);
-			adjust_managed_page_count(pg + j, -1);
-		}
 
 		bl_resp->range_count++;
 		bl_resp->range_array[i].finfo.start_page =
@@ -1278,7 +1281,7 @@ static void balloon_up(struct work_struct *dummy)
 
 	/* Refuse to balloon below the floor. */
 	if (avail_pages < num_pages || avail_pages - num_pages < floor) {
-		pr_info("Balloon request will be partially fulfilled. %s\n",
+		pr_warn("Balloon request will be partially fulfilled. %s\n",
 			avail_pages < num_pages ? "Not enough memory." :
 			"Balloon floor reached.");
 
@@ -1703,7 +1706,6 @@ static int balloon_probe(struct hv_device *dev,
 
 #ifdef CONFIG_MEMORY_HOTPLUG
 	set_online_page_callback(&hv_online_page);
-	init_completion(&dm_device.ol_waitevent);
 	register_memory_notifier(&hv_memory_nb);
 #endif
 

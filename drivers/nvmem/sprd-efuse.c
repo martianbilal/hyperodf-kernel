@@ -217,14 +217,12 @@ static int sprd_efuse_raw_prog(struct sprd_efuse *efuse, u32 blk, bool doub,
 	 * Enable the auto-check function to validate if the programming is
 	 * successful.
 	 */
-	if (lock)
-		sprd_efuse_set_auto_check(efuse, true);
+	sprd_efuse_set_auto_check(efuse, true);
 
 	writel(*data, efuse->base + SPRD_EFUSE_MEM(blk));
 
 	/* Disable auto-check and data double after programming */
-	if (lock)
-		sprd_efuse_set_auto_check(efuse, false);
+	sprd_efuse_set_auto_check(efuse, false);
 	sprd_efuse_set_data_double(efuse, false);
 
 	/*
@@ -239,7 +237,7 @@ static int sprd_efuse_raw_prog(struct sprd_efuse *efuse, u32 blk, bool doub,
 		writel(SPRD_EFUSE_ERR_CLR_MASK,
 		       efuse->base + SPRD_EFUSE_ERR_CLR);
 		ret = -EBUSY;
-	} else if (lock) {
+	} else {
 		sprd_efuse_set_prog_lock(efuse, lock);
 		writel(0, efuse->base + SPRD_EFUSE_MEM(blk));
 		sprd_efuse_set_prog_lock(efuse, false);
@@ -324,8 +322,6 @@ unlock:
 static int sprd_efuse_write(void *context, u32 offset, void *val, size_t bytes)
 {
 	struct sprd_efuse *efuse = context;
-	bool blk_double = efuse->data->blk_double;
-	bool lock;
 	int ret;
 
 	ret = sprd_efuse_lock(efuse);
@@ -336,20 +332,7 @@ static int sprd_efuse_write(void *context, u32 offset, void *val, size_t bytes)
 	if (ret)
 		goto unlock;
 
-	/*
-	 * If the writing bytes are equal with the block width, which means the
-	 * whole block will be programmed. For this case, we should not allow
-	 * this block to be programmed again by locking this block.
-	 *
-	 * If the block was programmed partially, we should allow this block to
-	 * be programmed again.
-	 */
-	if (bytes < SPRD_EFUSE_BLOCK_WIDTH)
-		lock = false;
-	else
-		lock = true;
-
-	ret = sprd_efuse_raw_prog(efuse, offset, blk_double, lock, val);
+	ret = sprd_efuse_raw_prog(efuse, offset, false, false, val);
 
 	clk_disable_unprepare(efuse->clk);
 
@@ -378,8 +361,8 @@ static int sprd_efuse_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	efuse->base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(efuse->base))
-		return PTR_ERR(efuse->base);
+	if (!efuse->base)
+		return -ENOMEM;
 
 	ret = of_hwspin_lock_get_id(np, 0);
 	if (ret < 0) {

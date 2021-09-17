@@ -16,12 +16,9 @@ general.
    devlink-dpipe
    devlink-health
    devlink-info
-   devlink-flash
    devlink-params
-   devlink-port
    devlink-region
    devlink-resource
-   devlink-reload
    devlink-trap
 
 Driver-specific documentation
@@ -35,14 +32,11 @@ parameters, info versions, and other features it supports.
 
    bnxt
    ionic
-   ice
    mlx4
    mlx5
    mlxsw
    mv88e6xxx
    netdevsim
    nfp
-   sja1105
    qed
    ti-cpsw-switch
-   am65-nuss-cpsw-switch

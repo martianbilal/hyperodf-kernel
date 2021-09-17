@@ -235,6 +235,36 @@ static ssize_t ti_eqep_position_ceiling_write(struct counter_device *counter,
 	return len;
 }
 
+static ssize_t ti_eqep_position_floor_read(struct counter_device *counter,
+					   struct counter_count *count,
+					   void *ext_priv, char *buf)
+{
+	struct ti_eqep_cnt *priv = counter->priv;
+	u32 qposinit;
+
+	regmap_read(priv->regmap32, QPOSINIT, &qposinit);
+
+	return sprintf(buf, "%u\n", qposinit);
+}
+
+static ssize_t ti_eqep_position_floor_write(struct counter_device *counter,
+					    struct counter_count *count,
+					    void *ext_priv, const char *buf,
+					    size_t len)
+{
+	struct ti_eqep_cnt *priv = counter->priv;
+	int err;
+	u32 res;
+
+	err = kstrtouint(buf, 0, &res);
+	if (err < 0)
+		return err;
+
+	regmap_write(priv->regmap32, QPOSINIT, res);
+
+	return len;
+}
+
 static ssize_t ti_eqep_position_enable_read(struct counter_device *counter,
 					    struct counter_count *count,
 					    void *ext_priv, char *buf)
@@ -270,6 +300,11 @@ static struct counter_count_ext ti_eqep_position_ext[] = {
 		.name	= "ceiling",
 		.read	= ti_eqep_position_ceiling_read,
 		.write	= ti_eqep_position_ceiling_write,
+	},
+	{
+		.name	= "floor",
+		.read	= ti_eqep_position_floor_read,
+		.write	= ti_eqep_position_floor_write,
 	},
 	{
 		.name	= "enable",
@@ -333,7 +368,7 @@ static const struct regmap_config ti_eqep_regmap32_config = {
 	.reg_bits = 32,
 	.val_bits = 32,
 	.reg_stride = 4,
-	.max_register = QUPRD,
+	.max_register = 0x24,
 };
 
 static const struct regmap_config ti_eqep_regmap16_config = {
@@ -341,7 +376,7 @@ static const struct regmap_config ti_eqep_regmap16_config = {
 	.reg_bits = 16,
 	.val_bits = 16,
 	.reg_stride = 2,
-	.max_register = QCPRDLAT,
+	.max_register = 0x1e,
 };
 
 static int ti_eqep_probe(struct platform_device *pdev)
@@ -404,7 +439,7 @@ static int ti_eqep_remove(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 
 	counter_unregister(&priv->counter);
-	pm_runtime_put_sync(dev);
+	pm_runtime_put_sync(dev),
 	pm_runtime_disable(dev);
 
 	return 0;

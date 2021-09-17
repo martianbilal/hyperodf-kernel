@@ -41,15 +41,15 @@ static void pm_calc_rlib_size(struct packet_manager *pm,
 				unsigned int *rlib_size,
 				bool *over_subscription)
 {
-	unsigned int process_count, queue_count, compute_queue_count, gws_queue_count;
+	unsigned int process_count, queue_count, compute_queue_count;
 	unsigned int map_queue_size;
 	unsigned int max_proc_per_quantum = 1;
 	struct kfd_dev *dev = pm->dqm->dev;
 
 	process_count = pm->dqm->processes_count;
-	queue_count = pm->dqm->active_queue_count;
-	compute_queue_count = pm->dqm->active_cp_queue_count;
-	gws_queue_count = pm->dqm->gws_queue_count;
+	queue_count = pm->dqm->queue_count;
+	compute_queue_count = queue_count - pm->dqm->sdma_queue_count -
+				pm->dqm->xgmi_sdma_queue_count;
 
 	/* check if there is over subscription
 	 * Note: the arbitration between the number of VMIDs and
@@ -62,8 +62,7 @@ static void pm_calc_rlib_size(struct packet_manager *pm,
 		max_proc_per_quantum = dev->max_proc_per_quantum;
 
 	if ((process_count > max_proc_per_quantum) ||
-	    compute_queue_count > get_cp_queues_num(pm->dqm) ||
-	    gws_queue_count > 1) {
+	    compute_queue_count > get_queues_num(pm->dqm)) {
 		*over_subscription = true;
 		pr_debug("Over subscribed runlist\n");
 	}
@@ -142,7 +141,7 @@ static int pm_create_runlist_ib(struct packet_manager *pm,
 	pm->ib_size_bytes = alloc_size_bytes;
 
 	pr_debug("Building runlist ib process count: %d queues count %d\n",
-		pm->dqm->processes_count, pm->dqm->active_queue_count);
+		pm->dqm->processes_count, pm->dqm->queue_count);
 
 	/* build the run list ib packet */
 	list_for_each_entry(cur, queues, list) {
@@ -245,10 +244,6 @@ int pm_init(struct packet_manager *pm, struct device_queue_manager *dqm)
 	case CHIP_NAVI10:
 	case CHIP_NAVI12:
 	case CHIP_NAVI14:
-	case CHIP_SIENNA_CICHLID:
-	case CHIP_NAVY_FLOUNDER:
-	case CHIP_VANGOGH:
-	case CHIP_DIMGREY_CAVEFISH:
 		pm->pmf = &kfd_v9_pm_funcs;
 		break;
 	default:
@@ -347,7 +342,7 @@ fail_create_runlist_ib:
 }
 
 int pm_send_query_status(struct packet_manager *pm, uint64_t fence_address,
-			uint64_t fence_value)
+			uint32_t fence_value)
 {
 	uint32_t *buffer, size;
 	int retval = 0;

@@ -970,7 +970,6 @@ static int set_serial_info(struct tty_struct *tty, struct serial_struct *ss)
 	if (!serial_isroot()) {
 		if ((ss->baud_base != state->baud_base) ||
 		    (ss->close_delay != port->close_delay) ||
-		    (ss->closing_wait != port->closing_wait) ||
 		    (ss->xmit_fifo_size != state->xmit_fifo_size) ||
 		    ((ss->flags & ~ASYNC_USR_MASK) !=
 		     (port->flags & ~ASYNC_USR_MASK))) {
@@ -999,6 +998,7 @@ static int set_serial_info(struct tty_struct *tty, struct serial_struct *ss)
 	state->custom_divisor = ss->custom_divisor;
 	port->close_delay = ss->close_delay * HZ/100;
 	port->closing_wait = ss->closing_wait * HZ/100;
+	port->low_latency = (port->flags & ASYNC_LOW_LATENCY) ? 1 : 0;
 
 check_and_exit:
 	if (tty_port_initialized(port)) {
@@ -1385,6 +1385,8 @@ static int rs_open(struct tty_struct *tty, struct file * filp)
 	port->tty = tty;
 	tty->driver_data = info;
 	tty->port = port;
+
+	port->low_latency = (port->flags & ASYNC_LOW_LATENCY) ? 1 : 0;
 
 	retval = startup(tty, info);
 	if (retval) {

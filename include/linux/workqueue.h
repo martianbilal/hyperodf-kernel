@@ -62,7 +62,7 @@ enum {
 	WORK_CPU_UNBOUND	= NR_CPUS,
 
 	/*
-	 * Reserve 8 bits off of pwq pointer w/ debugobjects turned off.
+	 * Reserve 7 bits off of pwq pointer w/ debugobjects turned off.
 	 * This makes pwqs aligned to 256 bytes and allows 15 workqueue
 	 * flush colors.
 	 */
@@ -311,7 +311,7 @@ enum {
 	WQ_MEM_RECLAIM		= 1 << 3, /* may be used for memory reclaim */
 	WQ_HIGHPRI		= 1 << 4, /* high priority */
 	WQ_CPU_INTENSIVE	= 1 << 5, /* cpu intensive workqueue */
-	WQ_SYSFS		= 1 << 6, /* visible in sysfs, see workqueue_sysfs_register() */
+	WQ_SYSFS		= 1 << 6, /* visible in sysfs, see wq_sysfs_register() */
 
 	/*
 	 * Per-cpu workqueues are generally preferred because they tend to
@@ -665,7 +665,7 @@ int workqueue_online_cpu(unsigned int cpu);
 int workqueue_offline_cpu(unsigned int cpu);
 #endif
 
-void __init workqueue_init_early(void);
-void __init workqueue_init(void);
+int __init workqueue_init_early(void);
+int __init workqueue_init(void);
 
 #endif

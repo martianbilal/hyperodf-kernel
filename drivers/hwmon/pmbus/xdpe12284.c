@@ -18,8 +18,7 @@
 #define XDPE122_AMD_625MV		0x10 /* AMD mode 6.25mV */
 #define XDPE122_PAGE_NUM		2
 
-static int xdpe122_read_word_data(struct i2c_client *client, int page,
-				  int phase, int reg)
+static int xdpe122_read_word_data(struct i2c_client *client, int page, int reg)
 {
 	const struct pmbus_driver_info *info = pmbus_get_driver_info(client);
 	long val;
@@ -30,7 +29,7 @@ static int xdpe122_read_word_data(struct i2c_client *client, int page,
 	switch (reg) {
 	case PMBUS_VOUT_OV_FAULT_LIMIT:
 	case PMBUS_VOUT_UV_FAULT_LIMIT:
-		ret = pmbus_read_word_data(client, page, phase, reg);
+		ret = pmbus_read_word_data(client, page, reg);
 		if (ret < 0)
 			return ret;
 
@@ -127,7 +126,8 @@ static struct pmbus_driver_info xdpe122_info = {
 	.read_word_data = xdpe122_read_word_data,
 };
 
-static int xdpe122_probe(struct i2c_client *client)
+static int xdpe122_probe(struct i2c_client *client,
+			 const struct i2c_device_id *id)
 {
 	struct pmbus_driver_info *info;
 
@@ -136,7 +136,7 @@ static int xdpe122_probe(struct i2c_client *client)
 	if (!info)
 		return -ENOMEM;
 
-	return pmbus_do_probe(client, info);
+	return pmbus_do_probe(client, id, info);
 }
 
 static const struct i2c_device_id xdpe122_id[] = {
@@ -159,7 +159,8 @@ static struct i2c_driver xdpe122_driver = {
 		.name = "xdpe12284",
 		.of_match_table = of_match_ptr(xdpe122_of_match),
 	},
-	.probe_new = xdpe122_probe,
+	.probe = xdpe122_probe,
+	.remove = pmbus_do_remove,
 	.id_table = xdpe122_id,
 };
 

@@ -25,10 +25,8 @@
 #ifndef __DISPLAY_MODE_LIB_H__
 #define __DISPLAY_MODE_LIB_H__
 
-#include "dm_services.h"
-#include "dc_features.h"
-#include "display_mode_structs.h"
-#include "display_mode_enums.h"
+
+#include "dml_common_defs.h"
 #include "display_mode_vba.h"
 
 enum dml_project {
@@ -37,7 +35,6 @@ enum dml_project {
 	DML_PROJECT_NAVI10,
 	DML_PROJECT_NAVI10v2,
 	DML_PROJECT_DCN21,
-	DML_PROJECT_DCN30,
 };
 
 struct display_mode_lib;
@@ -79,10 +76,4 @@ void dml_init_instance(struct display_mode_lib *lib,
 
 const char *dml_get_status_message(enum dm_validation_status status);
 
-void dml_log_pipe_params(
-		struct display_mode_lib *mode_lib,
-		display_e2e_pipe_params_st *pipes,
-		int pipe_cnt);
-
-void dml_log_mode_support_params(struct display_mode_lib *mode_lib);
 #endif

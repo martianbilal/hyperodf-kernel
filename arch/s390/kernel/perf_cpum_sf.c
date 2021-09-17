@@ -372,33 +372,28 @@ static void deallocate_buffers(struct cpu_hw_sf *cpuhw)
 
 static int allocate_buffers(struct cpu_hw_sf *cpuhw, struct hw_perf_event *hwc)
 {
-	unsigned long n_sdb, freq;
+	unsigned long n_sdb, freq, factor;
 	size_t sample_size;
 
 	/* Calculate sampling buffers using 4K pages
 	 *
-	 *    1. The sampling size is 32 bytes for basic sampling. This size
-	 *	 is the same for all machine types. Diagnostic
-	 *	 sampling uses auxlilary data buffer setup which provides the
-	 *	 memory for SDBs using linux common code auxiliary trace
-	 *	 setup.
+	 *    1. Determine the sample data size which depends on the used
+	 *	 sampling functions, for example, basic-sampling or
+	 *	 basic-sampling with diagnostic-sampling.
 	 *
-	 *    2. Function alloc_sampling_buffer() sets the Alert Request
+	 *    2. Use the sampling frequency as input.  The sampling buffer is
+	 *	 designed for almost one second.  This can be adjusted through
+	 *	 the "factor" variable.
+	 *	 In any case, alloc_sampling_buffer() sets the Alert Request
 	 *	 Control indicator to trigger a measurement-alert to harvest
-	 *	 sample-data-blocks (SDB). This is done per SDB. This
-	 *	 measurement alert interrupt fires quick enough to handle
-	 *	 one SDB, on very high frequency and work loads there might
-	 *	 be 2 to 3 SBDs available for sample processing.
-	 *	 Currently there is no need for setup alert request on every
-	 *	 n-th page. This is counterproductive as one IRQ triggers
-	 *	 a very high number of samples to be processed at one IRQ.
+	 *	 sample-data-blocks (sdb).
 	 *
-	 *    3. Use the sampling frequency as input.
-	 *	 Compute the number of SDBs and ensure a minimum
-	 *	 of CPUM_SF_MIN_SDB.  Depending on frequency add some more
-	 *	 SDBs to handle a higher sampling rate.
-	 *	 Use a minimum of CPUM_SF_MIN_SDB and allow for 100 samples
-	 *	 (one SDB) for every 10000 HZ frequency increment.
+	 *    3. Compute the number of sample-data-blocks and ensure a minimum
+	 *	 of CPUM_SF_MIN_SDB.  Also ensure the upper limit does not
+	 *	 exceed a "calculated" maximum.  The symbolic maximum is
+	 *	 designed for basic-sampling only and needs to be increased if
+	 *	 diagnostic-sampling is active.
+	 *	 See also the remarks for these symbolic constants.
 	 *
 	 *    4. Compute the number of sample-data-block-tables (SDBT) and
 	 *	 ensure a minimum of CPUM_SF_MIN_SDBT (one table can manage up
@@ -406,7 +401,10 @@ static int allocate_buffers(struct cpu_hw_sf *cpuhw, struct hw_perf_event *hwc)
 	 */
 	sample_size = sizeof(struct hws_basic_entry);
 	freq = sample_rate_to_freq(&cpuhw->qsi, SAMPL_RATE(hwc));
-	n_sdb = CPUM_SF_MIN_SDB + DIV_ROUND_UP(freq, 10000);
+	factor = 1;
+	n_sdb = DIV_ROUND_UP(freq, factor * ((PAGE_SIZE-64) / sample_size));
+	if (n_sdb < CPUM_SF_MIN_SDB)
+		n_sdb = CPUM_SF_MIN_SDB;
 
 	/* If there is already a sampling buffer allocated, it is very likely
 	 * that the sampling facility is enabled too.  If the event to be
@@ -672,7 +670,7 @@ static void cpumsf_output_event_pid(struct perf_event *event,
 	rcu_read_lock();
 
 	perf_prepare_sample(&header, data, event, regs);
-	if (perf_output_begin(&handle, data, event, header.size))
+	if (perf_output_begin(&handle, event, header.size))
 		goto out;
 
 	/* Update the process ID (see also kernel/events/core.c) */
@@ -881,21 +879,12 @@ out:
 	return err;
 }
 
-static bool is_callchain_event(struct perf_event *event)
-{
-	u64 sample_type = event->attr.sample_type;
-
-	return sample_type & (PERF_SAMPLE_CALLCHAIN | PERF_SAMPLE_REGS_USER |
-			      PERF_SAMPLE_STACK_USER);
-}
-
 static int cpumsf_pmu_event_init(struct perf_event *event)
 {
 	int err;
 
 	/* No support for taken branch sampling */
-	/* No support for callchain, stacks and registers */
-	if (has_branch_stack(event) || is_callchain_event(event))
+	if (has_branch_stack(event))
 		return -EOPNOTSUPP;
 
 	switch (event->attr.type) {
@@ -1682,7 +1671,7 @@ static void aux_sdb_init(unsigned long sdb)
 
 	/* Save clock base */
 	te->clock_base = 1;
-	te->progusage2 = tod_clock_base.tod;
+	memcpy(&te->progusage2, &tod_clock_base[1], 8);
 }
 
 /*
@@ -2228,4 +2217,4 @@ out:
 }
 
 arch_initcall(init_cpum_sampling_pmu);
-core_param(cpum_sfb_size, CPUM_SF_MAX_SDB, sfb_size, 0644);
+core_param(cpum_sfb_size, CPUM_SF_MAX_SDB, sfb_size, 0640);

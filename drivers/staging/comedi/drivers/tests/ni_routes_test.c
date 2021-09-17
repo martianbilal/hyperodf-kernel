@@ -217,8 +217,7 @@ void test_ni_assign_device_routes(void)
 	const u8 *table, *oldtable;
 
 	init_pci_6070e();
-	ni_assign_device_routes(ni_eseries, pci_6070e, NULL,
-				&private.routing_tables);
+	ni_assign_device_routes(ni_eseries, pci_6070e, &private.routing_tables);
 	devroutes = private.routing_tables.valid_routes;
 	table = private.routing_tables.route_values;
 
@@ -254,8 +253,7 @@ void test_ni_assign_device_routes(void)
 	olddevroutes = devroutes;
 	oldtable = table;
 	init_pci_6220();
-	ni_assign_device_routes(ni_mseries, pci_6220, NULL,
-				&private.routing_tables);
+	ni_assign_device_routes(ni_mseries, pci_6220, &private.routing_tables);
 	devroutes = private.routing_tables.valid_routes;
 	table = private.routing_tables.route_values;
 
@@ -501,13 +499,13 @@ void test_route_register_is_valid(void)
 	const struct ni_route_tables *T = &private.routing_tables;
 
 	init_pci_fake();
-	unittest(!route_register_is_valid(4, O(4), T),
+	unittest(route_register_is_valid(4, O(4), T) == false,
 		 "check for bad source 4-->4\n");
-	unittest(route_register_is_valid(0, O(1), T),
+	unittest(route_register_is_valid(0, O(1), T) == true,
 		 "find first source\n");
-	unittest(route_register_is_valid(4, O(6), T),
+	unittest(route_register_is_valid(4, O(6), T) == true,
 		 "find middle source\n");
-	unittest(route_register_is_valid(9, O(8), T),
+	unittest(route_register_is_valid(9, O(8), T) == true,
 		 "find last source");
 }
 
@@ -609,7 +607,7 @@ static void __exit ni_routes_unittest_exit(void) { }
 module_init(ni_routes_unittest);
 module_exit(ni_routes_unittest_exit);
 
-MODULE_AUTHOR("Comedi https://www.comedi.org");
+MODULE_AUTHOR("Comedi http://www.comedi.org");
 MODULE_DESCRIPTION("Comedi unit-tests for ni_routes module");
 MODULE_LICENSE("GPL");
 /* **** END simple module entry/exit functions **** */

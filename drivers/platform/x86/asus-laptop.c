@@ -640,15 +640,22 @@ static enum led_brightness asus_kled_cdev_get(struct led_classdev *led_cdev)
 
 static void asus_led_exit(struct asus_laptop *asus)
 {
-	led_classdev_unregister(&asus->wled.led);
-	led_classdev_unregister(&asus->bled.led);
-	led_classdev_unregister(&asus->mled.led);
-	led_classdev_unregister(&asus->tled.led);
-	led_classdev_unregister(&asus->pled.led);
-	led_classdev_unregister(&asus->rled.led);
-	led_classdev_unregister(&asus->gled.led);
-	led_classdev_unregister(&asus->kled.led);
-
+	if (!IS_ERR_OR_NULL(asus->wled.led.dev))
+		led_classdev_unregister(&asus->wled.led);
+	if (!IS_ERR_OR_NULL(asus->bled.led.dev))
+		led_classdev_unregister(&asus->bled.led);
+	if (!IS_ERR_OR_NULL(asus->mled.led.dev))
+		led_classdev_unregister(&asus->mled.led);
+	if (!IS_ERR_OR_NULL(asus->tled.led.dev))
+		led_classdev_unregister(&asus->tled.led);
+	if (!IS_ERR_OR_NULL(asus->pled.led.dev))
+		led_classdev_unregister(&asus->pled.led);
+	if (!IS_ERR_OR_NULL(asus->rled.led.dev))
+		led_classdev_unregister(&asus->rled.led);
+	if (!IS_ERR_OR_NULL(asus->gled.led.dev))
+		led_classdev_unregister(&asus->gled.led);
+	if (!IS_ERR_OR_NULL(asus->kled.led.dev))
+		led_classdev_unregister(&asus->kled.led);
 	if (asus->led_workqueue) {
 		destroy_workqueue(asus->led_workqueue);
 		asus->led_workqueue = NULL;
@@ -861,7 +868,7 @@ static ssize_t infos_show(struct device *dev, struct device_attribute *attr,
 	 * The significance of others is yet to be found.
 	 */
 	rv = acpi_evaluate_integer(asus->handle, "SFUN", NULL, &temp);
-	if (ACPI_SUCCESS(rv))
+	if (!ACPI_FAILURE(rv))
 		len += sprintf(page + len, "SFUN value         : %#x\n",
 			       (uint) temp);
 	/*
@@ -873,7 +880,7 @@ static ssize_t infos_show(struct device *dev, struct device_attribute *attr,
 	 * takes several seconds to run on some systems.
 	 */
 	rv = acpi_evaluate_integer(asus->handle, "HWRS", NULL, &temp);
-	if (ACPI_SUCCESS(rv))
+	if (!ACPI_FAILURE(rv))
 		len += sprintf(page + len, "HWRS value         : %#x\n",
 			       (uint) temp);
 	/*
@@ -884,7 +891,7 @@ static ssize_t infos_show(struct device *dev, struct device_attribute *attr,
 	 * silently ignored.
 	 */
 	rv = acpi_evaluate_integer(asus->handle, "ASYM", NULL, &temp);
-	if (ACPI_SUCCESS(rv))
+	if (!ACPI_FAILURE(rv))
 		len += sprintf(page + len, "ASYM value         : %#x\n",
 			       (uint) temp);
 	if (asus->dsdt_info) {

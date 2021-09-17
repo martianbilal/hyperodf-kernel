@@ -293,7 +293,7 @@ static int  edge_startup(struct usb_serial *serial);
 static void edge_disconnect(struct usb_serial *serial);
 static void edge_release(struct usb_serial *serial);
 static int edge_port_probe(struct usb_serial_port *port);
-static void edge_port_remove(struct usb_serial_port *port);
+static int edge_port_remove(struct usb_serial_port *port);
 
 /* function prototypes for all of our local functions */
 
@@ -1752,7 +1752,7 @@ static void process_rcvd_data(struct edgeport_serial *edge_serial,
 				edge_serial->rxState = EXPECT_HDR2;
 				break;
 			}
-			fallthrough;
+			/* Fall through */
 		case EXPECT_HDR2:
 			edge_serial->rxHeader2 = *buffer;
 			++buffer;
@@ -1804,7 +1804,7 @@ static void process_rcvd_data(struct edgeport_serial *edge_serial,
 				edge_serial->rxState = EXPECT_DATA;
 				break;
 			}
-			fallthrough;
+			/* Fall through */
 		case EXPECT_DATA: /* Expect data */
 			if (bufferLength < edge_serial->rxBytesRemaining) {
 				rxLen = bufferLength;
@@ -3003,31 +3003,25 @@ static int edge_startup(struct usb_serial *serial)
 				response = -ENODEV;
 			}
 
-			goto error;
+			usb_free_urb(edge_serial->interrupt_read_urb);
+			kfree(edge_serial->interrupt_in_buffer);
+
+			usb_free_urb(edge_serial->read_urb);
+			kfree(edge_serial->bulk_in_buffer);
+
+			kfree(edge_serial);
+
+			return response;
 		}
 
 		/* start interrupt read for this edgeport this interrupt will
 		 * continue as long as the edgeport is connected */
 		response = usb_submit_urb(edge_serial->interrupt_read_urb,
 								GFP_KERNEL);
-		if (response) {
+		if (response)
 			dev_err(ddev, "%s - Error %d submitting control urb\n",
 				__func__, response);
-
-			goto error;
-		}
 	}
-	return response;
-
-error:
-	usb_free_urb(edge_serial->interrupt_read_urb);
-	kfree(edge_serial->interrupt_in_buffer);
-
-	usb_free_urb(edge_serial->read_urb);
-	kfree(edge_serial->bulk_in_buffer);
-
-	kfree(edge_serial);
-
 	return response;
 }
 
@@ -3084,12 +3078,14 @@ static int edge_port_probe(struct usb_serial_port *port)
 	return 0;
 }
 
-static void edge_port_remove(struct usb_serial_port *port)
+static int edge_port_remove(struct usb_serial_port *port)
 {
 	struct edgeport_port *edge_port;
 
 	edge_port = usb_get_serial_port_data(port);
 	kfree(edge_port);
+
+	return 0;
 }
 
 static struct usb_serial_driver edgeport_2port_device = {

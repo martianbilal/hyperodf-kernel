@@ -37,7 +37,7 @@ struct max_sync_cop {
 	u32 fc;
 	u32 mode;
 	u32 triplets;
-	struct msc_triplet trip[];
+	struct msc_triplet trip[0];
 } __packed;
 
 struct alg_props {

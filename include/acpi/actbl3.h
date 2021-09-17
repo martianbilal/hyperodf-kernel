@@ -3,7 +3,7 @@
  *
  * Name: actbl3.h - ACPI Table Definitions
  *
- * Copyright (C) 2000 - 2021, Intel Corp.
+ * Copyright (C) 2000 - 2020, Intel Corp.
  *
  *****************************************************************************/
 
@@ -33,12 +33,13 @@
 #define ACPI_SIG_TCPA           "TCPA"	/* Trusted Computing Platform Alliance table */
 #define ACPI_SIG_TPM2           "TPM2"	/* Trusted Platform Module 2.0 H/W interface table */
 #define ACPI_SIG_UEFI           "UEFI"	/* Uefi Boot Optimization Table */
+#define ACPI_SIG_VRTC           "VRTC"	/* Virtual Real Time Clock Table */
 #define ACPI_SIG_WAET           "WAET"	/* Windows ACPI Emulated devices Table */
 #define ACPI_SIG_WDAT           "WDAT"	/* Watchdog Action Table */
 #define ACPI_SIG_WDDT           "WDDT"	/* Watchdog Timer Description Table */
 #define ACPI_SIG_WDRT           "WDRT"	/* Watchdog Resource Table */
 #define ACPI_SIG_WPBT           "WPBT"	/* Windows Platform Binary Table */
-#define ACPI_SIG_WSMT           "WSMT"	/* Windows SMM Security Mitigations Table */
+#define ACPI_SIG_WSMT           "WSMT"	/* Windows SMM Security Migrations Table */
 #define ACPI_SIG_XENV           "XENV"	/* Xen Environment table */
 #define ACPI_SIG_XXXX           "XXXX"	/* Intermediate AML header for ASL/ASL+ converter */
 
@@ -414,13 +415,6 @@ struct acpi_table_tpm2 {
 	/* Platform-specific data follows */
 };
 
-/* Optional trailer for revision 4 holding platform-specific data */
-struct acpi_tpm2_phy {
-	u8  start_method_specific[12];
-	u32 log_area_minimum_length;
-	u64 log_area_start_address;
-};
-
 /* Values for start_method above */
 
 #define ACPI_TPM2_NOT_ALLOWED                       0
@@ -481,6 +475,28 @@ struct acpi_table_uefi {
 	struct acpi_table_header header;	/* Common ACPI table header */
 	u8 identifier[16];	/* UUID identifier */
 	u16 data_offset;	/* Offset of remaining data in table */
+};
+
+/*******************************************************************************
+ *
+ * VRTC - Virtual Real Time Clock Table
+ *        Version 1
+ *
+ * Conforms to "Simple Firmware Interface Specification",
+ * Draft 0.8.2, Oct 19, 2010
+ * NOTE: The ACPI VRTC is equivalent to The SFI MRTC table.
+ *
+ ******************************************************************************/
+
+struct acpi_table_vrtc {
+	struct acpi_table_header header;	/* Common ACPI table header */
+};
+
+/* VRTC entry */
+
+struct acpi_vrtc_entry {
+	struct acpi_generic_address physical_address;
+	u32 irq;
 };
 
 /*******************************************************************************
@@ -657,10 +673,10 @@ struct acpi_table_wpbt {
 
 /*******************************************************************************
  *
- * WSMT - Windows SMM Security Mitigations Table
+ * WSMT - Windows SMM Security Migrations Table
  *        Version 1
  *
- * Conforms to "Windows SMM Security Mitigations Table",
+ * Conforms to "Windows SMM Security Migrations Table",
  * Version 1.0, April 18, 2016
  *
  ******************************************************************************/

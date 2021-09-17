@@ -24,8 +24,10 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/gcd.h>
+#include <linux/iopoll.h>
 
 #include <linux/spi/spi.h>
+#include <linux/gpio.h>
 
 #include <linux/platform_data/spi-omap2-mcspi.h>
 
@@ -347,19 +349,9 @@ disable_fifo:
 
 static int mcspi_wait_for_reg_bit(void __iomem *reg, unsigned long bit)
 {
-	unsigned long timeout;
+	u32 val;
 
-	timeout = jiffies + msecs_to_jiffies(1000);
-	while (!(readl_relaxed(reg) & bit)) {
-		if (time_after(jiffies, timeout)) {
-			if (!(readl_relaxed(reg) & bit))
-				return -ETIMEDOUT;
-			else
-				return 0;
-		}
-		cpu_relax();
-	}
-	return 0;
+	return readl_poll_timeout(reg, val, val & bit, 1, MSEC_PER_SEC);
 }
 
 static int mcspi_wait_for_completion(struct  omap2_mcspi *mcspi,
@@ -1032,22 +1024,8 @@ static void omap2_mcspi_release_dma(struct spi_master *master)
 	}
 }
 
-static void omap2_mcspi_cleanup(struct spi_device *spi)
-{
-	struct omap2_mcspi_cs	*cs;
-
-	if (spi->controller_state) {
-		/* Unlink controller state from context save list */
-		cs = spi->controller_state;
-		list_del(&cs->node);
-
-		kfree(cs);
-	}
-}
-
 static int omap2_mcspi_setup(struct spi_device *spi)
 {
-	bool			initial_setup = false;
 	int			ret;
 	struct omap2_mcspi	*mcspi = spi_master_get_devdata(spi->master);
 	struct omap2_mcspi_regs	*ctx = &mcspi->ctx;
@@ -1065,26 +1043,46 @@ static int omap2_mcspi_setup(struct spi_device *spi)
 		spi->controller_state = cs;
 		/* Link this to context save list */
 		list_add_tail(&cs->node, &ctx->cs);
-		initial_setup = true;
+
+		if (gpio_is_valid(spi->cs_gpio)) {
+			ret = gpio_request(spi->cs_gpio, dev_name(&spi->dev));
+			if (ret) {
+				dev_err(&spi->dev, "failed to request gpio\n");
+				return ret;
+			}
+			gpio_direction_output(spi->cs_gpio,
+					 !(spi->mode & SPI_CS_HIGH));
+		}
 	}
 
 	ret = pm_runtime_get_sync(mcspi->dev);
 	if (ret < 0) {
 		pm_runtime_put_noidle(mcspi->dev);
-		if (initial_setup)
-			omap2_mcspi_cleanup(spi);
 
 		return ret;
 	}
 
 	ret = omap2_mcspi_setup_transfer(spi, NULL);
-	if (ret && initial_setup)
-		omap2_mcspi_cleanup(spi);
-
 	pm_runtime_mark_last_busy(mcspi->dev);
 	pm_runtime_put_autosuspend(mcspi->dev);
 
 	return ret;
+}
+
+static void omap2_mcspi_cleanup(struct spi_device *spi)
+{
+	struct omap2_mcspi_cs	*cs;
+
+	if (spi->controller_state) {
+		/* Unlink controller state from context save list */
+		cs = spi->controller_state;
+		list_del(&cs->node);
+
+		kfree(cs);
+	}
+
+	if (gpio_is_valid(spi->cs_gpio))
+		gpio_free(spi->cs_gpio);
 }
 
 static irqreturn_t omap2_mcspi_irq_handler(int irq, void *data)
@@ -1154,7 +1152,7 @@ static int omap2_mcspi_transfer_one(struct spi_master *master,
 
 	omap2_mcspi_set_enable(spi, 0);
 
-	if (spi->cs_gpiod)
+	if (gpio_is_valid(spi->cs_gpio))
 		omap2_mcspi_set_cs(spi, spi->mode & SPI_CS_HIGH);
 
 	if (par_override ||
@@ -1243,7 +1241,7 @@ out:
 
 	omap2_mcspi_set_enable(spi, 0);
 
-	if (spi->cs_gpiod)
+	if (gpio_is_valid(spi->cs_gpio))
 		omap2_mcspi_set_cs(spi, !(spi->mode & SPI_CS_HIGH));
 
 	if (mcspi->fifo_depth > 0 && t)
@@ -1433,7 +1431,6 @@ static int omap2_mcspi_probe(struct platform_device *pdev)
 	master->dev.of_node = node;
 	master->max_speed_hz = OMAP2_MCSPI_MAX_FREQ;
 	master->min_speed_hz = OMAP2_MCSPI_MAX_FREQ >> 15;
-	master->use_gpio_descriptors = true;
 
 	platform_set_drvdata(pdev, master);
 

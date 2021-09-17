@@ -200,9 +200,9 @@ static int rocker_dma_test_offset(const struct rocker *rocker,
 	buf = alloc + offset;
 	expect = buf + ROCKER_TEST_DMA_BUF_SIZE;
 
-	dma_handle = dma_map_single(&pdev->dev, buf, ROCKER_TEST_DMA_BUF_SIZE,
-				    DMA_BIDIRECTIONAL);
-	if (dma_mapping_error(&pdev->dev, dma_handle)) {
+	dma_handle = pci_map_single(pdev, buf, ROCKER_TEST_DMA_BUF_SIZE,
+				    PCI_DMA_BIDIRECTIONAL);
+	if (pci_dma_mapping_error(pdev, dma_handle)) {
 		err = -EIO;
 		goto free_alloc;
 	}
@@ -234,8 +234,8 @@ static int rocker_dma_test_offset(const struct rocker *rocker,
 		goto unmap;
 
 unmap:
-	dma_unmap_single(&pdev->dev, dma_handle, ROCKER_TEST_DMA_BUF_SIZE,
-			 DMA_BIDIRECTIONAL);
+	pci_unmap_single(pdev, dma_handle, ROCKER_TEST_DMA_BUF_SIZE,
+			 PCI_DMA_BIDIRECTIONAL);
 free_alloc:
 	kfree(alloc);
 
@@ -441,9 +441,9 @@ static int rocker_dma_ring_create(const struct rocker *rocker,
 	if (!info->desc_info)
 		return -ENOMEM;
 
-	info->desc = dma_alloc_coherent(&rocker->pdev->dev,
-					info->size * sizeof(*info->desc),
-					&info->mapaddr, GFP_KERNEL);
+	info->desc = pci_alloc_consistent(rocker->pdev,
+					  info->size * sizeof(*info->desc),
+					  &info->mapaddr);
 	if (!info->desc) {
 		kfree(info->desc_info);
 		return -ENOMEM;
@@ -465,9 +465,9 @@ static void rocker_dma_ring_destroy(const struct rocker *rocker,
 {
 	rocker_write64(rocker, DMA_DESC_ADDR(info->type), 0);
 
-	dma_free_coherent(&rocker->pdev->dev,
-			  info->size * sizeof(struct rocker_desc), info->desc,
-			  info->mapaddr);
+	pci_free_consistent(rocker->pdev,
+			    info->size * sizeof(struct rocker_desc),
+			    info->desc, info->mapaddr);
 	kfree(info->desc_info);
 }
 
@@ -506,9 +506,8 @@ static int rocker_dma_ring_bufs_alloc(const struct rocker *rocker,
 			goto rollback;
 		}
 
-		dma_handle = dma_map_single(&pdev->dev, buf, buf_size,
-					    direction);
-		if (dma_mapping_error(&pdev->dev, dma_handle)) {
+		dma_handle = pci_map_single(pdev, buf, buf_size, direction);
+		if (pci_dma_mapping_error(pdev, dma_handle)) {
 			kfree(buf);
 			err = -EIO;
 			goto rollback;
@@ -527,8 +526,7 @@ rollback:
 	for (i--; i >= 0; i--) {
 		const struct rocker_desc_info *desc_info = &info->desc_info[i];
 
-		dma_unmap_single(&pdev->dev,
-				 dma_unmap_addr(desc_info, mapaddr),
+		pci_unmap_single(pdev, dma_unmap_addr(desc_info, mapaddr),
 				 desc_info->data_size, direction);
 		kfree(desc_info->data);
 	}
@@ -548,8 +546,7 @@ static void rocker_dma_ring_bufs_free(const struct rocker *rocker,
 
 		desc->buf_addr = 0;
 		desc->buf_size = 0;
-		dma_unmap_single(&pdev->dev,
-				 dma_unmap_addr(desc_info, mapaddr),
+		pci_unmap_single(pdev, dma_unmap_addr(desc_info, mapaddr),
 				 desc_info->data_size, direction);
 		kfree(desc_info->data);
 	}
@@ -618,7 +615,7 @@ static int rocker_dma_rings_init(struct rocker *rocker)
 	spin_lock_init(&rocker->cmd_ring_lock);
 
 	err = rocker_dma_ring_bufs_alloc(rocker, &rocker->cmd_ring,
-					 DMA_BIDIRECTIONAL, PAGE_SIZE);
+					 PCI_DMA_BIDIRECTIONAL, PAGE_SIZE);
 	if (err) {
 		dev_err(&pdev->dev, "failed to alloc command dma ring buffers\n");
 		goto err_dma_cmd_ring_bufs_alloc;
@@ -639,7 +636,7 @@ static int rocker_dma_rings_init(struct rocker *rocker)
 	}
 
 	err = rocker_dma_ring_bufs_alloc(rocker, &rocker->event_ring,
-					 DMA_FROM_DEVICE, PAGE_SIZE);
+					 PCI_DMA_FROMDEVICE, PAGE_SIZE);
 	if (err) {
 		dev_err(&pdev->dev, "failed to alloc event dma ring buffers\n");
 		goto err_dma_event_ring_bufs_alloc;
@@ -650,10 +647,10 @@ static int rocker_dma_rings_init(struct rocker *rocker)
 err_dma_event_ring_bufs_alloc:
 	rocker_dma_ring_destroy(rocker, &rocker->event_ring);
 err_dma_event_ring_create:
-	rocker_dma_cmd_ring_waits_free(rocker);
-err_dma_cmd_ring_waits_alloc:
 	rocker_dma_ring_bufs_free(rocker, &rocker->cmd_ring,
-				  DMA_BIDIRECTIONAL);
+				  PCI_DMA_BIDIRECTIONAL);
+err_dma_cmd_ring_waits_alloc:
+	rocker_dma_cmd_ring_waits_free(rocker);
 err_dma_cmd_ring_bufs_alloc:
 	rocker_dma_ring_destroy(rocker, &rocker->cmd_ring);
 	return err;
@@ -662,11 +659,11 @@ err_dma_cmd_ring_bufs_alloc:
 static void rocker_dma_rings_fini(struct rocker *rocker)
 {
 	rocker_dma_ring_bufs_free(rocker, &rocker->event_ring,
-				  DMA_BIDIRECTIONAL);
+				  PCI_DMA_BIDIRECTIONAL);
 	rocker_dma_ring_destroy(rocker, &rocker->event_ring);
 	rocker_dma_cmd_ring_waits_free(rocker);
 	rocker_dma_ring_bufs_free(rocker, &rocker->cmd_ring,
-				  DMA_BIDIRECTIONAL);
+				  PCI_DMA_BIDIRECTIONAL);
 	rocker_dma_ring_destroy(rocker, &rocker->cmd_ring);
 }
 
@@ -678,9 +675,9 @@ static int rocker_dma_rx_ring_skb_map(const struct rocker_port *rocker_port,
 	struct pci_dev *pdev = rocker->pdev;
 	dma_addr_t dma_handle;
 
-	dma_handle = dma_map_single(&pdev->dev, skb->data, buf_len,
-				    DMA_FROM_DEVICE);
-	if (dma_mapping_error(&pdev->dev, dma_handle))
+	dma_handle = pci_map_single(pdev, skb->data, buf_len,
+				    PCI_DMA_FROMDEVICE);
+	if (pci_dma_mapping_error(pdev, dma_handle))
 		return -EIO;
 	if (rocker_tlv_put_u64(desc_info, ROCKER_TLV_RX_FRAG_ADDR, dma_handle))
 		goto tlv_put_failure;
@@ -689,7 +686,7 @@ static int rocker_dma_rx_ring_skb_map(const struct rocker_port *rocker_port,
 	return 0;
 
 tlv_put_failure:
-	dma_unmap_single(&pdev->dev, dma_handle, buf_len, DMA_FROM_DEVICE);
+	pci_unmap_single(pdev, dma_handle, buf_len, PCI_DMA_FROMDEVICE);
 	desc_info->tlv_size = 0;
 	return -EMSGSIZE;
 }
@@ -737,7 +734,7 @@ static void rocker_dma_rx_ring_skb_unmap(const struct rocker *rocker,
 		return;
 	dma_handle = rocker_tlv_get_u64(attrs[ROCKER_TLV_RX_FRAG_ADDR]);
 	len = rocker_tlv_get_u16(attrs[ROCKER_TLV_RX_FRAG_MAX_LEN]);
-	dma_unmap_single(&pdev->dev, dma_handle, len, DMA_FROM_DEVICE);
+	pci_unmap_single(pdev, dma_handle, len, PCI_DMA_FROMDEVICE);
 }
 
 static void rocker_dma_rx_ring_skb_free(const struct rocker *rocker,
@@ -799,7 +796,7 @@ static int rocker_port_dma_rings_init(struct rocker_port *rocker_port)
 	}
 
 	err = rocker_dma_ring_bufs_alloc(rocker, &rocker_port->tx_ring,
-					 DMA_TO_DEVICE,
+					 PCI_DMA_TODEVICE,
 					 ROCKER_DMA_TX_DESC_SIZE);
 	if (err) {
 		netdev_err(rocker_port->dev, "failed to alloc tx dma ring buffers\n");
@@ -816,7 +813,7 @@ static int rocker_port_dma_rings_init(struct rocker_port *rocker_port)
 	}
 
 	err = rocker_dma_ring_bufs_alloc(rocker, &rocker_port->rx_ring,
-					 DMA_BIDIRECTIONAL,
+					 PCI_DMA_BIDIRECTIONAL,
 					 ROCKER_DMA_RX_DESC_SIZE);
 	if (err) {
 		netdev_err(rocker_port->dev, "failed to alloc rx dma ring buffers\n");
@@ -834,12 +831,12 @@ static int rocker_port_dma_rings_init(struct rocker_port *rocker_port)
 
 err_dma_rx_ring_skbs_alloc:
 	rocker_dma_ring_bufs_free(rocker, &rocker_port->rx_ring,
-				  DMA_BIDIRECTIONAL);
+				  PCI_DMA_BIDIRECTIONAL);
 err_dma_rx_ring_bufs_alloc:
 	rocker_dma_ring_destroy(rocker, &rocker_port->rx_ring);
 err_dma_rx_ring_create:
 	rocker_dma_ring_bufs_free(rocker, &rocker_port->tx_ring,
-				  DMA_TO_DEVICE);
+				  PCI_DMA_TODEVICE);
 err_dma_tx_ring_bufs_alloc:
 	rocker_dma_ring_destroy(rocker, &rocker_port->tx_ring);
 	return err;
@@ -851,10 +848,10 @@ static void rocker_port_dma_rings_fini(struct rocker_port *rocker_port)
 
 	rocker_dma_rx_ring_skbs_free(rocker_port);
 	rocker_dma_ring_bufs_free(rocker, &rocker_port->rx_ring,
-				  DMA_BIDIRECTIONAL);
+				  PCI_DMA_BIDIRECTIONAL);
 	rocker_dma_ring_destroy(rocker, &rocker_port->rx_ring);
 	rocker_dma_ring_bufs_free(rocker, &rocker_port->tx_ring,
-				  DMA_TO_DEVICE);
+				  PCI_DMA_TODEVICE);
 	rocker_dma_ring_destroy(rocker, &rocker_port->tx_ring);
 }
 
@@ -1550,12 +1547,16 @@ static void rocker_world_port_stop(struct rocker_port *rocker_port)
 }
 
 static int rocker_world_port_attr_stp_state_set(struct rocker_port *rocker_port,
-						u8 state)
+						u8 state,
+						struct switchdev_trans *trans)
 {
 	struct rocker_world_ops *wops = rocker_port->rocker->wops;
 
 	if (!wops->port_attr_stp_state_set)
 		return -EOPNOTSUPP;
+
+	if (switchdev_trans_ph_prepare(trans))
+		return 0;
 
 	return wops->port_attr_stp_state_set(rocker_port, state);
 }
@@ -1576,7 +1577,8 @@ rocker_world_port_attr_bridge_flags_support_get(const struct rocker_port *
 
 static int
 rocker_world_port_attr_pre_bridge_flags_set(struct rocker_port *rocker_port,
-					    struct switchdev_brport_flags flags)
+					    unsigned long brport_flags,
+					    struct switchdev_trans *trans)
 {
 	struct rocker_world_ops *wops = rocker_port->rocker->wops;
 	unsigned long brport_flags_s;
@@ -1590,7 +1592,7 @@ rocker_world_port_attr_pre_bridge_flags_set(struct rocker_port *rocker_port,
 	if (err)
 		return err;
 
-	if (flags.mask & ~brport_flags_s)
+	if (brport_flags & ~brport_flags_s)
 		return -EINVAL;
 
 	return 0;
@@ -1598,36 +1600,51 @@ rocker_world_port_attr_pre_bridge_flags_set(struct rocker_port *rocker_port,
 
 static int
 rocker_world_port_attr_bridge_flags_set(struct rocker_port *rocker_port,
-					struct switchdev_brport_flags flags)
+					unsigned long brport_flags,
+					struct switchdev_trans *trans)
 {
 	struct rocker_world_ops *wops = rocker_port->rocker->wops;
 
 	if (!wops->port_attr_bridge_flags_set)
 		return -EOPNOTSUPP;
 
-	return wops->port_attr_bridge_flags_set(rocker_port, flags.val);
+	if (switchdev_trans_ph_prepare(trans))
+		return 0;
+
+	return wops->port_attr_bridge_flags_set(rocker_port, brport_flags,
+						trans);
 }
 
 static int
 rocker_world_port_attr_bridge_ageing_time_set(struct rocker_port *rocker_port,
-					      u32 ageing_time)
+					      u32 ageing_time,
+					      struct switchdev_trans *trans)
+
 {
 	struct rocker_world_ops *wops = rocker_port->rocker->wops;
 
 	if (!wops->port_attr_bridge_ageing_time_set)
 		return -EOPNOTSUPP;
 
-	return wops->port_attr_bridge_ageing_time_set(rocker_port, ageing_time);
+	if (switchdev_trans_ph_prepare(trans))
+		return 0;
+
+	return wops->port_attr_bridge_ageing_time_set(rocker_port, ageing_time,
+						      trans);
 }
 
 static int
 rocker_world_port_obj_vlan_add(struct rocker_port *rocker_port,
-			       const struct switchdev_obj_port_vlan *vlan)
+			       const struct switchdev_obj_port_vlan *vlan,
+			       struct switchdev_trans *trans)
 {
 	struct rocker_world_ops *wops = rocker_port->rocker->wops;
 
 	if (!wops->port_obj_vlan_add)
 		return -EOPNOTSUPP;
+
+	if (switchdev_trans_ph_prepare(trans))
+		return 0;
 
 	return wops->port_obj_vlan_add(rocker_port, vlan);
 }
@@ -1841,7 +1858,7 @@ static void rocker_tx_desc_frags_unmap(const struct rocker_port *rocker_port,
 			continue;
 		dma_handle = rocker_tlv_get_u64(frag_attrs[ROCKER_TLV_TX_FRAG_ATTR_ADDR]);
 		len = rocker_tlv_get_u16(frag_attrs[ROCKER_TLV_TX_FRAG_ATTR_LEN]);
-		dma_unmap_single(&pdev->dev, dma_handle, len, DMA_TO_DEVICE);
+		pci_unmap_single(pdev, dma_handle, len, DMA_TO_DEVICE);
 	}
 }
 
@@ -1854,8 +1871,8 @@ static int rocker_tx_desc_frag_map_put(const struct rocker_port *rocker_port,
 	dma_addr_t dma_handle;
 	struct rocker_tlv *frag;
 
-	dma_handle = dma_map_single(&pdev->dev, buf, buf_len, DMA_TO_DEVICE);
-	if (unlikely(dma_mapping_error(&pdev->dev, dma_handle))) {
+	dma_handle = pci_map_single(pdev, buf, buf_len, DMA_TO_DEVICE);
+	if (unlikely(pci_dma_mapping_error(pdev, dma_handle))) {
 		if (net_ratelimit())
 			netdev_err(rocker_port->dev, "failed to dma map tx frag\n");
 		return -EIO;
@@ -1875,7 +1892,7 @@ static int rocker_tx_desc_frag_map_put(const struct rocker_port *rocker_port,
 nest_cancel:
 	rocker_tlv_nest_cancel(desc_info, frag);
 unmap_frag:
-	dma_unmap_single(&pdev->dev, dma_handle, buf_len, DMA_TO_DEVICE);
+	pci_unmap_single(pdev, dma_handle, buf_len, DMA_TO_DEVICE);
 	return -EMSGSIZE;
 }
 
@@ -2046,7 +2063,8 @@ static const struct net_device_ops rocker_port_netdev_ops = {
  ********************/
 
 static int rocker_port_attr_set(struct net_device *dev,
-				const struct switchdev_attr *attr)
+				const struct switchdev_attr *attr,
+				struct switchdev_trans *trans)
 {
 	struct rocker_port *rocker_port = netdev_priv(dev);
 	int err = 0;
@@ -2054,19 +2072,23 @@ static int rocker_port_attr_set(struct net_device *dev,
 	switch (attr->id) {
 	case SWITCHDEV_ATTR_ID_PORT_STP_STATE:
 		err = rocker_world_port_attr_stp_state_set(rocker_port,
-							   attr->u.stp_state);
+							   attr->u.stp_state,
+							   trans);
 		break;
 	case SWITCHDEV_ATTR_ID_PORT_PRE_BRIDGE_FLAGS:
 		err = rocker_world_port_attr_pre_bridge_flags_set(rocker_port,
-								  attr->u.brport_flags);
+							      attr->u.brport_flags,
+							      trans);
 		break;
 	case SWITCHDEV_ATTR_ID_PORT_BRIDGE_FLAGS:
 		err = rocker_world_port_attr_bridge_flags_set(rocker_port,
-							      attr->u.brport_flags);
+							      attr->u.brport_flags,
+							      trans);
 		break;
 	case SWITCHDEV_ATTR_ID_BRIDGE_AGEING_TIME:
 		err = rocker_world_port_attr_bridge_ageing_time_set(rocker_port,
-								    attr->u.ageing_time);
+								    attr->u.ageing_time,
+								    trans);
 		break;
 	default:
 		err = -EOPNOTSUPP;
@@ -2077,7 +2099,8 @@ static int rocker_port_attr_set(struct net_device *dev,
 }
 
 static int rocker_port_obj_add(struct net_device *dev,
-			       const struct switchdev_obj *obj)
+			       const struct switchdev_obj *obj,
+			       struct switchdev_trans *trans)
 {
 	struct rocker_port *rocker_port = netdev_priv(dev);
 	int err = 0;
@@ -2085,7 +2108,8 @@ static int rocker_port_obj_add(struct net_device *dev,
 	switch (obj->id) {
 	case SWITCHDEV_OBJ_ID_PORT_VLAN:
 		err = rocker_world_port_obj_vlan_add(rocker_port,
-						     SWITCHDEV_OBJ_PORT_VLAN(obj));
+						     SWITCHDEV_OBJ_PORT_VLAN(obj),
+						     trans);
 		break;
 	default:
 		err = -EOPNOTSUPP;
@@ -2145,7 +2169,7 @@ static void rocker_router_fib_event_work(struct work_struct *work)
 		rocker_world_fib4_del(rocker, &fib_work->fen_info);
 		fib_info_put(fib_work->fen_info.fi);
 		break;
-	case FIB_EVENT_RULE_ADD:
+	case FIB_EVENT_RULE_ADD: /* fall through */
 	case FIB_EVENT_RULE_DEL:
 		rule = fib_work->fr_info.rule;
 		if (!fib4_rule_default(rule))
@@ -2177,7 +2201,7 @@ static int rocker_router_fib_event(struct notifier_block *nb,
 	fib_work->event = event;
 
 	switch (event) {
-	case FIB_EVENT_ENTRY_REPLACE:
+	case FIB_EVENT_ENTRY_REPLACE: /* fall through */
 	case FIB_EVENT_ENTRY_DEL:
 		if (info->family == AF_INET) {
 			struct fib_entry_notifier_info *fen_info = ptr;
@@ -2200,7 +2224,7 @@ static int rocker_router_fib_event(struct notifier_block *nb,
 		 */
 		fib_info_hold(fib_work->fen_info.fi);
 		break;
-	case FIB_EVENT_RULE_ADD:
+	case FIB_EVENT_RULE_ADD: /* fall through */
 	case FIB_EVENT_RULE_DEL:
 		memcpy(&fib_work->fr_info, ptr, sizeof(fib_work->fr_info));
 		fib_rule_get(fib_work->fr_info.rule);
@@ -2698,7 +2722,8 @@ rocker_switchdev_port_attr_set_event(struct net_device *netdev,
 {
 	int err;
 
-	err = rocker_port_attr_set(netdev, port_attr_info->attr);
+	err = rocker_port_attr_set(netdev, port_attr_info->attr,
+				   port_attr_info->trans);
 
 	port_attr_info->handled = true;
 	return notifier_from_errno(err);
@@ -2786,7 +2811,7 @@ static int rocker_switchdev_event(struct notifier_block *unused,
 	switchdev_work->event = event;
 
 	switch (event) {
-	case SWITCHDEV_FDB_ADD_TO_DEVICE:
+	case SWITCHDEV_FDB_ADD_TO_DEVICE: /* fall through */
 	case SWITCHDEV_FDB_DEL_TO_DEVICE:
 		memcpy(&switchdev_work->fdb_info, ptr,
 		       sizeof(switchdev_work->fdb_info));
@@ -2819,7 +2844,8 @@ rocker_switchdev_port_obj_event(unsigned long event, struct net_device *netdev,
 
 	switch (event) {
 	case SWITCHDEV_PORT_OBJ_ADD:
-		err = rocker_port_obj_add(netdev, port_obj_info->obj);
+		err = rocker_port_obj_add(netdev, port_obj_info->obj,
+					  port_obj_info->trans);
 		break;
 	case SWITCHDEV_PORT_OBJ_DEL:
 		err = rocker_port_obj_del(netdev, port_obj_info->obj);
@@ -2879,17 +2905,17 @@ static int rocker_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_pci_request_regions;
 	}
 
-	err = dma_set_mask(&pdev->dev, DMA_BIT_MASK(64));
+	err = pci_set_dma_mask(pdev, DMA_BIT_MASK(64));
 	if (!err) {
-		err = dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(64));
+		err = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
 		if (err) {
-			dev_err(&pdev->dev, "dma_set_coherent_mask failed\n");
+			dev_err(&pdev->dev, "pci_set_consistent_dma_mask failed\n");
 			goto err_pci_set_dma_mask;
 		}
 	} else {
-		err = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
+		err = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
 		if (err) {
-			dev_err(&pdev->dev, "dma_set_mask failed\n");
+			dev_err(&pdev->dev, "pci_set_dma_mask failed\n");
 			goto err_pci_set_dma_mask;
 		}
 	}
@@ -3073,10 +3099,9 @@ struct rocker_walk_data {
 	struct rocker_port *port;
 };
 
-static int rocker_lower_dev_walk(struct net_device *lower_dev,
-				 struct netdev_nested_priv *priv)
+static int rocker_lower_dev_walk(struct net_device *lower_dev, void *_data)
 {
-	struct rocker_walk_data *data = (struct rocker_walk_data *)priv->data;
+	struct rocker_walk_data *data = _data;
 	int ret = 0;
 
 	if (rocker_port_dev_check_under(lower_dev, data->rocker)) {
@@ -3090,7 +3115,6 @@ static int rocker_lower_dev_walk(struct net_device *lower_dev,
 struct rocker_port *rocker_port_dev_lower_find(struct net_device *dev,
 					       struct rocker *rocker)
 {
-	struct netdev_nested_priv priv;
 	struct rocker_walk_data data;
 
 	if (rocker_port_dev_check_under(dev, rocker))
@@ -3098,8 +3122,7 @@ struct rocker_port *rocker_port_dev_lower_find(struct net_device *dev,
 
 	data.rocker = rocker;
 	data.port = NULL;
-	priv.data = (void *)&data;
-	netdev_walk_all_lower_dev(dev, rocker_lower_dev_walk, &priv);
+	netdev_walk_all_lower_dev(dev, rocker_lower_dev_walk, &data);
 
 	return data.port;
 }

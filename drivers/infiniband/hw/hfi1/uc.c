@@ -55,7 +55,6 @@
 /**
  * hfi1_make_uc_req - construct a request packet (SEND, RDMA write)
  * @qp: a pointer to the QP
- * @ps: the current packet state
  *
  * Assume s_lock is held.
  *
@@ -217,7 +216,7 @@ int hfi1_make_uc_req(struct rvt_qp *qp, struct hfi1_pkt_state *ps)
 
 	case OP(SEND_FIRST):
 		qp->s_state = OP(SEND_MIDDLE);
-		fallthrough;
+		/* FALLTHROUGH */
 	case OP(SEND_MIDDLE):
 		len = qp->s_len;
 		if (len > pmtu) {
@@ -242,7 +241,7 @@ int hfi1_make_uc_req(struct rvt_qp *qp, struct hfi1_pkt_state *ps)
 
 	case OP(RDMA_WRITE_FIRST):
 		qp->s_state = OP(RDMA_WRITE_MIDDLE);
-		fallthrough;
+		/* FALLTHROUGH */
 	case OP(RDMA_WRITE_MIDDLE):
 		len = qp->s_len;
 		if (len > pmtu) {
@@ -292,7 +291,12 @@ bail_no_tx:
 
 /**
  * hfi1_uc_rcv - handle an incoming UC packet
- * @packet: the packet structure
+ * @ibp: the port the packet came in on
+ * @hdr: the header of the packet
+ * @rcv_flags: flags relevant to rcv processing
+ * @data: the packet data
+ * @tlen: the length of the packet
+ * @qp: the QP for this packet.
  *
  * This is called from qp_rcv() to process an incoming UC packet
  * for the given QP.
@@ -410,7 +414,7 @@ send_first:
 			goto no_immediate_data;
 		else if (opcode == OP(SEND_ONLY_WITH_IMMEDIATE))
 			goto send_last_imm;
-		fallthrough;
+		/* FALLTHROUGH */
 	case OP(SEND_MIDDLE):
 		/* Check for invalid length PMTU or posted rwqe len. */
 		/*
@@ -511,7 +515,7 @@ rdma_first:
 			wc.ex.imm_data = ohdr->u.rc.imm_data;
 			goto rdma_last_imm;
 		}
-		fallthrough;
+		/* FALLTHROUGH */
 	case OP(RDMA_WRITE_MIDDLE):
 		/* Check for invalid length PMTU or posted rwqe len. */
 		if (unlikely(tlen != (hdrsize + pmtu + 4)))

@@ -174,15 +174,13 @@ int spi_bitbang_setup_transfer(struct spi_device *spi, struct spi_transfer *t)
 }
 EXPORT_SYMBOL_GPL(spi_bitbang_setup_transfer);
 
-/*
+/**
  * spi_bitbang_setup - default setup for per-word I/O loops
  */
 int spi_bitbang_setup(struct spi_device *spi)
 {
 	struct spi_bitbang_cs	*cs = spi->controller_state;
 	struct spi_bitbang	*bitbang;
-	bool			initial_setup = false;
-	int			retval;
 
 	bitbang = spi_master_get_devdata(spi->master);
 
@@ -191,34 +189,26 @@ int spi_bitbang_setup(struct spi_device *spi)
 		if (!cs)
 			return -ENOMEM;
 		spi->controller_state = cs;
-		initial_setup = true;
 	}
 
 	/* per-word shift register access, in hardware or bitbanging */
 	cs->txrx_word = bitbang->txrx_word[spi->mode & (SPI_CPOL|SPI_CPHA)];
-	if (!cs->txrx_word) {
-		retval = -EINVAL;
-		goto err_free;
-	}
+	if (!cs->txrx_word)
+		return -EINVAL;
 
 	if (bitbang->setup_transfer) {
-		retval = bitbang->setup_transfer(spi, NULL);
+		int retval = bitbang->setup_transfer(spi, NULL);
 		if (retval < 0)
-			goto err_free;
+			return retval;
 	}
 
 	dev_dbg(&spi->dev, "%s, %u nsec/bit\n", __func__, 2 * cs->nsecs);
 
 	return 0;
-
-err_free:
-	if (initial_setup)
-		kfree(cs);
-	return retval;
 }
 EXPORT_SYMBOL_GPL(spi_bitbang_setup);
 
-/*
+/**
  * spi_bitbang_cleanup - default cleanup for per-word I/O loops
  */
 void spi_bitbang_cleanup(struct spi_device *spi)
@@ -437,7 +427,7 @@ int spi_bitbang_start(struct spi_bitbang *bitbang)
 }
 EXPORT_SYMBOL_GPL(spi_bitbang_start);
 
-/*
+/**
  * spi_bitbang_stop - stops the task providing spi communication
  */
 void spi_bitbang_stop(struct spi_bitbang *bitbang)

@@ -254,6 +254,9 @@ if ($arch eq "x86_64") {
     if ($cc =~ /-DCC_USING_HOTPATCH/) {
 	$mcount_regex = "^\\s*([0-9a-fA-F]+):\\s*c0 04 00 00 00 00\\s*brcl\\s*0,[0-9a-f]+ <([^\+]*)>\$";
 	$mcount_adjust = 0;
+    } else {
+	$mcount_regex = "^\\s*([0-9a-fA-F]+):\\s*R_390_(PC|PLT)32DBL\\s+_mcount\\+0x2\$";
+	$mcount_adjust = -14;
     }
     $alignment = 8;
     $type = ".quad";
@@ -265,11 +268,7 @@ if ($arch eq "x86_64") {
 
     # force flags for this arch
     $ld .= " -m shlelf_linux";
-    if ($endian eq "big") {
-        $objcopy .= " -O elf32-shbig-linux";
-    } else {
-        $objcopy .= " -O elf32-sh-linux";
-    }
+    $objcopy .= " -O elf32-sh-linux";
 
 } elsif ($arch eq "powerpc") {
     my $ldemulation;
@@ -392,7 +391,7 @@ if ($arch eq "x86_64") {
     $mcount_regex = "^\\s*([0-9a-fA-F]+):.*\\s_mcount\$";
 } elsif ($arch eq "riscv") {
     $function_regex = "^([0-9a-fA-F]+)\\s+<([^.0-9][0-9a-zA-Z_\\.]+)>:";
-    $mcount_regex = "^\\s*([0-9a-fA-F]+):\\sR_RISCV_CALL(_PLT)?\\s_?mcount\$";
+    $mcount_regex = "^\\s*([0-9a-fA-F]+):\\sR_RISCV_CALL\\s_mcount\$";
     $type = ".quad";
     $alignment = 2;
 } elsif ($arch eq "nds32") {

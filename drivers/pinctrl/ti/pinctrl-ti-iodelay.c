@@ -2,7 +2,7 @@
  * Support for configuration of IO Delay module found on Texas Instruments SoCs
  * such as DRA7
  *
- * Copyright (C) 2015-2017 Texas Instruments Incorporated - https://www.ti.com/
+ * Copyright (C) 2015-2017 Texas Instruments Incorporated - http://www.ti.com/
  *
  * This file is licensed under the terms of the GNU General Public
  * License version 2. This program is licensed "as is" without any
@@ -704,9 +704,10 @@ static void ti_iodelay_pinconf_group_dbg_show(struct pinctrl_dev *pctldev,
 		u32 reg = 0;
 
 		cfg = &group->cfg[i];
-		regmap_read(iod->regmap, cfg->offset, &reg);
-		seq_printf(s, "\n\t0x%08x = 0x%08x (%3d, %3d)",
-			cfg->offset, reg, cfg->a_delay, cfg->g_delay);
+		regmap_read(iod->regmap, cfg->offset, &reg),
+			seq_printf(s, "\n\t0x%08x = 0x%08x (%3d, %3d)",
+				   cfg->offset, reg, cfg->a_delay,
+				   cfg->g_delay);
 	}
 }
 #endif

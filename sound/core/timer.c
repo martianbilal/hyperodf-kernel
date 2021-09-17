@@ -173,7 +173,7 @@ EXPORT_SYMBOL(snd_timer_instance_free);
  */
 static struct snd_timer *snd_timer_find(struct snd_timer_id *tid)
 {
-	struct snd_timer *timer;
+	struct snd_timer *timer = NULL;
 
 	list_for_each_entry(timer, &snd_timer_list, device_list) {
 		if (timer->tmr_class != tid->dev_class)
@@ -520,10 +520,9 @@ static void snd_timer_notify1(struct snd_timer_instance *ti, int event)
 		return;
 	if (timer->hw.flags & SNDRV_TIMER_HW_SLAVE)
 		return;
-	event += 10; /* convert to SNDRV_TIMER_EVENT_MXXX */
 	list_for_each_entry(ts, &ti->slave_active_head, active_list)
 		if (ts->ccallback)
-			ts->ccallback(ts, event, &tstamp, resolution);
+			ts->ccallback(ts, event + 100, &tstamp, resolution);
 }
 
 /* start/continue a master timer */
@@ -814,12 +813,12 @@ static void snd_timer_clear_callbacks(struct snd_timer *timer,
 }
 
 /*
- * timer work
+ * timer tasklet
  *
  */
-static void snd_timer_work(struct work_struct *work)
+static void snd_timer_tasklet(unsigned long arg)
 {
-	struct snd_timer *timer = container_of(work, struct snd_timer, task_work);
+	struct snd_timer *timer = (struct snd_timer *) arg;
 	unsigned long flags;
 
 	if (timer->card && timer->card->shutdown) {
@@ -844,7 +843,7 @@ void snd_timer_interrupt(struct snd_timer * timer, unsigned long ticks_left)
 	unsigned long resolution;
 	struct list_head *ack_list_head;
 	unsigned long flags;
-	bool use_work = false;
+	int use_tasklet = 0;
 
 	if (timer == NULL)
 		return;
@@ -885,7 +884,7 @@ void snd_timer_interrupt(struct snd_timer * timer, unsigned long ticks_left)
 			--timer->running;
 			list_del_init(&ti->active_list);
 		}
-		if ((timer->hw.flags & SNDRV_TIMER_HW_WORK) ||
+		if ((timer->hw.flags & SNDRV_TIMER_HW_TASKLET) ||
 		    (ti->flags & SNDRV_TIMER_IFLG_FAST))
 			ack_list_head = &timer->ack_list_head;
 		else
@@ -920,11 +919,11 @@ void snd_timer_interrupt(struct snd_timer * timer, unsigned long ticks_left)
 	snd_timer_process_callbacks(timer, &timer->ack_list_head);
 
 	/* do we have any slow callbacks? */
-	use_work = !list_empty(&timer->sack_list_head);
+	use_tasklet = !list_empty(&timer->sack_list_head);
 	spin_unlock_irqrestore(&timer->lock, flags);
 
-	if (use_work)
-		queue_work(system_highpri_wq, &timer->task_work);
+	if (use_tasklet)
+		tasklet_schedule(&timer->task_queue);
 }
 EXPORT_SYMBOL(snd_timer_interrupt);
 
@@ -960,7 +959,7 @@ int snd_timer_new(struct snd_card *card, char *id, struct snd_timer_id *tid,
 	timer->tmr_device = tid->device;
 	timer->tmr_subdevice = tid->subdevice;
 	if (id)
-		strscpy(timer->id, id, sizeof(timer->id));
+		strlcpy(timer->id, id, sizeof(timer->id));
 	timer->sticks = 1;
 	INIT_LIST_HEAD(&timer->device_list);
 	INIT_LIST_HEAD(&timer->open_list_head);
@@ -968,7 +967,8 @@ int snd_timer_new(struct snd_card *card, char *id, struct snd_timer_id *tid,
 	INIT_LIST_HEAD(&timer->ack_list_head);
 	INIT_LIST_HEAD(&timer->sack_list_head);
 	spin_lock_init(&timer->lock);
-	INIT_WORK(&timer->task_work, snd_timer_work);
+	tasklet_init(&timer->task_queue, snd_timer_tasklet,
+		     (unsigned long)timer);
 	timer->max_instances = 1000; /* default limit per timer */
 	if (card != NULL) {
 		timer->module = card->module;
@@ -1201,7 +1201,7 @@ static int snd_timer_s_close(struct snd_timer *timer)
 
 static const struct snd_timer_hardware snd_timer_system =
 {
-	.flags =	SNDRV_TIMER_HW_FIRST | SNDRV_TIMER_HW_WORK,
+	.flags =	SNDRV_TIMER_HW_FIRST | SNDRV_TIMER_HW_TASKLET,
 	.resolution =	1000000000L / HZ,
 	.ticks =	10000000L,
 	.close =	snd_timer_s_close,
@@ -1281,8 +1281,8 @@ static void snd_timer_proc_read(struct snd_info_entry *entry,
 		list_for_each_entry(ti, &timer->open_list_head, open_list)
 			snd_iprintf(buffer, "  Client %s : %s\n",
 				    ti->owner ? ti->owner : "unknown",
-				    (ti->flags & (SNDRV_TIMER_IFLG_START |
-						  SNDRV_TIMER_IFLG_RUNNING))
+				    ti->flags & (SNDRV_TIMER_IFLG_START |
+						 SNDRV_TIMER_IFLG_RUNNING)
 				    ? "running" : "stopped");
 	}
 	mutex_unlock(&register_mutex);
@@ -1660,8 +1660,8 @@ static int snd_timer_user_ginfo(struct file *file,
 		ginfo->card = t->card ? t->card->number : -1;
 		if (t->hw.flags & SNDRV_TIMER_HW_SLAVE)
 			ginfo->flags |= SNDRV_TIMER_FLG_SLAVE;
-		strscpy(ginfo->id, t->id, sizeof(ginfo->id));
-		strscpy(ginfo->name, t->name, sizeof(ginfo->name));
+		strlcpy(ginfo->id, t->id, sizeof(ginfo->id));
+		strlcpy(ginfo->name, t->name, sizeof(ginfo->name));
 		ginfo->resolution = t->hw.resolution;
 		if (t->hw.resolution_min > 0) {
 			ginfo->resolution_min = t->hw.resolution_min;
@@ -1815,8 +1815,8 @@ static int snd_timer_user_info(struct file *file,
 	info->card = t->card ? t->card->number : -1;
 	if (t->hw.flags & SNDRV_TIMER_HW_SLAVE)
 		info->flags |= SNDRV_TIMER_FLG_SLAVE;
-	strscpy(info->id, t->id, sizeof(info->id));
-	strscpy(info->name, t->name, sizeof(info->name));
+	strlcpy(info->id, t->id, sizeof(info->id));
+	strlcpy(info->name, t->name, sizeof(info->name));
 	info->resolution = t->hw.resolution;
 	if (copy_to_user(_info, info, sizeof(*_info)))
 		err = -EFAULT;

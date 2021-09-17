@@ -74,9 +74,6 @@ void
 drm_atomic_helper_update_legacy_modeset_state(struct drm_device *dev,
 					      struct drm_atomic_state *old_state);
 
-void
-drm_atomic_helper_calc_timestamping_constants(struct drm_atomic_state *state);
-
 void drm_atomic_helper_commit_modeset_disables(struct drm_device *dev,
 					       struct drm_atomic_state *state);
 void drm_atomic_helper_commit_modeset_enables(struct drm_device *dev,
@@ -147,6 +144,10 @@ int drm_atomic_helper_page_flip_target(
 				uint32_t flags,
 				uint32_t target,
 				struct drm_modeset_acquire_ctx *ctx);
+int drm_atomic_helper_legacy_gamma_set(struct drm_crtc *crtc,
+				       u16 *red, u16 *green, u16 *blue,
+				       uint32_t size,
+				       struct drm_modeset_acquire_ctx *ctx);
 
 /**
  * drm_atomic_crtc_for_each_plane - iterate over planes currently attached to CRTC
@@ -163,7 +164,7 @@ int drm_atomic_helper_page_flip_target(
 	drm_for_each_plane_mask(plane, (crtc)->dev, (crtc)->state->plane_mask)
 
 /**
- * drm_atomic_crtc_state_for_each_plane - iterate over attached planes in new state
+ * drm_crtc_atomic_state_for_each_plane - iterate over attached planes in new state
  * @plane: the loop cursor
  * @crtc_state: the incoming CRTC state
  *
@@ -176,7 +177,7 @@ int drm_atomic_helper_page_flip_target(
 	drm_for_each_plane_mask(plane, (crtc_state)->state->dev, (crtc_state)->plane_mask)
 
 /**
- * drm_atomic_crtc_state_for_each_plane_state - iterate over attached planes in new state
+ * drm_crtc_atomic_state_for_each_plane_state - iterate over attached planes in new state
  * @plane: the loop cursor
  * @plane_state: loop cursor for the plane's state, must be const
  * @crtc_state: the incoming CRTC state
@@ -222,13 +223,5 @@ drm_atomic_plane_disabling(struct drm_plane_state *old_plane_state,
 
 	return old_plane_state->crtc && !new_plane_state->crtc;
 }
-
-u32 *
-drm_atomic_helper_bridge_propagate_bus_fmt(struct drm_bridge *bridge,
-					struct drm_bridge_state *bridge_state,
-					struct drm_crtc_state *crtc_state,
-					struct drm_connector_state *conn_state,
-					u32 output_fmt,
-					unsigned int *num_input_fmts);
 
 #endif /* DRM_ATOMIC_HELPER_H_ */

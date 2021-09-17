@@ -13,7 +13,6 @@
 struct address_space;
 struct fiemap_extent_info;
 struct inode;
-struct iomap_dio;
 struct iomap_writepage_ctx;
 struct iov_iter;
 struct kiocb;
@@ -55,7 +54,6 @@ struct vm_fault;
 #define IOMAP_F_SHARED		0x04
 #define IOMAP_F_MERGED		0x08
 #define IOMAP_F_BUFFER_HEAD	0x10
-#define IOMAP_F_ZONE_APPEND	0x20
 
 /*
  * Flags set by the core iomap code during operations:
@@ -123,7 +121,6 @@ struct iomap_page_ops {
 #define IOMAP_FAULT		(1 << 3) /* mapping for page fault */
 #define IOMAP_DIRECT		(1 << 4) /* direct I/O */
 #define IOMAP_NOWAIT		(1 << 5) /* do not block */
-#define IOMAP_OVERWRITE_ONLY	(1 << 6) /* only pure overwrites allowed */
 
 struct iomap_ops {
 	/*
@@ -158,7 +155,8 @@ loff_t iomap_apply(struct inode *inode, loff_t pos, loff_t length,
 ssize_t iomap_file_buffered_write(struct kiocb *iocb, struct iov_iter *from,
 		const struct iomap_ops *ops);
 int iomap_readpage(struct page *page, const struct iomap_ops *ops);
-void iomap_readahead(struct readahead_control *, const struct iomap_ops *ops);
+int iomap_readpages(struct address_space *mapping, struct list_head *pages,
+		unsigned nr_pages, const struct iomap_ops *ops);
 int iomap_set_page_dirty(struct page *page);
 int iomap_is_partially_uptodate(struct page *page, unsigned long from,
 		unsigned long count);
@@ -180,7 +178,7 @@ int iomap_truncate_page(struct inode *inode, loff_t pos, bool *did_zero,
 vm_fault_t iomap_page_mkwrite(struct vm_fault *vmf,
 			const struct iomap_ops *ops);
 int iomap_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
-		u64 start, u64 len, const struct iomap_ops *ops);
+		loff_t start, loff_t len, const struct iomap_ops *ops);
 loff_t iomap_seek_hole(struct inode *inode, loff_t offset,
 		const struct iomap_ops *ops);
 loff_t iomap_seek_data(struct inode *inode, loff_t offset,
@@ -223,7 +221,7 @@ struct iomap_writeback_ops {
 	 * Optional, allows the file system to discard state on a page where
 	 * we failed to submit any I/O.
 	 */
-	void (*discard_page)(struct page *page, loff_t fileoff);
+	void (*discard_page)(struct page *page);
 };
 
 struct iomap_writepage_ctx {
@@ -254,30 +252,11 @@ int iomap_writepages(struct address_space *mapping,
 struct iomap_dio_ops {
 	int (*end_io)(struct kiocb *iocb, ssize_t size, int error,
 		      unsigned flags);
-	blk_qc_t (*submit_io)(struct inode *inode, struct iomap *iomap,
-			struct bio *bio, loff_t file_offset);
 };
-
-/*
- * Wait for the I/O to complete in iomap_dio_rw even if the kiocb is not
- * synchronous.
- */
-#define IOMAP_DIO_FORCE_WAIT	(1 << 0)
-
-/*
- * Do not allocate blocks or zero partial blocks, but instead fall back to
- * the caller by returning -EAGAIN.  Used to optimize direct I/O writes that
- * are not aligned to the file system block size.
-  */
-#define IOMAP_DIO_OVERWRITE_ONLY	(1 << 1)
 
 ssize_t iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
 		const struct iomap_ops *ops, const struct iomap_dio_ops *dops,
-		unsigned int dio_flags);
-struct iomap_dio *__iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
-		const struct iomap_ops *ops, const struct iomap_dio_ops *dops,
-		unsigned int dio_flags);
-ssize_t iomap_dio_complete(struct iomap_dio *dio);
+		bool wait_for_completion);
 int iomap_dio_iopoll(struct kiocb *kiocb, bool spin);
 
 #ifdef CONFIG_SWAP

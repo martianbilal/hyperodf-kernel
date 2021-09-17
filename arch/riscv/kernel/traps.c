@@ -12,13 +12,10 @@
 #include <linux/signal.h>
 #include <linux/kdebug.h>
 #include <linux/uaccess.h>
-#include <linux/kprobes.h>
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/irq.h>
 
-#include <asm/asm-prototypes.h>
-#include <asm/bug.h>
 #include <asm/processor.h>
 #include <asm/ptrace.h>
 #include <asm/csr.h>
@@ -69,7 +66,7 @@ void do_trap(struct pt_regs *regs, int signo, int code, unsigned long addr)
 			tsk->comm, task_pid_nr(tsk), signo, code, addr);
 		print_vma_addr(KERN_CONT " in ", instruction_pointer(regs));
 		pr_cont("\n");
-		__show_regs(regs);
+		show_regs(regs);
 	}
 
 	force_sig_fault(signo, code, (void __user *)addr);
@@ -78,8 +75,6 @@ void do_trap(struct pt_regs *regs, int signo, int code, unsigned long addr)
 static void do_trap_error(struct pt_regs *regs, int signo, int code,
 	unsigned long addr, const char *str)
 {
-	current->thread.bad_cause = regs->cause;
-
 	if (user_mode(regs)) {
 		do_trap(regs, signo, code, addr);
 	} else {
@@ -102,33 +97,12 @@ DO_ERROR_INFO(do_trap_insn_fault,
 	SIGSEGV, SEGV_ACCERR, "instruction access fault");
 DO_ERROR_INFO(do_trap_insn_illegal,
 	SIGILL, ILL_ILLOPC, "illegal instruction");
+DO_ERROR_INFO(do_trap_load_misaligned,
+	SIGBUS, BUS_ADRALN, "load address misaligned");
 DO_ERROR_INFO(do_trap_load_fault,
 	SIGSEGV, SEGV_ACCERR, "load access fault");
-#ifndef CONFIG_RISCV_M_MODE
-DO_ERROR_INFO(do_trap_load_misaligned,
-	SIGBUS, BUS_ADRALN, "Oops - load address misaligned");
 DO_ERROR_INFO(do_trap_store_misaligned,
-	SIGBUS, BUS_ADRALN, "Oops - store (or AMO) address misaligned");
-#else
-int handle_misaligned_load(struct pt_regs *regs);
-int handle_misaligned_store(struct pt_regs *regs);
-
-asmlinkage void do_trap_load_misaligned(struct pt_regs *regs)
-{
-	if (!handle_misaligned_load(regs))
-		return;
-	do_trap_error(regs, SIGBUS, BUS_ADRALN, regs->epc,
-		      "Oops - load address misaligned");
-}
-
-asmlinkage void do_trap_store_misaligned(struct pt_regs *regs)
-{
-	if (!handle_misaligned_store(regs))
-		return;
-	do_trap_error(regs, SIGBUS, BUS_ADRALN, regs->epc,
-		      "Oops - store (or AMO) address misaligned");
-}
-#endif
+	SIGBUS, BUS_ADRALN, "store (or AMO) address misaligned");
 DO_ERROR_INFO(do_trap_store_fault,
 	SIGSEGV, SEGV_ACCERR, "store (or AMO) access fault");
 DO_ERROR_INFO(do_trap_ecall_u,
@@ -142,43 +116,20 @@ static inline unsigned long get_break_insn_length(unsigned long pc)
 {
 	bug_insn_t insn;
 
-	if (get_kernel_nofault(insn, (bug_insn_t *)pc))
+	if (probe_kernel_address((bug_insn_t *)pc, insn))
 		return 0;
-
-	return GET_INSN_LENGTH(insn);
+	return (((insn & __INSN_LENGTH_MASK) == __INSN_LENGTH_32) ? 4UL : 2UL);
 }
 
 asmlinkage __visible void do_trap_break(struct pt_regs *regs)
 {
-#ifdef CONFIG_KPROBES
-	if (kprobe_single_step_handler(regs))
-		return;
-
-	if (kprobe_breakpoint_handler(regs))
-		return;
-#endif
-#ifdef CONFIG_UPROBES
-	if (uprobe_single_step_handler(regs))
-		return;
-
-	if (uprobe_breakpoint_handler(regs))
-		return;
-#endif
-	current->thread.bad_cause = regs->cause;
-
 	if (user_mode(regs))
 		force_sig_fault(SIGTRAP, TRAP_BRKPT, (void __user *)regs->epc);
-#ifdef CONFIG_KGDB
-	else if (notify_die(DIE_TRAP, "EBREAK", regs, 0, regs->cause, SIGTRAP)
-								== NOTIFY_STOP)
-		return;
-#endif
 	else if (report_bug(regs->epc, regs) == BUG_TRAP_TYPE_WARN)
 		regs->epc += get_break_insn_length(regs->epc);
 	else
 		die(regs, "Kernel BUG");
 }
-NOKPROBE_SYMBOL(do_trap_break);
 
 #ifdef CONFIG_GENERIC_BUG
 int is_valid_bugaddr(unsigned long pc)
@@ -187,7 +138,7 @@ int is_valid_bugaddr(unsigned long pc)
 
 	if (pc < VMALLOC_START)
 		return 0;
-	if (get_kernel_nofault(insn, (bug_insn_t *)pc))
+	if (probe_kernel_address((bug_insn_t *)pc, insn))
 		return 0;
 	if ((insn & __INSN_LENGTH_MASK) == __INSN_LENGTH_32)
 		return (insn == __BUG_INSN_32);
@@ -196,7 +147,15 @@ int is_valid_bugaddr(unsigned long pc)
 }
 #endif /* CONFIG_GENERIC_BUG */
 
-/* stvec & scratch is already set from head.S */
-void trap_init(void)
+void __init trap_init(void)
 {
+	/*
+	 * Set sup0 scratch register to 0, indicating to exception vector
+	 * that we are presently executing in the kernel
+	 */
+	csr_write(CSR_SCRATCH, 0);
+	/* Set the exception vector address */
+	csr_write(CSR_TVEC, &handle_exception);
+	/* Enable interrupts */
+	csr_write(CSR_IE, IE_SIE | IE_EIE);
 }

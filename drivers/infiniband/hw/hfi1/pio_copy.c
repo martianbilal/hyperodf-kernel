@@ -55,7 +55,6 @@
 
 /**
  * pio_copy - copy data block to MMIO space
- * @dd: hfi1 dev data
  * @pbuf: a number of blocks allocated within a PIO send context
  * @pbc: PBC to send
  * @from: source, must be 8 byte aligned
@@ -192,24 +191,25 @@ static inline void jcopy(u8 *dest, const u8 *src, u32 n)
 	switch (n) {
 	case 7:
 		*dest++ = *src++;
-		fallthrough;
+		/* fall through */
 	case 6:
 		*dest++ = *src++;
-		fallthrough;
+		/* fall through */
 	case 5:
 		*dest++ = *src++;
-		fallthrough;
+		/* fall through */
 	case 4:
 		*dest++ = *src++;
-		fallthrough;
+		/* fall through */
 	case 3:
 		*dest++ = *src++;
-		fallthrough;
+		/* fall through */
 	case 2:
 		*dest++ = *src++;
-		fallthrough;
+		/* fall through */
 	case 1:
 		*dest++ = *src++;
+		/* fall through */
 	}
 }
 

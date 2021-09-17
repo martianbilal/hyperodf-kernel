@@ -99,10 +99,7 @@
 				| _PAGE_DIRTY)
 
 #define PAGE_KERNEL		__pgprot(_PAGE_KERNEL)
-#define PAGE_KERNEL_READ	__pgprot(_PAGE_KERNEL & ~_PAGE_WRITE)
 #define PAGE_KERNEL_EXEC	__pgprot(_PAGE_KERNEL | _PAGE_EXEC)
-#define PAGE_KERNEL_READ_EXEC	__pgprot((_PAGE_KERNEL & ~_PAGE_WRITE) \
-					 | _PAGE_EXEC)
 
 #define PAGE_TABLE		__pgprot(_PAGE_TABLE)
 
@@ -176,6 +173,16 @@ static inline unsigned long _pgd_pfn(pgd_t pgd)
 	return pgd_val(pgd) >> _PAGE_PFN_SHIFT;
 }
 
+#define pgd_index(addr) (((addr) >> PGDIR_SHIFT) & (PTRS_PER_PGD - 1))
+
+/* Locate an entry in the page global directory */
+static inline pgd_t *pgd_offset(const struct mm_struct *mm, unsigned long addr)
+{
+	return mm->pgd + pgd_index(addr);
+}
+/* Locate an entry in the kernel page global directory */
+#define pgd_offset_k(addr)      pgd_offset(&init_mm, (addr))
+
 static inline struct page *pmd_page(pmd_t pmd)
 {
 	return pfn_to_page(pmd_val(pmd) >> _PAGE_PFN_SHIFT);
@@ -184,11 +191,6 @@ static inline struct page *pmd_page(pmd_t pmd)
 static inline unsigned long pmd_page_vaddr(pmd_t pmd)
 {
 	return (unsigned long)pfn_to_virt(pmd_val(pmd) >> _PAGE_PFN_SHIFT);
-}
-
-static inline pte_t pmd_pte(pmd_t pmd)
-{
-	return __pte(pmd_val(pmd));
 }
 
 /* Yields the page frame number (PFN) of a page table entry */
@@ -206,6 +208,16 @@ static inline pte_t pfn_pte(unsigned long pfn, pgprot_t prot)
 }
 
 #define mk_pte(page, prot)       pfn_pte(page_to_pfn(page), prot)
+
+#define pte_index(addr) (((addr) >> PAGE_SHIFT) & (PTRS_PER_PTE - 1))
+
+static inline pte_t *pte_offset_kernel(pmd_t *pmd, unsigned long addr)
+{
+	return (pte_t *)pmd_page_vaddr(*pmd) + pte_index(addr);
+}
+
+#define pte_offset_map(dir, addr)	pte_offset_kernel((dir), (addr))
+#define pte_unmap(pte)			((void)(pte))
 
 static inline int pte_present(pte_t pte)
 {
@@ -293,21 +305,6 @@ static inline pte_t pte_mkhuge(pte_t pte)
 {
 	return pte;
 }
-
-#ifdef CONFIG_NUMA_BALANCING
-/*
- * See the comment in include/asm-generic/pgtable.h
- */
-static inline int pte_protnone(pte_t pte)
-{
-	return (pte_val(pte) & (_PAGE_PRESENT | _PAGE_PROT_NONE)) == _PAGE_PROT_NONE;
-}
-
-static inline int pmd_protnone(pmd_t pmd)
-{
-	return pte_protnone(pmd_pte(pmd));
-}
-#endif
 
 /* Modify page protection bits */
 static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
@@ -452,16 +449,6 @@ static inline int ptep_clear_flush_young(struct vm_area_struct *vma,
 #define __swp_entry_to_pte(x)	((pte_t) { (x).val })
 
 /*
- * In the RV64 Linux scheme, we give the user half of the virtual-address space
- * and give the kernel the other (upper) half.
- */
-#ifdef CONFIG_64BIT
-#define KERN_VIRT_START	(-(BIT(CONFIG_VA_BITS)) + TASK_SIZE)
-#else
-#define KERN_VIRT_START	FIXADDR_START
-#endif
-
-/*
  * Task size is 0x4000000000 for RV64 or 0x9fc00000 for RV32.
  * Note that PGDIR_SIZE must evenly divide TASK_SIZE.
  */
@@ -476,19 +463,19 @@ static inline int ptep_clear_flush_young(struct vm_area_struct *vma,
 #define PAGE_SHARED		__pgprot(0)
 #define PAGE_KERNEL		__pgprot(0)
 #define swapper_pg_dir		NULL
-#define TASK_SIZE		0xffffffffUL
 #define VMALLOC_START		0
-#define VMALLOC_END		TASK_SIZE
+
+#define TASK_SIZE 0xffffffffUL
+
+static inline void __kernel_map_pages(struct page *page, int numpages, int enable) {}
 
 #endif /* !CONFIG_MMU */
 
 #define kern_addr_valid(addr)   (1) /* FIXME */
 
 extern void *dtb_early_va;
-extern uintptr_t dtb_early_pa;
 void setup_bootmem(void);
 void paging_init(void);
-void misc_mem_init(void);
 
 #define FIRST_USER_ADDRESS  0
 
@@ -498,6 +485,8 @@ void misc_mem_init(void);
  */
 extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
 #define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
+
+#include <asm-generic/pgtable.h>
 
 #endif /* !__ASSEMBLY__ */
 

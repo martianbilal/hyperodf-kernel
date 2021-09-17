@@ -59,8 +59,12 @@ static int nvme_set_temp_thresh(struct nvme_ctrl *ctrl, int sensor, bool under,
 
 static int nvme_hwmon_get_smart_log(struct nvme_hwmon_data *data)
 {
-	return nvme_get_log(data->ctrl, NVME_NSID_ALL, NVME_LOG_SMART, 0,
-			   NVME_CSI_NVM, &data->log, sizeof(data->log), 0);
+	int ret;
+
+	ret = nvme_get_log(data->ctrl, NVME_NSID_ALL, NVME_LOG_SMART, 0,
+			   &data->log, sizeof(data->log), 0);
+
+	return ret <= 0 ? ret : -EIO;
 }
 
 static int nvme_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
@@ -221,16 +225,16 @@ static const struct hwmon_chip_info nvme_hwmon_chip_info = {
 	.info	= nvme_hwmon_info,
 };
 
-int nvme_hwmon_init(struct nvme_ctrl *ctrl)
+void nvme_hwmon_init(struct nvme_ctrl *ctrl)
 {
-	struct device *dev = ctrl->device;
+	struct device *dev = ctrl->dev;
 	struct nvme_hwmon_data *data;
 	struct device *hwmon;
 	int err;
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
-		return 0;
+		return;
 
 	data->ctrl = ctrl;
 	mutex_init(&data->read_lock);
@@ -238,30 +242,15 @@ int nvme_hwmon_init(struct nvme_ctrl *ctrl)
 	err = nvme_hwmon_get_smart_log(data);
 	if (err) {
 		dev_warn(dev, "Failed to read smart log (error %d)\n", err);
-		kfree(data);
-		return err;
+		devm_kfree(dev, data);
+		return;
 	}
 
-	hwmon = hwmon_device_register_with_info(dev, "nvme",
-						data, &nvme_hwmon_chip_info,
-						NULL);
+	hwmon = devm_hwmon_device_register_with_info(dev, "nvme", data,
+						     &nvme_hwmon_chip_info,
+						     NULL);
 	if (IS_ERR(hwmon)) {
 		dev_warn(dev, "Failed to instantiate hwmon device\n");
-		kfree(data);
-		return PTR_ERR(hwmon);
-	}
-	ctrl->hwmon_device = hwmon;
-	return 0;
-}
-
-void nvme_hwmon_exit(struct nvme_ctrl *ctrl)
-{
-	if (ctrl->hwmon_device) {
-		struct nvme_hwmon_data *data =
-			dev_get_drvdata(ctrl->hwmon_device);
-
-		hwmon_device_unregister(ctrl->hwmon_device);
-		ctrl->hwmon_device = NULL;
-		kfree(data);
+		devm_kfree(dev, data);
 	}
 }

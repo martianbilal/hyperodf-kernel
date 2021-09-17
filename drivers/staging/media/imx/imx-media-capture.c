@@ -91,11 +91,11 @@ static int capture_enum_framesizes(struct file *file, void *fh,
 	};
 	int ret;
 
-	cc = imx_media_find_pixel_format(fsize->pixel_format, PIXFMT_SEL_ANY);
+	cc = imx_media_find_format(fsize->pixel_format, CS_SEL_ANY, true);
 	if (!cc)
 		return -EINVAL;
 
-	fse.code = cc->codes ? cc->codes[0] : 0;
+	fse.code = cc->codes[0];
 
 	ret = v4l2_subdev_call(priv->src_sd, pad, enum_frame_size, NULL, &fse);
 	if (ret)
@@ -133,11 +133,11 @@ static int capture_enum_frameintervals(struct file *file, void *fh,
 	};
 	int ret;
 
-	cc = imx_media_find_pixel_format(fival->pixel_format, PIXFMT_SEL_ANY);
+	cc = imx_media_find_format(fival->pixel_format, CS_SEL_ANY, true);
 	if (!cc)
 		return -EINVAL;
 
-	fie.code = cc->codes ? cc->codes[0] : 0;
+	fie.code = cc->codes[0];
 
 	ret = v4l2_subdev_call(priv->src_sd, pad, enum_frame_interval,
 			       NULL, &fie);
@@ -167,19 +167,17 @@ static int capture_enum_fmt_vid_cap(struct file *file, void *fh,
 		return ret;
 	}
 
-	cc_src = imx_media_find_ipu_format(fmt_src.format.code,
-					   PIXFMT_SEL_YUV_RGB);
+	cc_src = imx_media_find_ipu_format(fmt_src.format.code, CS_SEL_ANY);
 	if (cc_src) {
-		enum imx_pixfmt_sel fmt_sel =
-			(cc_src->cs == IPUV3_COLORSPACE_YUV) ?
-			PIXFMT_SEL_YUV : PIXFMT_SEL_RGB;
+		u32 cs_sel = (cc_src->cs == IPUV3_COLORSPACE_YUV) ?
+			CS_SEL_YUV : CS_SEL_RGB;
 
-		ret = imx_media_enum_pixel_formats(&fourcc, f->index, fmt_sel);
+		ret = imx_media_enum_format(&fourcc, f->index, cs_sel);
 		if (ret)
 			return ret;
 	} else {
 		cc_src = imx_media_find_mbus_format(fmt_src.format.code,
-						    PIXFMT_SEL_ANY);
+						    CS_SEL_ANY, true);
 		if (WARN_ON(!cc_src))
 			return -EINVAL;
 
@@ -211,24 +209,22 @@ static int __capture_try_fmt_vid_cap(struct capture_priv *priv,
 {
 	const struct imx_media_pixfmt *cc, *cc_src;
 
-	cc_src = imx_media_find_ipu_format(fmt_src->format.code,
-					   PIXFMT_SEL_YUV_RGB);
+	cc_src = imx_media_find_ipu_format(fmt_src->format.code, CS_SEL_ANY);
 	if (cc_src) {
-		enum imx_pixfmt_sel fmt_sel;
-		u32 fourcc;
+		u32 fourcc, cs_sel;
 
-		fmt_sel = (cc_src->cs == IPUV3_COLORSPACE_YUV) ?
-			PIXFMT_SEL_YUV : PIXFMT_SEL_RGB;
+		cs_sel = (cc_src->cs == IPUV3_COLORSPACE_YUV) ?
+			CS_SEL_YUV : CS_SEL_RGB;
 		fourcc = f->fmt.pix.pixelformat;
 
-		cc = imx_media_find_pixel_format(fourcc, fmt_sel);
+		cc = imx_media_find_format(fourcc, cs_sel, false);
 		if (!cc) {
-			imx_media_enum_pixel_formats(&fourcc, 0, fmt_sel);
-			cc = imx_media_find_pixel_format(fourcc, fmt_sel);
+			imx_media_enum_format(&fourcc, 0, cs_sel);
+			cc = imx_media_find_format(fourcc, cs_sel, false);
 		}
 	} else {
 		cc_src = imx_media_find_mbus_format(fmt_src->format.code,
-						    PIXFMT_SEL_ANY);
+						    CS_SEL_ANY, true);
 		if (WARN_ON(!cc_src))
 			return -EINVAL;
 
@@ -557,7 +553,7 @@ static int capture_validate_fmt(struct capture_priv *priv)
 		priv->vdev.fmt.fmt.pix.height != f.fmt.pix.height ||
 		priv->vdev.cc->cs != cc->cs ||
 		priv->vdev.compose.width != compose.width ||
-		priv->vdev.compose.height != compose.height) ? -EPIPE : 0;
+		priv->vdev.compose.height != compose.height) ? -EINVAL : 0;
 }
 
 static int capture_start_streaming(struct vb2_queue *vq, unsigned int count)
@@ -647,7 +643,7 @@ static int capture_open(struct file *file)
 	if (ret)
 		v4l2_err(priv->src_sd, "v4l2_fh_open failed\n");
 
-	ret = v4l2_pipeline_pm_get(&vfd->entity);
+	ret = v4l2_pipeline_pm_use(&vfd->entity, 1);
 	if (ret)
 		v4l2_fh_release(file);
 
@@ -668,7 +664,7 @@ static int capture_release(struct file *file)
 		vq->owner = NULL;
 	}
 
-	v4l2_pipeline_pm_put(&vfd->entity);
+	v4l2_pipeline_pm_use(&vfd->entity, 0);
 
 	v4l2_fh_release(file);
 	mutex_unlock(&priv->mutex);
@@ -746,7 +742,7 @@ int imx_media_capture_device_register(struct imx_media_video_dev *vdev)
 
 	vfd->v4l2_dev = v4l2_dev;
 
-	ret = video_register_device(vfd, VFL_TYPE_VIDEO, -1);
+	ret = video_register_device(vfd, VFL_TYPE_GRABBER, -1);
 	if (ret) {
 		v4l2_err(sd, "Failed to register video device\n");
 		return ret;
@@ -782,7 +778,7 @@ int imx_media_capture_device_register(struct imx_media_video_dev *vdev)
 	/* setup default format */
 	fmt_src.pad = priv->src_sd_pad;
 	fmt_src.which = V4L2_SUBDEV_FORMAT_ACTIVE;
-	ret = v4l2_subdev_call(sd, pad, get_fmt, NULL, &fmt_src);
+	v4l2_subdev_call(sd, pad, get_fmt, NULL, &fmt_src);
 	if (ret) {
 		v4l2_err(sd, "failed to get src_sd format\n");
 		goto unreg;
@@ -793,8 +789,8 @@ int imx_media_capture_device_register(struct imx_media_video_dev *vdev)
 				      &fmt_src.format, NULL);
 	vdev->compose.width = fmt_src.format.width;
 	vdev->compose.height = fmt_src.format.height;
-	vdev->cc = imx_media_find_pixel_format(vdev->fmt.fmt.pix.pixelformat,
-					       PIXFMT_SEL_ANY);
+	vdev->cc = imx_media_find_format(vdev->fmt.fmt.pix.pixelformat,
+					 CS_SEL_ANY, false);
 
 	v4l2_info(sd, "Registered %s as /dev/%s\n", vfd->name,
 		  video_device_node_name(vfd));
@@ -816,8 +812,14 @@ void imx_media_capture_device_unregister(struct imx_media_video_dev *vdev)
 	struct capture_priv *priv = to_capture_priv(vdev);
 	struct video_device *vfd = priv->vdev.vfd;
 
-	media_entity_cleanup(&vfd->entity);
-	video_unregister_device(vfd);
+	mutex_lock(&priv->mutex);
+
+	if (video_is_registered(vfd)) {
+		video_unregister_device(vfd);
+		media_entity_cleanup(&vfd->entity);
+	}
+
+	mutex_unlock(&priv->mutex);
 }
 EXPORT_SYMBOL_GPL(imx_media_capture_device_unregister);
 

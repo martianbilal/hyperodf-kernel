@@ -195,87 +195,72 @@ static void shutdown_onchannelcallback(void *context)
 
 	struct icmsg_hdr *icmsghdrp;
 
-	if (vmbus_recvpacket(channel, shut_txf_buf, HV_HYP_PAGE_SIZE, &recvlen, &requestid)) {
-		pr_err_ratelimited("Shutdown request received. Could not read into shut txf buf\n");
-		return;
-	}
+	vmbus_recvpacket(channel, shut_txf_buf,
+			 HV_HYP_PAGE_SIZE, &recvlen, &requestid);
 
-	if (!recvlen)
-		return;
+	if (recvlen > 0) {
+		icmsghdrp = (struct icmsg_hdr *)&shut_txf_buf[
+			sizeof(struct vmbuspipe_hdr)];
 
-	/* Ensure recvlen is big enough to read header data */
-	if (recvlen < ICMSG_HDR) {
-		pr_err_ratelimited("Shutdown request received. Packet length too small: %d\n",
-				   recvlen);
-		return;
-	}
+		if (icmsghdrp->icmsgtype == ICMSGTYPE_NEGOTIATE) {
+			if (vmbus_prep_negotiate_resp(icmsghdrp, shut_txf_buf,
+					fw_versions, FW_VER_COUNT,
+					sd_versions, SD_VER_COUNT,
+					NULL, &sd_srv_version)) {
+				pr_info("Shutdown IC version %d.%d\n",
+					sd_srv_version >> 16,
+					sd_srv_version & 0xFFFF);
+			}
+		} else {
+			shutdown_msg =
+				(struct shutdown_msg_data *)&shut_txf_buf[
+					sizeof(struct vmbuspipe_hdr) +
+					sizeof(struct icmsg_hdr)];
 
-	icmsghdrp = (struct icmsg_hdr *)&shut_txf_buf[sizeof(struct vmbuspipe_hdr)];
-
-	if (icmsghdrp->icmsgtype == ICMSGTYPE_NEGOTIATE) {
-		if (vmbus_prep_negotiate_resp(icmsghdrp,
-				shut_txf_buf, recvlen,
-				fw_versions, FW_VER_COUNT,
-				sd_versions, SD_VER_COUNT,
-				NULL, &sd_srv_version)) {
-			pr_info("Shutdown IC version %d.%d\n",
-				sd_srv_version >> 16,
-				sd_srv_version & 0xFFFF);
+			/*
+			 * shutdown_msg->flags can be 0(shut down), 2(reboot),
+			 * or 4(hibernate). It may bitwise-OR 1, which means
+			 * performing the request by force. Linux always tries
+			 * to perform the request by force.
+			 */
+			switch (shutdown_msg->flags) {
+			case 0:
+			case 1:
+				icmsghdrp->status = HV_S_OK;
+				work = &shutdown_work;
+				pr_info("Shutdown request received -"
+					    " graceful shutdown initiated\n");
+				break;
+			case 2:
+			case 3:
+				icmsghdrp->status = HV_S_OK;
+				work = &restart_work;
+				pr_info("Restart request received -"
+					    " graceful restart initiated\n");
+				break;
+			case 4:
+			case 5:
+				pr_info("Hibernation request received\n");
+				icmsghdrp->status = hibernation_supported ?
+					HV_S_OK : HV_E_FAIL;
+				if (hibernation_supported)
+					work = &hibernate_context.work;
+				break;
+			default:
+				icmsghdrp->status = HV_E_FAIL;
+				pr_info("Shutdown request received -"
+					    " Invalid request\n");
+				break;
+			}
 		}
-	} else if (icmsghdrp->icmsgtype == ICMSGTYPE_SHUTDOWN) {
-		/* Ensure recvlen is big enough to contain shutdown_msg_data struct */
-		if (recvlen < ICMSG_HDR + sizeof(struct shutdown_msg_data)) {
-			pr_err_ratelimited("Invalid shutdown msg data. Packet length too small: %u\n",
-					   recvlen);
-			return;
-		}
 
-		shutdown_msg = (struct shutdown_msg_data *)&shut_txf_buf[ICMSG_HDR];
+		icmsghdrp->icflags = ICMSGHDRFLAG_TRANSACTION
+			| ICMSGHDRFLAG_RESPONSE;
 
-		/*
-		 * shutdown_msg->flags can be 0(shut down), 2(reboot),
-		 * or 4(hibernate). It may bitwise-OR 1, which means
-		 * performing the request by force. Linux always tries
-		 * to perform the request by force.
-		 */
-		switch (shutdown_msg->flags) {
-		case 0:
-		case 1:
-			icmsghdrp->status = HV_S_OK;
-			work = &shutdown_work;
-			pr_info("Shutdown request received - graceful shutdown initiated\n");
-			break;
-		case 2:
-		case 3:
-			icmsghdrp->status = HV_S_OK;
-			work = &restart_work;
-			pr_info("Restart request received - graceful restart initiated\n");
-			break;
-		case 4:
-		case 5:
-			pr_info("Hibernation request received\n");
-			icmsghdrp->status = hibernation_supported ?
-				HV_S_OK : HV_E_FAIL;
-			if (hibernation_supported)
-				work = &hibernate_context.work;
-			break;
-		default:
-			icmsghdrp->status = HV_E_FAIL;
-			pr_info("Shutdown request received - Invalid request\n");
-			break;
-		}
-	} else {
-		icmsghdrp->status = HV_E_FAIL;
-		pr_err_ratelimited("Shutdown request received. Invalid msg type: %d\n",
-				   icmsghdrp->icmsgtype);
+		vmbus_sendpacket(channel, shut_txf_buf,
+				       recvlen, requestid,
+				       VM_PKT_DATA_INBAND, 0);
 	}
-
-	icmsghdrp->icflags = ICMSGHDRFLAG_TRANSACTION
-		| ICMSGHDRFLAG_RESPONSE;
-
-	vmbus_sendpacket(channel, shut_txf_buf,
-			 recvlen, requestid,
-			 VM_PKT_DATA_INBAND, 0);
 
 	if (work)
 		schedule_work(work);
@@ -297,52 +282,26 @@ static struct {
 	spinlock_t			lock;
 } host_ts;
 
-static inline u64 reftime_to_ns(u64 reftime)
+static struct timespec64 hv_get_adj_host_time(void)
 {
-	return (reftime - WLTIMEDELTA) * 100;
-}
-
-/*
- * Hard coded threshold for host timesync delay: 600 seconds
- */
-static const u64 HOST_TIMESYNC_DELAY_THRESH = 600 * (u64)NSEC_PER_SEC;
-
-static int hv_get_adj_host_time(struct timespec64 *ts)
-{
-	u64 newtime, reftime, timediff_adj;
+	struct timespec64 ts;
+	u64 newtime, reftime;
 	unsigned long flags;
-	int ret = 0;
 
 	spin_lock_irqsave(&host_ts.lock, flags);
 	reftime = hv_read_reference_counter();
-
-	/*
-	 * We need to let the caller know that last update from host
-	 * is older than the max allowable threshold. clock_gettime()
-	 * and PTP ioctl do not have a documented error that we could
-	 * return for this specific case. Use ESTALE to report this.
-	 */
-	timediff_adj = reftime - host_ts.ref_time;
-	if (timediff_adj * 100 > HOST_TIMESYNC_DELAY_THRESH) {
-		pr_warn_once("TIMESYNC IC: Stale time stamp, %llu nsecs old\n",
-			     (timediff_adj * 100));
-		ret = -ESTALE;
-	}
-
-	newtime = host_ts.host_time + timediff_adj;
-	*ts = ns_to_timespec64(reftime_to_ns(newtime));
+	newtime = host_ts.host_time + (reftime - host_ts.ref_time);
+	ts = ns_to_timespec64((newtime - WLTIMEDELTA) * 100);
 	spin_unlock_irqrestore(&host_ts.lock, flags);
 
-	return ret;
+	return ts;
 }
 
 static void hv_set_host_time(struct work_struct *work)
 {
+	struct timespec64 ts = hv_get_adj_host_time();
 
-	struct timespec64 ts;
-
-	if (!hv_get_adj_host_time(&ts))
-		do_settimeofday64(&ts);
+	do_settimeofday64(&ts);
 }
 
 /*
@@ -402,36 +361,15 @@ static void timesync_onchannelcallback(void *context)
 	struct ictimesync_ref_data *refdata;
 	u8 *time_txf_buf = util_timesynch.recv_buffer;
 
-	/*
-	 * Drain the ring buffer and use the last packet to update
-	 * host_ts
-	 */
-	while (1) {
-		int ret = vmbus_recvpacket(channel, time_txf_buf,
-					   HV_HYP_PAGE_SIZE, &recvlen,
-					   &requestid);
-		if (ret) {
-			pr_err_ratelimited("TimeSync IC pkt recv failed (Err: %d)\n",
-					   ret);
-			break;
-		}
+	vmbus_recvpacket(channel, time_txf_buf,
+			 HV_HYP_PAGE_SIZE, &recvlen, &requestid);
 
-		if (!recvlen)
-			break;
-
-		/* Ensure recvlen is big enough to read header data */
-		if (recvlen < ICMSG_HDR) {
-			pr_err_ratelimited("Timesync request received. Packet length too small: %d\n",
-					   recvlen);
-			break;
-		}
-
+	if (recvlen > 0) {
 		icmsghdrp = (struct icmsg_hdr *)&time_txf_buf[
 				sizeof(struct vmbuspipe_hdr)];
 
 		if (icmsghdrp->icmsgtype == ICMSGTYPE_NEGOTIATE) {
-			if (vmbus_prep_negotiate_resp(icmsghdrp,
-						time_txf_buf, recvlen,
+			if (vmbus_prep_negotiate_resp(icmsghdrp, time_txf_buf,
 						fw_versions, FW_VER_COUNT,
 						ts_versions, TS_VER_COUNT,
 						NULL, &ts_srv_version)) {
@@ -439,44 +377,33 @@ static void timesync_onchannelcallback(void *context)
 					ts_srv_version >> 16,
 					ts_srv_version & 0xFFFF);
 			}
-		} else if (icmsghdrp->icmsgtype == ICMSGTYPE_TIMESYNC) {
+		} else {
 			if (ts_srv_version > TS_VERSION_3) {
-				/* Ensure recvlen is big enough to read ictimesync_ref_data */
-				if (recvlen < ICMSG_HDR + sizeof(struct ictimesync_ref_data)) {
-					pr_err_ratelimited("Invalid ictimesync ref data. Length too small: %u\n",
-							   recvlen);
-					break;
-				}
-				refdata = (struct ictimesync_ref_data *)&time_txf_buf[ICMSG_HDR];
+				refdata = (struct ictimesync_ref_data *)
+					&time_txf_buf[
+					sizeof(struct vmbuspipe_hdr) +
+					sizeof(struct icmsg_hdr)];
 
 				adj_guesttime(refdata->parenttime,
 						refdata->vmreferencetime,
 						refdata->flags);
 			} else {
-				/* Ensure recvlen is big enough to read ictimesync_data */
-				if (recvlen < ICMSG_HDR + sizeof(struct ictimesync_data)) {
-					pr_err_ratelimited("Invalid ictimesync data. Length too small: %u\n",
-							   recvlen);
-					break;
-				}
-				timedatap = (struct ictimesync_data *)&time_txf_buf[ICMSG_HDR];
-
+				timedatap = (struct ictimesync_data *)
+					&time_txf_buf[
+					sizeof(struct vmbuspipe_hdr) +
+					sizeof(struct icmsg_hdr)];
 				adj_guesttime(timedatap->parenttime,
 					      hv_read_reference_counter(),
 					      timedatap->flags);
 			}
-		} else {
-			icmsghdrp->status = HV_E_FAIL;
-			pr_err_ratelimited("Timesync request received. Invalid msg type: %d\n",
-					   icmsghdrp->icmsgtype);
 		}
 
 		icmsghdrp->icflags = ICMSGHDRFLAG_TRANSACTION
 			| ICMSGHDRFLAG_RESPONSE;
 
 		vmbus_sendpacket(channel, time_txf_buf,
-				 recvlen, requestid,
-				 VM_PKT_DATA_INBAND, 0);
+				recvlen, requestid,
+				VM_PKT_DATA_INBAND, 0);
 	}
 }
 
@@ -496,28 +423,18 @@ static void heartbeat_onchannelcallback(void *context)
 
 	while (1) {
 
-		if (vmbus_recvpacket(channel, hbeat_txf_buf, HV_HYP_PAGE_SIZE,
-				     &recvlen, &requestid)) {
-			pr_err_ratelimited("Heartbeat request received. Could not read into hbeat txf buf\n");
-			return;
-		}
+		vmbus_recvpacket(channel, hbeat_txf_buf,
+				 HV_HYP_PAGE_SIZE, &recvlen, &requestid);
 
 		if (!recvlen)
 			break;
-
-		/* Ensure recvlen is big enough to read header data */
-		if (recvlen < ICMSG_HDR) {
-			pr_err_ratelimited("Heartbeat request received. Packet length too small: %d\n",
-					   recvlen);
-			break;
-		}
 
 		icmsghdrp = (struct icmsg_hdr *)&hbeat_txf_buf[
 				sizeof(struct vmbuspipe_hdr)];
 
 		if (icmsghdrp->icmsgtype == ICMSGTYPE_NEGOTIATE) {
 			if (vmbus_prep_negotiate_resp(icmsghdrp,
-					hbeat_txf_buf, recvlen,
+					hbeat_txf_buf,
 					fw_versions, FW_VER_COUNT,
 					hb_versions, HB_VER_COUNT,
 					NULL, &hb_srv_version)) {
@@ -526,36 +443,23 @@ static void heartbeat_onchannelcallback(void *context)
 					hb_srv_version >> 16,
 					hb_srv_version & 0xFFFF);
 			}
-		} else if (icmsghdrp->icmsgtype == ICMSGTYPE_HEARTBEAT) {
-			/*
-			 * Ensure recvlen is big enough to read seq_num. Reserved area is not
-			 * included in the check as the host may not fill it up entirely
-			 */
-			if (recvlen < ICMSG_HDR + sizeof(u64)) {
-				pr_err_ratelimited("Invalid heartbeat msg data. Length too small: %u\n",
-						   recvlen);
-				break;
-			}
-			heartbeat_msg = (struct heartbeat_msg_data *)&hbeat_txf_buf[ICMSG_HDR];
+		} else {
+			heartbeat_msg =
+				(struct heartbeat_msg_data *)&hbeat_txf_buf[
+					sizeof(struct vmbuspipe_hdr) +
+					sizeof(struct icmsg_hdr)];
 
 			heartbeat_msg->seq_num += 1;
-		} else {
-			icmsghdrp->status = HV_E_FAIL;
-			pr_err_ratelimited("Heartbeat request received. Invalid msg type: %d\n",
-					   icmsghdrp->icmsgtype);
 		}
 
 		icmsghdrp->icflags = ICMSGHDRFLAG_TRANSACTION
 			| ICMSGHDRFLAG_RESPONSE;
 
 		vmbus_sendpacket(channel, hbeat_txf_buf,
-				 recvlen, requestid,
-				 VM_PKT_DATA_INBAND, 0);
+				       recvlen, requestid,
+				       VM_PKT_DATA_INBAND, 0);
 	}
 }
-
-#define HV_UTIL_RING_SEND_SIZE VMBUS_RING_SIZE(3 * HV_HYP_PAGE_SIZE)
-#define HV_UTIL_RING_RECV_SIZE VMBUS_RING_SIZE(3 * HV_HYP_PAGE_SIZE)
 
 static int util_probe(struct hv_device *dev,
 			const struct hv_vmbus_device_id *dev_id)
@@ -587,8 +491,8 @@ static int util_probe(struct hv_device *dev,
 
 	hv_set_drvdata(dev, srv);
 
-	ret = vmbus_open(dev->channel, HV_UTIL_RING_SEND_SIZE,
-			 HV_UTIL_RING_RECV_SIZE, NULL, 0, srv->util_cb,
+	ret = vmbus_open(dev->channel, 4 * HV_HYP_PAGE_SIZE,
+			 4 * HV_HYP_PAGE_SIZE, NULL, 0, srv->util_cb,
 			 dev->channel);
 	if (ret)
 		goto error;
@@ -647,8 +551,8 @@ static int util_resume(struct hv_device *dev)
 			return ret;
 	}
 
-	ret = vmbus_open(dev->channel, HV_UTIL_RING_SEND_SIZE,
-			 HV_UTIL_RING_RECV_SIZE, NULL, 0, srv->util_cb,
+	ret = vmbus_open(dev->channel, 4 * HV_HYP_PAGE_SIZE,
+			 4 * HV_HYP_PAGE_SIZE, NULL, 0, srv->util_cb,
 			 dev->channel);
 	return ret;
 }
@@ -718,7 +622,9 @@ static int hv_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 
 static int hv_ptp_gettime(struct ptp_clock_info *info, struct timespec64 *ts)
 {
-	return hv_get_adj_host_time(ts);
+	*ts = hv_get_adj_host_time();
+
+	return 0;
 }
 
 static struct ptp_clock_info ptp_hyperv_info = {

@@ -2,7 +2,6 @@
 #ifndef _ASM_POWERPC_BOOK3S_32_KUP_H
 #define _ASM_POWERPC_BOOK3S_32_KUP_H
 
-#include <asm/bug.h>
 #include <asm/book3s/32/mmu-hash.h>
 
 #ifdef __ASSEMBLY__
@@ -76,7 +75,7 @@
 
 .macro kuap_check	current, gpr
 #ifdef CONFIG_PPC_KUAP_DEBUG
-	lwz	\gpr, THREAD + KUAP(\current)
+	lwz	\gpr, KUAP(thread)
 999:	twnei	\gpr, 0
 	EMIT_BUG_ENTRY 999b, __FILE__, __LINE__, (BUGFLAG_WARNING | BUGFLAG_ONCE)
 #endif
@@ -95,12 +94,12 @@ static inline void kuap_update_sr(u32 sr, u32 addr, u32 end)
 	addr &= 0xf0000000;	/* align addr to start of segment */
 	barrier();	/* make sure thread.kuap is updated before playing with SRs */
 	while (addr < end) {
-		mtsr(sr, addr);
+		mtsrin(sr, addr);
 		sr += 0x111;		/* next VSID */
 		sr &= 0xf0ffffff;	/* clear VSID overflow */
 		addr += 0x10000000;	/* address of next segment */
 	}
-	isync();	/* Context sync required after mtsr() */
+	isync();	/* Context sync required after mtsrin() */
 }
 
 static __always_inline void allow_user_access(void __user *to, const void __user *from,
@@ -109,7 +108,7 @@ static __always_inline void allow_user_access(void __user *to, const void __user
 	u32 addr, end;
 
 	BUILD_BUG_ON(!__builtin_constant_p(dir));
-	BUILD_BUG_ON(dir & ~KUAP_READ_WRITE);
+	BUILD_BUG_ON(dir == KUAP_CURRENT);
 
 	if (!(dir & KUAP_WRITE))
 		return;
@@ -122,7 +121,7 @@ static __always_inline void allow_user_access(void __user *to, const void __user
 	end = min(addr + size, TASK_SIZE);
 
 	current->thread.kuap = (addr & 0xf0000000) | ((((end - 1) >> 28) + 1) & 0xf);
-	kuap_update_sr(mfsr(addr) & ~SR_KS, addr, end);	/* Clear Ks */
+	kuap_update_sr(mfsrin(addr) & ~SR_KS, addr, end);	/* Clear Ks */
 }
 
 static __always_inline void prevent_user_access(void __user *to, const void __user *from,
@@ -132,7 +131,7 @@ static __always_inline void prevent_user_access(void __user *to, const void __us
 
 	BUILD_BUG_ON(!__builtin_constant_p(dir));
 
-	if (dir & KUAP_CURRENT_WRITE) {
+	if (dir == KUAP_CURRENT) {
 		u32 kuap = current->thread.kuap;
 
 		if (unlikely(!kuap))
@@ -151,7 +150,7 @@ static __always_inline void prevent_user_access(void __user *to, const void __us
 	}
 
 	current->thread.kuap = 0;
-	kuap_update_sr(mfsr(addr) | SR_KS, addr, end);	/* set Ks */
+	kuap_update_sr(mfsrin(addr) | SR_KS, addr, end);	/* set Ks */
 }
 
 static inline unsigned long prevent_user_access_return(void)
@@ -183,7 +182,11 @@ bad_kuap_fault(struct pt_regs *regs, unsigned long address, bool is_write)
 	unsigned long begin = regs->kuap & 0xf0000000;
 	unsigned long end = regs->kuap << 28;
 
-	return is_write && (address < begin || address >= end);
+	if (!is_write)
+		return false;
+
+	return WARN(address < begin || address >= end,
+		    "Bug: write fault blocked by segment registers !");
 }
 
 #endif /* CONFIG_PPC_KUAP */

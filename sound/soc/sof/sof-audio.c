@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause)
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-3-Clause)
 //
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
@@ -11,40 +11,7 @@
 #include "sof-audio.h"
 #include "ops.h"
 
-/*
- * helper to determine if there are only D0i3 compatible
- * streams active
- */
-bool snd_sof_dsp_only_d0i3_compatible_stream_active(struct snd_sof_dev *sdev)
-{
-	struct snd_pcm_substream *substream;
-	struct snd_sof_pcm *spcm;
-	bool d0i3_compatible_active = false;
-	int dir;
-
-	list_for_each_entry(spcm, &sdev->pcm_list, list) {
-		for_each_pcm_streams(dir) {
-			substream = spcm->stream[dir].substream;
-			if (!substream || !substream->runtime)
-				continue;
-
-			/*
-			 * substream->runtime being not NULL indicates
-			 * that the stream is open. No need to check the
-			 * stream state.
-			 */
-			if (!spcm->stream[dir].d0i3_compatible)
-				return false;
-
-			d0i3_compatible_active = true;
-		}
-	}
-
-	return d0i3_compatible_active;
-}
-EXPORT_SYMBOL(snd_sof_dsp_only_d0i3_compatible_stream_active);
-
-bool snd_sof_stream_suspend_ignored(struct snd_sof_dev *sdev)
+bool snd_sof_dsp_d0i3_on_suspend(struct snd_sof_dev *sdev)
 {
 	struct snd_sof_pcm *spcm;
 
@@ -71,14 +38,7 @@ int sof_set_hw_params_upon_resume(struct device *dev)
 	 * have been suspended.
 	 */
 	list_for_each_entry(spcm, &sdev->pcm_list, list) {
-		for_each_pcm_streams(dir) {
-			/*
-			 * do not reset hw_params upon resume for streams that
-			 * were kept running during suspend
-			 */
-			if (spcm->stream[dir].suspend_ignored)
-				continue;
-
+		for (dir = 0; dir <= SNDRV_PCM_STREAM_CAPTURE; dir++) {
 			substream = spcm->stream[dir].substream;
 			if (!substream || !substream->runtime)
 				continue;
@@ -142,22 +102,6 @@ static int sof_restore_kcontrols(struct device *dev)
 	return 0;
 }
 
-const struct sof_ipc_pipe_new *snd_sof_pipeline_find(struct snd_sof_dev *sdev,
-						     int pipeline_id)
-{
-	const struct snd_sof_widget *swidget;
-
-	list_for_each_entry(swidget, &sdev->widget_list, list)
-		if (swidget->id == snd_soc_dapm_scheduler) {
-			const struct sof_ipc_pipe_new *pipeline =
-				swidget->private;
-			if (pipeline->pipeline_id == pipeline_id)
-				return pipeline;
-		}
-
-	return NULL;
-}
-
 int sof_restore_pipelines(struct device *dev)
 {
 	struct snd_sof_dev *sdev = dev_get_drvdata(dev);
@@ -165,9 +109,8 @@ int sof_restore_pipelines(struct device *dev)
 	struct snd_sof_route *sroute;
 	struct sof_ipc_pipe_new *pipeline;
 	struct snd_sof_dai *dai;
+	struct sof_ipc_comp_dai *comp_dai;
 	struct sof_ipc_cmd_hdr *hdr;
-	struct sof_ipc_comp *comp;
-	size_t ipc_size;
 	int ret;
 
 	/* restore pipeline components */
@@ -178,36 +121,15 @@ int sof_restore_pipelines(struct device *dev)
 		if (!swidget->private)
 			continue;
 
-		ret = sof_pipeline_core_enable(sdev, swidget);
-		if (ret < 0) {
-			dev_err(dev,
-				"error: failed to enable target core: %d\n",
-				ret);
-
-			return ret;
-		}
-
 		switch (swidget->id) {
 		case snd_soc_dapm_dai_in:
 		case snd_soc_dapm_dai_out:
-			ipc_size = sizeof(struct sof_ipc_comp_dai) +
-				   sizeof(struct sof_ipc_comp_ext);
-			comp = kzalloc(ipc_size, GFP_KERNEL);
-			if (!comp)
-				return -ENOMEM;
-
 			dai = swidget->private;
-			memcpy(comp, &dai->comp_dai,
-			       sizeof(struct sof_ipc_comp_dai));
-
-			/* append extended data to the end of the component */
-			memcpy((u8 *)comp + sizeof(struct sof_ipc_comp_dai),
-			       &swidget->comp_ext, sizeof(swidget->comp_ext));
-
-			ret = sof_ipc_tx_message(sdev->ipc, comp->hdr.cmd,
-						 comp, ipc_size,
+			comp_dai = &dai->comp_dai;
+			ret = sof_ipc_tx_message(sdev->ipc,
+						 comp_dai->comp.hdr.cmd,
+						 comp_dai, sizeof(*comp_dai),
 						 &r, sizeof(r));
-			kfree(comp);
 			break;
 		case snd_soc_dapm_scheduler:
 
@@ -357,11 +279,16 @@ struct snd_sof_pcm *snd_sof_find_spcm_comp(struct snd_soc_component *scomp,
 	int dir;
 
 	list_for_each_entry(spcm, &sdev->pcm_list, list) {
-		for_each_pcm_streams(dir) {
-			if (spcm->stream[dir].comp_id == comp_id) {
-				*direction = dir;
-				return spcm;
-			}
+		dir = SNDRV_PCM_STREAM_PLAYBACK;
+		if (spcm->stream[dir].comp_id == comp_id) {
+			*direction = dir;
+			return spcm;
+		}
+
+		dir = SNDRV_PCM_STREAM_CAPTURE;
+		if (spcm->stream[dir].comp_id == comp_id) {
+			*direction = dir;
+			return spcm;
 		}
 	}
 
@@ -443,7 +370,11 @@ int sof_machine_check(struct snd_sof_dev *sdev)
 	struct snd_soc_acpi_mach *mach;
 	int ret;
 
-#if !IS_ENABLED(CONFIG_SND_SOC_SOF_FORCE_NOCODEC_MODE)
+	/* force nocodec mode */
+#if IS_ENABLED(CONFIG_SND_SOC_SOF_FORCE_NOCODEC_MODE)
+		dev_warn(sdev->dev, "Force to use nocodec mode\n");
+		goto nocodec;
+#endif
 
 	/* find machine */
 	snd_sof_machine_select(sdev);
@@ -456,8 +387,8 @@ int sof_machine_check(struct snd_sof_dev *sdev)
 	dev_err(sdev->dev, "error: no matching ASoC machine driver found - aborting probe\n");
 	return -ENODEV;
 #endif
-#else
-	dev_warn(sdev->dev, "Force to use nocodec mode\n");
+#if IS_ENABLED(CONFIG_SND_SOC_SOF_FORCE_NOCODEC_MODE)
+nocodec:
 #endif
 	/* select nocodec mode */
 	dev_warn(sdev->dev, "Using nocodec machine driver\n");
@@ -468,7 +399,7 @@ int sof_machine_check(struct snd_sof_dev *sdev)
 	mach->drv_name = "sof-nocodec";
 	sof_pdata->tplg_filename = desc->nocodec_tplg_filename;
 
-	ret = sof_nocodec_setup(sdev->dev, desc->ops, sof_pcm_dai_link_fixup);
+	ret = sof_nocodec_setup(sdev->dev, desc->ops);
 	if (ret < 0)
 		return ret;
 
@@ -481,13 +412,13 @@ EXPORT_SYMBOL(sof_machine_check);
 
 int sof_machine_register(struct snd_sof_dev *sdev, void *pdata)
 {
-	struct snd_sof_pdata *plat_data = pdata;
+	struct snd_sof_pdata *plat_data = (struct snd_sof_pdata *)pdata;
 	const char *drv_name;
 	const void *mach;
 	int size;
 
 	drv_name = plat_data->machine->drv_name;
-	mach = plat_data->machine;
+	mach = (const void *)plat_data->machine;
 	size = sizeof(*plat_data->machine);
 
 	/* register machine driver, pass machine info as pdata */
@@ -506,7 +437,7 @@ EXPORT_SYMBOL(sof_machine_register);
 
 void sof_machine_unregister(struct snd_sof_dev *sdev, void *pdata)
 {
-	struct snd_sof_pdata *plat_data = pdata;
+	struct snd_sof_pdata *plat_data = (struct snd_sof_pdata *)pdata;
 
 	if (!IS_ERR_OR_NULL(plat_data->pdev_mach))
 		platform_device_unregister(plat_data->pdev_mach);

@@ -164,8 +164,6 @@
 			reg = <0x1e6a0000 0x300>;
 			interrupts = <5>;
 			clocks = <&syscon ASPEED_CLK_GATE_USBPORT1CLK>;
-			aspeed,vhub-downstream-ports = <5>;
-			aspeed,vhub-generic-endpoints = <15>;
 			pinctrl-names = "default";
 			pinctrl-0 = <&pinctrl_usb2d_default>;
 			status = "disabled";
@@ -190,11 +188,6 @@
 					reg = <0x2c 0x4>;
 					compatible = "aspeed,ast2400-p2a-ctrl";
 					status = "disabled";
-				};
-
-				silicon-id@7c {
-					compatible = "aspeed,ast2400-silicon-id", "aspeed,silicon-id";
-					reg = <0x7c 0x4>;
 				};
 
 				pinctrl: pinctrl@80 {
@@ -222,16 +215,6 @@
 			sram: sram@1e720000 {
 				compatible = "mmio-sram";
 				reg = <0x1e720000 0x8000>;	// 32K
-			};
-
-			video: video@1e700000 {
-				compatible = "aspeed,ast2400-video-engine";
-				reg = <0x1e700000 0x1000>;
-				clocks = <&syscon ASPEED_CLK_GATE_VCLK>,
-					 <&syscon ASPEED_CLK_GATE_ECLK>;
-				clock-names = "vclk", "eclk";
-				interrupts = <7>;
-				status = "disabled";
 			};
 
 			sdmmc: sd-controller@1e740000 {
@@ -375,7 +358,6 @@
 						compatible = "aspeed,ast2400-lpc-snoop";
 						reg = <0x10 0x8>;
 						interrupts = <8>;
-						clocks = <&syscon ASPEED_CLK_GATE_LCLK>;
 						status = "disabled";
 					};
 

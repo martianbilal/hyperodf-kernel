@@ -265,7 +265,7 @@ static bool sfb_classify(struct sk_buff *skb, struct tcf_proto *fl,
 		case TC_ACT_QUEUED:
 		case TC_ACT_TRAP:
 			*qerr = NET_XMIT_SUCCESS | __NET_XMIT_STOLEN;
-			fallthrough;
+			/* fall through */
 		case TC_ACT_SHOT:
 			return false;
 		}
@@ -649,8 +649,7 @@ static int sfb_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 	return -ENOSYS;
 }
 
-static int sfb_delete(struct Qdisc *sch, unsigned long cl,
-		      struct netlink_ext_ack *extack)
+static int sfb_delete(struct Qdisc *sch, unsigned long cl)
 {
 	return -ENOSYS;
 }

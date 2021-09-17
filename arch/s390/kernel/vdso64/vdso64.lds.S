@@ -13,10 +13,6 @@ ENTRY(_start)
 
 SECTIONS
 {
-	PROVIDE(_vdso_data = . - __VVAR_PAGES * PAGE_SIZE);
-#ifdef CONFIG_TIME_NS
-	PROVIDE(_timens_data = _vdso_data + PAGE_SIZE);
-#endif
 	. = VDSO64_LBASE + SIZEOF_HEADERS;
 
 	.hash		: { *(.hash) }			:text
@@ -98,6 +94,9 @@ SECTIONS
 	.debug_ranges	0 : { *(.debug_ranges) }
 	.gnu.attributes 0 : { KEEP (*(.gnu.attributes)) }
 
+	. = ALIGN(PAGE_SIZE);
+	PROVIDE(_vdso_data = .);
+
 	/DISCARD/	: {
 		*(.note.GNU-stack)
 		*(.branch_lt)
@@ -137,6 +136,7 @@ VERSION
 		__kernel_clock_gettime;
 		__kernel_clock_getres;
 		__kernel_getcpu;
+
 	local: *;
 	};
 }

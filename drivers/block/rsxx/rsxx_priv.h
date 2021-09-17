@@ -11,6 +11,7 @@
 #ifndef __RSXX_PRIV_H__
 #define __RSXX_PRIV_H__
 
+#include <linux/version.h>
 #include <linux/semaphore.h>
 
 #include <linux/fs.h>

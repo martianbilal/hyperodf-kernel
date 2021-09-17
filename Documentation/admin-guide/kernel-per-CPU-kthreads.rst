@@ -10,7 +10,7 @@ them to a "housekeeping" CPU dedicated to such work.
 References
 ==========
 
--	Documentation/core-api/irq/irq-affinity.rst:  Binding interrupts to sets of CPUs.
+-	Documentation/IRQ-affinity.txt:  Binding interrupts to sets of CPUs.
 
 -	Documentation/admin-guide/cgroup-v1:  Using cgroups to bind tasks to sets of CPUs.
 
@@ -234,7 +234,7 @@ To reduce its OS jitter, do any of the following:
 	Such a workqueue can be confined to a given subset of the
 	CPUs using the ``/sys/devices/virtual/workqueue/*/cpumask`` sysfs
 	files.	The set of WQ_SYSFS workqueues can be displayed using
-	"ls /sys/devices/virtual/workqueue".  That said, the workqueues
+	"ls sys/devices/virtual/workqueue".  That said, the workqueues
 	maintainer would like to caution people against indiscriminately
 	sprinkling WQ_SYSFS across all the workqueues.	The reason for
 	caution is that it is easy to add WQ_SYSFS, but because sysfs is
@@ -273,7 +273,7 @@ To reduce its OS jitter, do any of the following:
 		However, there is an RFC patch from Christoph Lameter
 		(based on an earlier one from Gilad Ben-Yossef) that
 		reduces or even eliminates vmstat overhead for some
-		workloads at https://lore.kernel.org/r/00000140e9dfd6bd-40db3d4f-c1be-434f-8132-7820f81bb586-000000@email.amazonses.com.
+		workloads at https://lkml.org/lkml/2013/9/4/379.
 	e.	If running on high-end powerpc servers, build with
 		CONFIG_PPC_RTAS_DAEMON=n.  This prevents the RTAS
 		daemon from running on each CPU every second or so.

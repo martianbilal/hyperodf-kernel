@@ -332,8 +332,7 @@ static void rtw_wow_fw_security_type_iter(struct ieee80211_hw *hw,
 		key->flags |= IEEE80211_KEY_FLAG_SW_MGMT_TX;
 		break;
 	default:
-		rtw_err(rtwdev, "Unsupported key type for wowlan mode: %#x\n",
-			key->cipher);
+		rtw_err(rtwdev, "Unsupported key type for wowlan mode\n");
 		hw_key_type = 0;
 		break;
 	}
@@ -432,39 +431,50 @@ static void rtw_wow_fw_media_status(struct rtw_dev *rtwdev, bool connect)
 	rtw_iterate_stas_atomic(rtwdev, rtw_wow_fw_media_status_iter, &data);
 }
 
-static void rtw_wow_config_pno_rsvd_page(struct rtw_dev *rtwdev,
-					 struct rtw_vif *rtwvif)
+static void rtw_wow_config_pno_rsvd_page(struct rtw_dev *rtwdev)
 {
-	rtw_add_rsvd_page_pno(rtwdev, rtwvif);
+	struct rtw_wow_param *rtw_wow = &rtwdev->wow;
+	struct rtw_pno_request *rtw_pno_req = &rtw_wow->pno_req;
+	struct cfg80211_ssid *ssid;
+	int i;
+
+	for (i = 0 ; i < rtw_pno_req->match_set_cnt; i++) {
+		ssid = &rtw_pno_req->match_sets[i].ssid;
+		rtw_add_rsvd_page_probe_req(rtwdev, ssid);
+	}
+	rtw_add_rsvd_page_probe_req(rtwdev, NULL);
+	rtw_add_rsvd_page(rtwdev, RSVD_NLO_INFO, false);
+	rtw_add_rsvd_page(rtwdev, RSVD_CH_INFO, true);
 }
 
-static void rtw_wow_config_linked_rsvd_page(struct rtw_dev *rtwdev,
-					   struct rtw_vif *rtwvif)
+static void rtw_wow_config_linked_rsvd_page(struct rtw_dev *rtwdev)
 {
-	rtw_add_rsvd_page_sta(rtwdev, rtwvif);
+	rtw_add_rsvd_page(rtwdev, RSVD_PS_POLL, true);
+	rtw_add_rsvd_page(rtwdev, RSVD_QOS_NULL, true);
+	rtw_add_rsvd_page(rtwdev, RSVD_NULL, true);
+	rtw_add_rsvd_page(rtwdev, RSVD_LPS_PG_DPK, true);
+	rtw_add_rsvd_page(rtwdev, RSVD_LPS_PG_INFO, true);
 }
 
-static void rtw_wow_config_rsvd_page(struct rtw_dev *rtwdev,
-				     struct rtw_vif *rtwvif)
+static void rtw_wow_config_rsvd_page(struct rtw_dev *rtwdev)
 {
-	rtw_remove_rsvd_page(rtwdev, rtwvif);
+	rtw_reset_rsvd_page(rtwdev);
 
 	if (rtw_wow_mgd_linked(rtwdev)) {
-		rtw_wow_config_linked_rsvd_page(rtwdev, rtwvif);
+		rtw_wow_config_linked_rsvd_page(rtwdev);
 	} else if (test_bit(RTW_FLAG_WOWLAN, rtwdev->flags) &&
 		   rtw_wow_no_link(rtwdev)) {
-		rtw_wow_config_pno_rsvd_page(rtwdev, rtwvif);
+		rtw_wow_config_pno_rsvd_page(rtwdev);
 	}
 }
 
 static int rtw_wow_dl_fw_rsvd_page(struct rtw_dev *rtwdev)
 {
 	struct ieee80211_vif *wow_vif = rtwdev->wow.wow_vif;
-	struct rtw_vif *rtwvif = (struct rtw_vif *)wow_vif->drv_priv;
 
-	rtw_wow_config_rsvd_page(rtwdev, rtwvif);
+	rtw_wow_config_rsvd_page(rtwdev);
 
-	return rtw_fw_download_rsvd_page(rtwdev);
+	return rtw_fw_download_rsvd_page(rtwdev, wow_vif);
 }
 
 static int rtw_wow_swap_fw(struct rtw_dev *rtwdev, enum rtw_fw_type type)
@@ -556,7 +566,7 @@ static int rtw_wow_leave_no_link_ps(struct rtw_dev *rtwdev)
 	int ret = 0;
 
 	if (test_bit(RTW_FLAG_WOWLAN, rtwdev->flags)) {
-		if (rtw_get_lps_deep_mode(rtwdev) != LPS_DEEP_MODE_NONE)
+		if (rtw_fw_lps_deep_mode)
 			rtw_leave_lps_deep(rtwdev);
 	} else {
 		if (test_bit(RTW_FLAG_INACTIVE_PS, rtwdev->flags)) {
@@ -617,8 +627,7 @@ static int rtw_wow_enter_ps(struct rtw_dev *rtwdev)
 
 	if (rtw_wow_mgd_linked(rtwdev))
 		ret = rtw_wow_enter_linked_ps(rtwdev);
-	else if (rtw_wow_no_link(rtwdev) &&
-		 rtw_get_lps_deep_mode(rtwdev) != LPS_DEEP_MODE_NONE)
+	else if (rtw_wow_no_link(rtwdev) && rtw_fw_lps_deep_mode)
 		ret = rtw_wow_enter_no_link_ps(rtwdev);
 
 	return ret;

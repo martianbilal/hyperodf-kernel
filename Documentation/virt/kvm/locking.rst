@@ -16,14 +16,7 @@ The acquisition orders for mutexes are as follows:
 - kvm->slots_lock is taken outside kvm->irq_lock, though acquiring
   them together is quite rare.
 
-On x86:
-
-- vcpu->mutex is taken outside kvm->arch.hyperv.hv_lock
-
-- kvm->arch.mmu_lock is an rwlock.  kvm->arch.tdp_mmu_pages_lock is
-  taken inside kvm->arch.mmu_lock, and cannot be taken without already
-  holding kvm->arch.mmu_lock (typically with ``read_lock``, otherwise
-  there's no need to take kvm->arch.tdp_mmu_pages_lock at all).
+On x86, vcpu->mutex is taken outside kvm->arch.hyperv.hv_lock.
 
 Everything else is a leaf: no other lock is taken inside the critical
 sections.
@@ -103,17 +96,18 @@ will happen:
 We dirty-log for gfn1, that means gfn2 is lost in dirty-bitmap.
 
 For direct sp, we can easily avoid it since the spte of direct sp is fixed
-to gfn.  For indirect sp, we disabled fast page fault for simplicity.
-
-A solution for indirect sp could be to pin the gfn, for example via
-kvm_vcpu_gfn_to_pfn_atomic, before the cmpxchg.  After the pinning:
+to gfn. For indirect sp, before we do cmpxchg, we call gfn_to_pfn_atomic()
+to pin gfn to pfn, because after gfn_to_pfn_atomic():
 
 - We have held the refcount of pfn that means the pfn can not be freed and
   be reused for another gfn.
-- The pfn is writable and therefore it cannot be shared between different gfns
+- The pfn is writable that means it can not be shared between different gfns
   by KSM.
 
 Then, we can ensure the dirty bitmaps is correctly set for a gfn.
+
+Currently, to simplify the whole things, we disable fast page fault for
+indirect shadow page.
 
 2) Dirty bit tracking
 

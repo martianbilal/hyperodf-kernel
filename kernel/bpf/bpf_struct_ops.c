@@ -23,7 +23,7 @@ enum bpf_struct_ops_state {
 
 struct bpf_struct_ops_value {
 	BPF_STRUCT_OPS_COMMON_VALUE;
-	char data[] ____cacheline_aligned_in_smp;
+	char data[0] ____cacheline_aligned_in_smp;
 };
 
 struct bpf_struct_ops_map {
@@ -298,7 +298,8 @@ static int check_zero_holes(const struct btf_type *t, void *data)
 			return -EINVAL;
 
 		mtype = btf_type_by_id(btf_vmlinux, member->type);
-		mtype = btf_resolve_size(btf_vmlinux, mtype, &msize);
+		mtype = btf_resolve_size(btf_vmlinux, mtype, &msize,
+					 NULL, NULL);
 		if (IS_ERR(mtype))
 			return PTR_ERR(mtype);
 		prev_mend = moff + msize;
@@ -319,7 +320,6 @@ static int bpf_struct_ops_map_update_elem(struct bpf_map *map, void *key,
 	struct bpf_struct_ops_value *uvalue, *kvalue;
 	const struct btf_member *member;
 	const struct btf_type *t = st_ops->type;
-	struct bpf_tramp_progs *tprogs = NULL;
 	void *udata, *kdata;
 	int prog_fd, err = 0;
 	void *image;
@@ -342,10 +342,6 @@ static int bpf_struct_ops_map_update_elem(struct bpf_map *map, void *key,
 
 	if (uvalue->state || refcount_read(&uvalue->refcnt))
 		return -EINVAL;
-
-	tprogs = kcalloc(BPF_TRAMP_MAX, sizeof(*tprogs), GFP_KERNEL);
-	if (!tprogs)
-		return -ENOMEM;
 
 	uvalue = (struct bpf_struct_ops_value *)st_map->uvalue;
 	kvalue = (struct bpf_struct_ops_value *)&st_map->kvalue;
@@ -395,7 +391,8 @@ static int bpf_struct_ops_map_update_elem(struct bpf_map *map, void *key,
 			u32 msize;
 
 			mtype = btf_type_by_id(btf_vmlinux, member->type);
-			mtype = btf_resolve_size(btf_vmlinux, mtype, &msize);
+			mtype = btf_resolve_size(btf_vmlinux, mtype, &msize,
+						 NULL, NULL);
 			if (IS_ERR(mtype)) {
 				err = PTR_ERR(mtype);
 				goto reset_unlock;
@@ -428,12 +425,10 @@ static int bpf_struct_ops_map_update_elem(struct bpf_map *map, void *key,
 			goto reset_unlock;
 		}
 
-		tprogs[BPF_TRAMP_FENTRY].progs[0] = prog;
-		tprogs[BPF_TRAMP_FENTRY].nr_progs = 1;
-		err = arch_prepare_bpf_trampoline(NULL, image,
+		err = arch_prepare_bpf_trampoline(image,
 						  st_map->image + PAGE_SIZE,
 						  &st_ops->func_models[i], 0,
-						  tprogs, NULL);
+						  &prog, 1, NULL, 0, NULL);
 		if (err < 0)
 			goto reset_unlock;
 
@@ -474,7 +469,6 @@ reset_unlock:
 	memset(uvalue, 0, map->value_size);
 	memset(kvalue, 0, map->value_size);
 unlock:
-	kfree(tprogs);
 	mutex_unlock(&st_map->lock);
 	return err;
 }
@@ -548,12 +542,14 @@ static int bpf_struct_ops_map_alloc_check(union bpf_attr *attr)
 static struct bpf_map *bpf_struct_ops_map_alloc(union bpf_attr *attr)
 {
 	const struct bpf_struct_ops *st_ops;
-	size_t st_map_size;
+	size_t map_total_size, st_map_size;
 	struct bpf_struct_ops_map *st_map;
 	const struct btf_type *t, *vt;
+	struct bpf_map_memory mem;
 	struct bpf_map *map;
+	int err;
 
-	if (!bpf_capable())
+	if (!capable(CAP_SYS_ADMIN))
 		return ERR_PTR(-EPERM);
 
 	st_ops = bpf_struct_ops_find_value(attr->btf_vmlinux_value_type_id);
@@ -571,11 +567,20 @@ static struct bpf_map *bpf_struct_ops_map_alloc(union bpf_attr *attr)
 		 * struct bpf_struct_ops_tcp_congestions_ops
 		 */
 		(vt->size - sizeof(struct bpf_struct_ops_value));
+	map_total_size = st_map_size +
+		/* uvalue */
+		sizeof(vt->size) +
+		/* struct bpf_progs **progs */
+		 btf_type_vlen(t) * sizeof(struct bpf_prog *);
+	err = bpf_map_charge_init(&mem, map_total_size);
+	if (err < 0)
+		return ERR_PTR(err);
 
 	st_map = bpf_map_area_alloc(st_map_size, NUMA_NO_NODE);
-	if (!st_map)
+	if (!st_map) {
+		bpf_map_charge_finish(&mem);
 		return ERR_PTR(-ENOMEM);
-
+	}
 	st_map->st_ops = st_ops;
 	map = &st_map->map;
 
@@ -586,17 +591,18 @@ static struct bpf_map *bpf_struct_ops_map_alloc(union bpf_attr *attr)
 	st_map->image = bpf_jit_alloc_exec(PAGE_SIZE);
 	if (!st_map->uvalue || !st_map->progs || !st_map->image) {
 		bpf_struct_ops_map_free(map);
+		bpf_map_charge_finish(&mem);
 		return ERR_PTR(-ENOMEM);
 	}
 
 	mutex_init(&st_map->lock);
 	set_vm_flush_reset_perms(st_map->image);
 	bpf_map_init_from_attr(map, attr);
+	bpf_map_charge_move(&map->memory, &mem);
 
 	return map;
 }
 
-static int bpf_struct_ops_map_btf_id;
 const struct bpf_map_ops bpf_struct_ops_map_ops = {
 	.map_alloc_check = bpf_struct_ops_map_alloc_check,
 	.map_alloc = bpf_struct_ops_map_alloc,
@@ -606,8 +612,6 @@ const struct bpf_map_ops bpf_struct_ops_map_ops = {
 	.map_delete_elem = bpf_struct_ops_map_delete_elem,
 	.map_update_elem = bpf_struct_ops_map_update_elem,
 	.map_seq_show_elem = bpf_struct_ops_map_seq_show_elem,
-	.map_btf_name = "bpf_struct_ops_map",
-	.map_btf_id = &bpf_struct_ops_map_btf_id,
 };
 
 /* "const void *" because some subsystem is

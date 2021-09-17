@@ -3,12 +3,14 @@
 #include <asm/asm.h>
 #include <asm/csr.h>
 
+	.altmacro
 	.macro fixup op reg addr lbl
-100:
+	LOCAL _epc
+_epc:
 	\op \reg, \addr
 	.section __ex_table,"a"
 	.balign RISCV_SZPTR
-	RISCV_PTR 100b, \lbl
+	RISCV_PTR _epc, \lbl
 	.previous
 	.endm
 

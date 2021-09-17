@@ -17,7 +17,6 @@
 
 #include "i915_vma.h"
 #include "intel_engine_types.h"
-#include "intel_gt_buffer_pool_types.h"
 #include "intel_llc_types.h"
 #include "intel_reset_types.h"
 #include "intel_rc6_types.h"
@@ -62,7 +61,6 @@ struct intel_gt {
 	struct list_head closed_vma;
 	spinlock_t closed_lock; /* guards the list of closed_vma */
 
-	ktime_t last_init_time;
 	struct intel_reset reset;
 
 	/**
@@ -74,12 +72,13 @@ struct intel_gt {
 	 */
 	intel_wakeref_t awake;
 
-	u32 clock_frequency;
-	u32 clock_period_ns;
-
 	struct intel_llc llc;
 	struct intel_rc6 rc6;
 	struct intel_rps rps;
+
+	ktime_t last_init_time;
+
+	struct i915_vma *scratch;
 
 	spinlock_t irq_lock;
 	u32 gt_imr;
@@ -87,30 +86,6 @@ struct intel_gt {
 	u32 pm_imr;
 
 	u32 pm_guc_events;
-
-	struct {
-		bool active;
-
-		/**
-		 * @lock: Lock protecting the below fields.
-		 */
-		seqcount_mutex_t lock;
-
-		/**
-		 * @total: Total time this engine was busy.
-		 *
-		 * Accumulated time not counting the most recent block in cases
-		 * where engine is currently busy (active > 0).
-		 */
-		ktime_t total;
-
-		/**
-		 * @start: Timestamp of the last idle to active transition.
-		 *
-		 * Idle is defined as active == 0, active is active > 0.
-		 */
-		ktime_t start;
-	} stats;
 
 	struct intel_engine_cs *engine[I915_NUM_ENGINES];
 	struct intel_engine_cs *engine_class[MAX_ENGINE_CLASS + 1]
@@ -122,29 +97,6 @@ struct intel_gt {
 	 * Reserved for exclusive use by the kernel.
 	 */
 	struct i915_address_space *vm;
-
-	/*
-	 * A pool of objects to use as shadow copies of client batch buffers
-	 * when the command parser is enabled. Prevents the client from
-	 * modifying the batch contents after software parsing.
-	 *
-	 * Buffers older than 1s are periodically reaped from the pool,
-	 * or may be reclaimed by the shrinker before then.
-	 */
-	struct intel_gt_buffer_pool buffer_pool;
-
-	struct i915_vma *scratch;
-
-	struct intel_gt_info {
-		intel_engine_mask_t engine_mask;
-		u8 num_engines;
-
-		/* Media engine access to SFC per instance */
-		u8 vdbox_sfc_access;
-
-		/* Slice/subslice/EU info */
-		struct sseu_dev_info sseu;
-	} info;
 };
 
 enum intel_gt_scratch_field {

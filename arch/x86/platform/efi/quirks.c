@@ -381,6 +381,14 @@ static void __init efi_unmap_pages(efi_memory_desc_t *md)
 	u64 va = md->virt_addr;
 
 	/*
+	 * To Do: Remove this check after adding functionality to unmap EFI boot
+	 * services code/data regions from direct mapping area because the UV1
+	 * memory map maps EFI regions in swapper_pg_dir.
+	 */
+	if (efi_have_uv1_memmap())
+		return;
+
+	/*
 	 * EFI mixed mode has all RAM mapped to access arguments while making
 	 * EFI runtime calls, hence don't unmap EFI boot services code/data
 	 * regions.
@@ -401,10 +409,6 @@ void __init efi_free_boot_services(void)
 	efi_memory_desc_t *md;
 	int num_entries = 0;
 	void *new, *new_md;
-
-	/* Keep all regions for /sys/kernel/debug/efi */
-	if (efi_enabled(EFI_DBG))
-		return;
 
 	for_each_efi_memory_desc(md) {
 		unsigned long long start = md->phys_addr;
@@ -533,7 +537,7 @@ int __init efi_reuse_config(u64 tables, int nr_tables)
 		goto out_memremap;
 	}
 
-	for (i = 0; i < nr_tables; i++) {
+	for (i = 0; i < efi.systab->nr_tables; i++) {
 		efi_guid_t guid;
 
 		guid = ((efi_config_table_64_t *)p)->guid;
@@ -550,6 +554,16 @@ out:
 	return ret;
 }
 
+static const struct dmi_system_id sgi_uv1_dmi[] __initconst = {
+	{ NULL, "SGI UV1",
+		{	DMI_MATCH(DMI_PRODUCT_NAME,	"Stoutland Platform"),
+			DMI_MATCH(DMI_PRODUCT_VERSION,	"1.0"),
+			DMI_MATCH(DMI_BIOS_VENDOR,	"SGI.COM"),
+		}
+	},
+	{ } /* NULL entry stops DMI scanning */
+};
+
 void __init efi_apply_memmap_quirks(void)
 {
 	/*
@@ -560,6 +574,17 @@ void __init efi_apply_memmap_quirks(void)
 	if (!efi_runtime_supported()) {
 		pr_info("Setup done, disabling due to 32/64-bit mismatch\n");
 		efi_memmap_unmap();
+	}
+
+	/* UV2+ BIOS has a fix for this issue.  UV1 still needs the quirk. */
+	if (dmi_check_system(sgi_uv1_dmi)) {
+		if (IS_ENABLED(CONFIG_X86_UV)) {
+			set_bit(EFI_UV1_MEMMAP, &efi.flags);
+		} else {
+			pr_warn("EFI runtime disabled, needs CONFIG_X86_UV=y on UV1\n");
+			clear_bit(EFI_RUNTIME_SERVICES, &efi.flags);
+			efi_memmap_unmap();
+		}
 	}
 }
 
@@ -634,9 +659,12 @@ static int qrk_capsule_setup_info(struct capsule_info *cap_info, void **pkbuff,
 	return 1;
 }
 
+#define ICPU(family, model, quirk_handler) \
+	{ X86_VENDOR_INTEL, family, model, X86_FEATURE_ANY, \
+	  (unsigned long)&quirk_handler }
+
 static const struct x86_cpu_id efi_capsule_quirk_ids[] = {
-	X86_MATCH_VENDOR_FAM_MODEL(INTEL, 5, INTEL_FAM5_QUARK_X1000,
-				   &qrk_capsule_setup_info),
+	ICPU(5, 9, qrk_capsule_setup_info),	/* Intel Quark X1000 */
 	{ }
 };
 
@@ -687,25 +715,17 @@ int efi_capsule_setup_info(struct capsule_info *cap_info, void *kbuff,
  * @return: Returns, if the page fault is not handled. This function
  * will never return if the page fault is handled successfully.
  */
-void efi_crash_gracefully_on_page_fault(unsigned long phys_addr)
+void efi_recover_from_page_fault(unsigned long phys_addr)
 {
 	if (!IS_ENABLED(CONFIG_X86_64))
 		return;
 
 	/*
-	 * If we get an interrupt/NMI while processing an EFI runtime service
-	 * then this is a regular OOPS, not an EFI failure.
-	 */
-	if (in_interrupt())
-		return;
-
-	/*
 	 * Make sure that an efi runtime service caused the page fault.
-	 * READ_ONCE() because we might be OOPSing in a different thread,
-	 * and we don't want to trip KTSAN while trying to OOPS.
+	 * "efi_mm" cannot be used to check if the page fault had occurred
+	 * in the firmware context because the UV1 memmap doesn't use efi_pgd.
 	 */
-	if (READ_ONCE(efi_rts_work.efi_rts_id) == EFI_NONE ||
-	    current_work() != &efi_rts_work.work)
+	if (efi_rts_work.efi_rts_id == EFI_NONE)
 		return;
 
 	/*
@@ -757,4 +777,6 @@ void efi_crash_gracefully_on_page_fault(unsigned long phys_addr)
 		set_current_state(TASK_IDLE);
 		schedule();
 	}
+
+	return;
 }

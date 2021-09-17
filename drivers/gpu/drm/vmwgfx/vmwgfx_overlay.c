@@ -122,7 +122,7 @@ static int vmw_overlay_send_put(struct vmw_private *dev_priv,
 
 	fifo_size = sizeof(*cmds) + sizeof(*flush) + sizeof(*items) * num_items;
 
-	cmds = VMW_CMD_RESERVE(dev_priv, fifo_size);
+	cmds = VMW_FIFO_RESERVE(dev_priv, fifo_size);
 	/* hardware has hung, can't do anything here */
 	if (!cmds)
 		return -ENOMEM;
@@ -169,7 +169,7 @@ static int vmw_overlay_send_put(struct vmw_private *dev_priv,
 
 	fill_flush(flush, arg->stream_id);
 
-	vmw_cmd_commit(dev_priv, fifo_size);
+	vmw_fifo_commit(dev_priv, fifo_size);
 
 	return 0;
 }
@@ -192,7 +192,7 @@ static int vmw_overlay_send_stop(struct vmw_private *dev_priv,
 	int ret;
 
 	for (;;) {
-		cmds = VMW_CMD_RESERVE(dev_priv, sizeof(*cmds));
+		cmds = VMW_FIFO_RESERVE(dev_priv, sizeof(*cmds));
 		if (cmds)
 			break;
 
@@ -211,7 +211,7 @@ static int vmw_overlay_send_stop(struct vmw_private *dev_priv,
 	cmds->body.items[0].value = false;
 	fill_flush(&cmds->flush, stream_id);
 
-	vmw_cmd_commit(dev_priv, sizeof(*cmds));
+	vmw_fifo_commit(dev_priv, sizeof(*cmds));
 
 	return 0;
 }
@@ -349,6 +349,37 @@ static int vmw_overlay_update_stream(struct vmw_private *dev_priv,
 	stream->saved = *arg;
 	/* stream is no longer stopped/paused */
 	stream->paused = false;
+
+	return 0;
+}
+
+/**
+ * Stop all streams.
+ *
+ * Used by the fb code when starting.
+ *
+ * Takes the overlay lock.
+ */
+int vmw_overlay_stop_all(struct vmw_private *dev_priv)
+{
+	struct vmw_overlay *overlay = dev_priv->overlay_priv;
+	int i, ret;
+
+	if (!overlay)
+		return 0;
+
+	mutex_lock(&overlay->mutex);
+
+	for (i = 0; i < VMW_MAX_NUM_STREAMS; i++) {
+		struct vmw_stream *stream = &overlay->stream[i];
+		if (!stream->buf)
+			continue;
+
+		ret = vmw_overlay_stop(dev_priv, i, false, false);
+		WARN_ON(ret != 0);
+	}
+
+	mutex_unlock(&overlay->mutex);
 
 	return 0;
 }

@@ -18,8 +18,6 @@
 #include <linux/rbtree.h>
 #include <linux/sbitmap.h>
 
-#include <trace/events/block.h>
-
 #include "blk.h"
 #include "blk-mq.h"
 #include "blk-mq-debugfs.h"
@@ -461,9 +459,10 @@ static int dd_request_merge(struct request_queue *q, struct request **rq,
 	return ELEVATOR_NO_MERGE;
 }
 
-static bool dd_bio_merge(struct request_queue *q, struct bio *bio,
+static bool dd_bio_merge(struct blk_mq_hw_ctx *hctx, struct bio *bio,
 		unsigned int nr_segs)
 {
+	struct request_queue *q = hctx->queue;
 	struct deadline_data *dd = q->elevator->elevator_data;
 	struct request *free = NULL;
 	bool ret;
@@ -497,7 +496,7 @@ static void dd_insert_request(struct blk_mq_hw_ctx *hctx, struct request *rq,
 	if (blk_mq_sched_try_insert_merge(q, rq))
 		return;
 
-	trace_block_rq_insert(rq);
+	blk_mq_sched_request_inserted(rq);
 
 	if (at_head || blk_rq_is_passthrough(rq)) {
 		if (at_head)
@@ -542,7 +541,7 @@ static void dd_insert_requests(struct blk_mq_hw_ctx *hctx,
  * Nothing to do here. This is defined only to ensure that .finish_request
  * method is called upon request completion.
  */
-static void dd_prepare_request(struct request *rq)
+static void dd_prepare_request(struct request *rq, struct bio *bio)
 {
 }
 

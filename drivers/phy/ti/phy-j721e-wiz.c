@@ -78,8 +78,6 @@ static const struct reg_field p_enable[WIZ_MAX_LANES] = {
 	REG_FIELD(WIZ_LANECTL(3), 30, 31),
 };
 
-enum p_enable { P_ENABLE = 2, P_ENABLE_FORCE = 1, P_ENABLE_DISABLE = 0 };
-
 static const struct reg_field p_align[WIZ_MAX_LANES] = {
 	REG_FIELD(WIZ_LANECTL(0), 29, 29),
 	REG_FIELD(WIZ_LANECTL(1), 29, 29),
@@ -116,7 +114,7 @@ struct wiz_clk_mux {
 struct wiz_clk_divider {
 	struct clk_hw		hw;
 	struct regmap_field	*field;
-	const struct clk_div_table	*table;
+	struct clk_div_table	*table;
 	struct clk_init_data	clk_data;
 };
 
@@ -130,7 +128,7 @@ struct wiz_clk_mux_sel {
 
 struct wiz_clk_div_sel {
 	struct regmap_field	*field;
-	const struct clk_div_table	*table;
+	struct clk_div_table	*table;
 	const char		*node_name;
 };
 
@@ -172,7 +170,7 @@ static struct wiz_clk_mux_sel clk_mux_sel_10g[] = {
 	},
 };
 
-static const struct clk_div_table clk_div_table[] = {
+static struct clk_div_table clk_div_table[] = {
 	{ .val = 0, .div = 1, },
 	{ .val = 1, .div = 2, },
 	{ .val = 2, .div = 4, },
@@ -222,7 +220,6 @@ struct wiz {
 	struct reset_controller_dev wiz_phy_reset_dev;
 	struct gpio_desc	*gpio_typec_dir;
 	int			typec_dir_delay;
-	u32 lane_phy_type[WIZ_MAX_LANES];
 };
 
 static int wiz_reset(struct wiz *wiz)
@@ -245,17 +242,12 @@ static int wiz_reset(struct wiz *wiz)
 static int wiz_mode_select(struct wiz *wiz)
 {
 	u32 num_lanes = wiz->num_lanes;
-	enum wiz_lane_standard_mode mode;
 	int ret;
 	int i;
 
 	for (i = 0; i < num_lanes; i++) {
-		if (wiz->lane_phy_type[i] == PHY_TYPE_DP)
-			mode = LANE_MODE_GEN1;
-		else
-			mode = LANE_MODE_GEN4;
-
-		ret = regmap_field_write(wiz->p_standard_mode[i], mode);
+		ret = regmap_field_write(wiz->p_standard_mode[i],
+					 LANE_MODE_GEN4);
 		if (ret)
 			return ret;
 	}
@@ -558,7 +550,7 @@ static const struct clk_ops wiz_clk_div_ops = {
 
 static int wiz_div_clk_register(struct wiz *wiz, struct device_node *node,
 				struct regmap_field *field,
-				const struct clk_div_table *table)
+				struct clk_div_table *table)
 {
 	struct device *dev = wiz->dev;
 	struct wiz_clk_divider *div;
@@ -612,12 +604,6 @@ static void wiz_clock_cleanup(struct wiz *wiz, struct device_node *node)
 
 	for (i = 0; i < WIZ_MUX_NUM_CLOCKS; i++) {
 		clk_node = of_get_child_by_name(node, clk_mux_sel[i].node_name);
-		of_clk_del_provider(clk_node);
-		of_node_put(clk_node);
-	}
-
-	for (i = 0; i < wiz->clk_div_sel_num; i++) {
-		clk_node = of_get_child_by_name(node, clk_div_sel[i].node_name);
 		of_clk_del_provider(clk_node);
 		of_node_put(clk_node);
 	}
@@ -721,7 +707,7 @@ static int wiz_phy_reset_assert(struct reset_controller_dev *rcdev,
 		return ret;
 	}
 
-	ret = regmap_field_write(wiz->p_enable[id - 1], P_ENABLE_DISABLE);
+	ret = regmap_field_write(wiz->p_enable[id - 1], false);
 	return ret;
 }
 
@@ -748,11 +734,7 @@ static int wiz_phy_reset_deassert(struct reset_controller_dev *rcdev,
 		return ret;
 	}
 
-	if (wiz->lane_phy_type[id - 1] == PHY_TYPE_DP)
-		ret = regmap_field_write(wiz->p_enable[id - 1], P_ENABLE);
-	else
-		ret = regmap_field_write(wiz->p_enable[id - 1], P_ENABLE_FORCE);
-
+	ret = regmap_field_write(wiz->p_enable[id - 1], true);
 	return ret;
 }
 
@@ -761,7 +743,7 @@ static const struct reset_control_ops wiz_phy_reset_ops = {
 	.deassert = wiz_phy_reset_deassert,
 };
 
-static const struct regmap_config wiz_regmap_config = {
+static struct regmap_config wiz_regmap_config = {
 	.reg_bits = 32,
 	.val_bits = 32,
 	.reg_stride = 4,
@@ -778,40 +760,6 @@ static const struct of_device_id wiz_id_table[] = {
 	{}
 };
 MODULE_DEVICE_TABLE(of, wiz_id_table);
-
-static int wiz_get_lane_phy_types(struct device *dev, struct wiz *wiz)
-{
-	struct device_node *serdes, *subnode;
-
-	serdes = of_get_child_by_name(dev->of_node, "serdes");
-	if (!serdes) {
-		dev_err(dev, "%s: Getting \"serdes\"-node failed\n", __func__);
-		return -EINVAL;
-	}
-
-	for_each_child_of_node(serdes, subnode) {
-		u32 reg, num_lanes = 1, phy_type = PHY_NONE;
-		int ret, i;
-
-		ret = of_property_read_u32(subnode, "reg", &reg);
-		if (ret) {
-			dev_err(dev,
-				"%s: Reading \"reg\" from \"%s\" failed: %d\n",
-				__func__, subnode->name, ret);
-			return ret;
-		}
-		of_property_read_u32(subnode, "cdns,num-lanes", &num_lanes);
-		of_property_read_u32(subnode, "cdns,phy-type", &phy_type);
-
-		dev_dbg(dev, "%s: Lanes %u-%u have phy-type %u\n", __func__,
-			reg, reg + num_lanes - 1, phy_type);
-
-		for (i = reg; i < reg + num_lanes; i++)
-			wiz->lane_phy_type[i] = phy_type;
-	}
-
-	return 0;
-}
 
 static int wiz_probe(struct platform_device *pdev)
 {
@@ -846,10 +794,8 @@ static int wiz_probe(struct platform_device *pdev)
 	}
 
 	base = devm_ioremap(dev, res.start, resource_size(&res));
-	if (!base) {
-		ret = -ENOMEM;
+	if (!base)
 		goto err_addr_to_resource;
-	}
 
 	regmap = devm_regmap_init_mmio(dev, base, &wiz_regmap_config);
 	if (IS_ERR(regmap)) {
@@ -866,7 +812,6 @@ static int wiz_probe(struct platform_device *pdev)
 
 	if (num_lanes > WIZ_MAX_LANES) {
 		dev_err(dev, "Cannot support %d lanes\n", num_lanes);
-		ret = -ENODEV;
 		goto err_addr_to_resource;
 	}
 
@@ -894,15 +839,10 @@ static int wiz_probe(struct platform_device *pdev)
 
 		if (wiz->typec_dir_delay < WIZ_TYPEC_DIR_DEBOUNCE_MIN ||
 		    wiz->typec_dir_delay > WIZ_TYPEC_DIR_DEBOUNCE_MAX) {
-			ret = -EINVAL;
 			dev_err(dev, "Invalid typec-dir-debounce property\n");
 			goto err_addr_to_resource;
 		}
 	}
-
-	ret = wiz_get_lane_phy_types(dev, wiz);
-	if (ret)
-		return ret;
 
 	wiz->dev = dev;
 	wiz->regmap = regmap;
@@ -954,24 +894,26 @@ static int wiz_probe(struct platform_device *pdev)
 		goto err_get_sync;
 	}
 
+	serdes_pdev = of_platform_device_create(child_node, NULL, dev);
+	if (!serdes_pdev) {
+		dev_WARN(dev, "Unable to create SERDES platform device\n");
+		goto err_pdev_create;
+	}
+	wiz->serdes_pdev = serdes_pdev;
+
 	ret = wiz_init(wiz);
 	if (ret) {
 		dev_err(dev, "WIZ initialization failed\n");
 		goto err_wiz_init;
 	}
 
-	serdes_pdev = of_platform_device_create(child_node, NULL, dev);
-	if (!serdes_pdev) {
-		dev_WARN(dev, "Unable to create SERDES platform device\n");
-		ret = -ENOMEM;
-		goto err_wiz_init;
-	}
-	wiz->serdes_pdev = serdes_pdev;
-
 	of_node_put(child_node);
 	return 0;
 
 err_wiz_init:
+	of_platform_device_destroy(&serdes_pdev->dev, NULL);
+
+err_pdev_create:
 	wiz_clock_cleanup(wiz, node);
 
 err_get_sync:

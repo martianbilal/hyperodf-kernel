@@ -34,7 +34,7 @@ struct drm_i915_gem_object_ops {
 #define I915_GEM_OBJECT_HAS_IOMEM	BIT(1)
 #define I915_GEM_OBJECT_IS_SHRINKABLE	BIT(2)
 #define I915_GEM_OBJECT_IS_PROXY	BIT(3)
-#define I915_GEM_OBJECT_NO_MMAP		BIT(4)
+#define I915_GEM_OBJECT_NO_GGTT		BIT(4)
 #define I915_GEM_OBJECT_ASYNC_CANCEL	BIT(5)
 
 	/* Interface between the GEM object and its backing storage.
@@ -56,23 +56,11 @@ struct drm_i915_gem_object_ops {
 	void (*truncate)(struct drm_i915_gem_object *obj);
 	void (*writeback)(struct drm_i915_gem_object *obj);
 
-	int (*pread)(struct drm_i915_gem_object *obj,
-		     const struct drm_i915_gem_pread *arg);
 	int (*pwrite)(struct drm_i915_gem_object *obj,
 		      const struct drm_i915_gem_pwrite *arg);
 
 	int (*dmabuf_export)(struct drm_i915_gem_object *obj);
 	void (*release)(struct drm_i915_gem_object *obj);
-
-	const char *name; /* friendly name for debug, e.g. lockdep classes */
-};
-
-enum i915_map_type {
-	I915_MAP_WB = 0,
-	I915_MAP_WC,
-#define I915_MAP_OVERRIDE BIT(31)
-	I915_MAP_FORCE_WB = I915_MAP_WB | I915_MAP_OVERRIDE,
-	I915_MAP_FORCE_WC = I915_MAP_WC | I915_MAP_OVERRIDE,
 };
 
 enum i915_mmap_type {
@@ -88,14 +76,6 @@ struct i915_mmap_offset {
 	enum i915_mmap_type mmap_type;
 
 	struct rb_node offset;
-};
-
-struct i915_gem_object_page_iter {
-	struct scatterlist *sg_pos;
-	unsigned int sg_idx; /* in pages, but 32bit eek! */
-
-	struct radix_tree_root radix;
-	struct mutex lock; /* protects this cache */
 };
 
 struct drm_i915_gem_object {
@@ -139,17 +119,9 @@ struct drm_i915_gem_object {
 	 * this translation from object to context->handles_vma.
 	 */
 	struct list_head lut_list;
-	spinlock_t lut_lock; /* guards lut_list */
 
-	/**
-	 * @obj_link: Link into @i915_gem_ww_ctx.obj_list
-	 *
-	 * When we lock this object through i915_gem_object_lock() with a
-	 * context, we add it to the list to ensure we can unlock everything
-	 * when i915_gem_ww_ctx_backoff() or i915_gem_ww_ctx_fini() are called.
-	 */
-	struct list_head obj_link;
-
+	/** Stolen memory for this object, instead of being backed by shmem. */
+	struct drm_mm_node *stolen;
 	union {
 		struct rcu_head rcu;
 		struct llist_node freed;
@@ -173,7 +145,6 @@ struct drm_i915_gem_object {
 #define I915_BO_ALLOC_VOLATILE   BIT(1)
 #define I915_BO_ALLOC_FLAGS (I915_BO_ALLOC_CONTIGUOUS | I915_BO_ALLOC_VOLATILE)
 #define I915_BO_READONLY         BIT(2)
-#define I915_TILING_QUIRK_BIT    3 /* unknown swizzling; do not release! */
 
 	/*
 	 * Is the object to be mapped as read-only to the GPU
@@ -207,6 +178,9 @@ struct drm_i915_gem_object {
 #define FENCE_MINIMUM_STRIDE 128 /* See i915_tiling_ok() */
 #define TILING_MASK (FENCE_MINIMUM_STRIDE - 1)
 #define STRIDE_MASK (~TILING_MASK)
+
+	/** Count of VMA actually bound by this object */
+	atomic_t bind_count;
 
 	struct {
 		/*
@@ -263,8 +237,13 @@ struct drm_i915_gem_object {
 
 		I915_SELFTEST_DECLARE(unsigned int page_mask);
 
-		struct i915_gem_object_page_iter get_page;
-		struct i915_gem_object_page_iter get_dma_page;
+		struct i915_gem_object_page_iter {
+			struct scatterlist *sg_pos;
+			unsigned int sg_idx; /* in pages, but 32bit eek! */
+
+			struct radix_tree_root radix;
+			struct mutex lock; /* protects this cache */
+		} get_page;
 
 		/**
 		 * Element within i915->mm.unbound_list or i915->mm.bound_list,
@@ -282,6 +261,12 @@ struct drm_i915_gem_object {
 		 * pages were last acquired.
 		 */
 		bool dirty:1;
+
+		/**
+		 * This is set if the object has been pinned due to unknown
+		 * swizzling.
+		 */
+		bool quirked:1;
 	} mm;
 
 	/** Record of address bit 17 of each page at last unbind. */
@@ -296,10 +281,7 @@ struct drm_i915_gem_object {
 			struct work_struct *work;
 		} userptr;
 
-		struct drm_mm_node *stolen;
-
 		unsigned long scratch;
-		u64 encode;
 
 		void *gvt_info;
 	};

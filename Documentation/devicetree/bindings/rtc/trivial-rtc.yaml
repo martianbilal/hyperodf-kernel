@@ -48,7 +48,9 @@ properties:
       - microcrystal,rv3029
       # Real Time Clock
       - microcrystal,rv8523
-      - nxp,pca2129
+      # Real-time clock
+      - nxp,pcf2127
+      # Real-time clock
       - nxp,pcf2129
       # Real-time Clock Module
       - pericom,pt7c4338

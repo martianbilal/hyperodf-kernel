@@ -202,7 +202,11 @@ static int flatpanel = -1; /* Autodetect later */
 static int forceCRTC = -1;
 static bool noaccel  = 0;
 static bool nomtrr = 0;
-static int backlight = IS_BUILTIN(CONFIG_PMAC_BACKLIGHT);
+#ifdef CONFIG_PMAC_BACKLIGHT
+static int backlight = 1;
+#else
+static int backlight = 0;
+#endif
 
 static char *mode_option = NULL;
 static bool strictmode       = 0;
@@ -464,7 +468,7 @@ static inline void reverse_order(u32 *l)
 
 /**
  * rivafb_load_cursor_image - load cursor image to hardware
- * @data8: address to monochrome bitmap (1 = foreground color, 0 = background)
+ * @data: address to monochrome bitmap (1 = foreground color, 0 = background)
  * @par:  pointer to private data
  * @w:    width of cursor image in pixels
  * @h:    height of cursor image in scanlines
@@ -843,9 +847,9 @@ static void riva_update_var(struct fb_var_screeninfo *var,
 /**
  * rivafb_do_maximize - 
  * @info: pointer to fb_info object containing info for current riva board
- * @var: standard kernel fb changeable data
- * @nom: nom
- * @den: den
+ * @var:
+ * @nom:
+ * @den:
  *
  * DESCRIPTION:
  * .
@@ -1093,7 +1097,7 @@ static int rivafb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 		break;
 	case 9 ... 15:
 		var->green.length = 5;
-		fallthrough;
+		/* fall through */
 	case 16:
 		var->bits_per_pixel = 16;
 		/* The Riva128 supports RGB555 only */
@@ -1214,6 +1218,7 @@ out:
 /**
  * rivafb_pan_display
  * @var: standard kernel fb changeable data
+ * @con: TODO
  * @info: pointer to fb_info object containing info for current riva board
  *
  * DESCRIPTION:

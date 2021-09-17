@@ -66,7 +66,6 @@ enum sev_cmd {
 	SEV_CMD_LAUNCH_MEASURE		= 0x033,
 	SEV_CMD_LAUNCH_UPDATE_SECRET	= 0x034,
 	SEV_CMD_LAUNCH_FINISH		= 0x035,
-	SEV_CMD_ATTESTATION_REPORT	= 0x036,
 
 	/* Guest migration commands (outgoing) */
 	SEV_CMD_SEND_START		= 0x040,
@@ -100,8 +99,6 @@ struct sev_data_init {
 	u64 tmr_address;		/* In */
 	u32 tmr_len;			/* In */
 } __packed;
-
-#define SEV_INIT_FLAGS_SEV_ES	0x01
 
 /**
  * struct sev_data_pek_csr - PEK_CSR command parameters
@@ -484,22 +481,6 @@ struct sev_data_dbg {
 	u32 len;				/* In */
 } __packed;
 
-/**
- * struct sev_data_attestation_report - SEV_ATTESTATION_REPORT command parameters
- *
- * @handle: handle of the VM
- * @mnonce: a random nonce that will be included in the report.
- * @address: physical address where the report will be copied.
- * @len: length of the physical buffer.
- */
-struct sev_data_attestation_report {
-	u32 handle;				/* In */
-	u32 reserved;
-	u64 address;				/* In */
-	u8 mnonce[16];				/* In */
-	u32 len;				/* In/Out */
-} __packed;
-
 #ifdef CONFIG_CRYPTO_DEV_SP_PSP
 
 /**
@@ -614,7 +595,7 @@ int sev_guest_df_flush(int *error);
  */
 int sev_guest_decommission(struct sev_data_decommission *data, int *error);
 
-void *psp_copy_user_blob(u64 uaddr, u32 len);
+void *psp_copy_user_blob(u64 __user uaddr, u32 len);
 
 #else	/* !CONFIG_CRYPTO_DEV_SP_PSP */
 

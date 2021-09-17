@@ -449,7 +449,7 @@ static int __check_incompat_features(struct cache_disk_superblock *disk_super,
 	/*
 	 * Check for read-only metadata to skip the following RDWR checks.
 	 */
-	if (bdev_read_only(cmd->bdev))
+	if (get_disk_ro(cmd->bdev->bd_disk))
 		return 0;
 
 	features = le32_to_cpu(disk_super->compat_ro_flags) & ~DM_CACHE_FEATURE_COMPAT_RO_SUPP;
@@ -537,16 +537,12 @@ static int __create_persistent_data_objects(struct dm_cache_metadata *cmd,
 					  CACHE_MAX_CONCURRENT_LOCKS);
 	if (IS_ERR(cmd->bm)) {
 		DMERR("could not create block manager");
-		r = PTR_ERR(cmd->bm);
-		cmd->bm = NULL;
-		return r;
+		return PTR_ERR(cmd->bm);
 	}
 
 	r = __open_or_format_metadata(cmd, may_format_device);
-	if (r) {
+	if (r)
 		dm_block_manager_destroy(cmd->bm);
-		cmd->bm = NULL;
-	}
 
 	return r;
 }

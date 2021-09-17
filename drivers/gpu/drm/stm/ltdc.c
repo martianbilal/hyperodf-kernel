@@ -42,6 +42,8 @@
 
 #define MAX_IRQ 4
 
+#define MAX_ENDPOINTS 2
+
 #define HWVER_10200 0x010200
 #define HWVER_10300 0x010300
 #define HWVER_20101 0x020101
@@ -420,14 +422,11 @@ static void ltdc_crtc_update_clut(struct drm_crtc *crtc)
 }
 
 static void ltdc_crtc_atomic_enable(struct drm_crtc *crtc,
-				    struct drm_atomic_state *state)
+				    struct drm_crtc_state *old_state)
 {
 	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
-	struct drm_device *ddev = crtc->dev;
 
 	DRM_DEBUG_DRIVER("\n");
-
-	pm_runtime_get_sync(ddev->dev);
 
 	/* Sets the background color value */
 	reg_write(ldev->regs, LTDC_BCCR, BCCR_BCBLACK);
@@ -442,7 +441,7 @@ static void ltdc_crtc_atomic_enable(struct drm_crtc *crtc,
 }
 
 static void ltdc_crtc_atomic_disable(struct drm_crtc *crtc,
-				     struct drm_atomic_state *state)
+				     struct drm_crtc_state *old_state)
 {
 	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
 	struct drm_device *ddev = crtc->dev;
@@ -506,7 +505,15 @@ static bool ltdc_crtc_mode_fixup(struct drm_crtc *crtc,
 				 struct drm_display_mode *adjusted_mode)
 {
 	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
+	struct drm_device *ddev = crtc->dev;
 	int rate = mode->clock * 1000;
+	bool runtime_active;
+	int ret;
+
+	runtime_active = pm_runtime_active(ddev->dev);
+
+	if (runtime_active)
+		pm_runtime_put_sync(ddev->dev);
 
 	if (clk_set_rate(ldev->pixel_clk, rate) < 0) {
 		DRM_ERROR("Cannot set rate (%dHz) for pixel clk\n", rate);
@@ -514,6 +521,14 @@ static bool ltdc_crtc_mode_fixup(struct drm_crtc *crtc,
 	}
 
 	adjusted_mode->clock = clk_get_rate(ldev->pixel_clk) / 1000;
+
+	if (runtime_active) {
+		ret = pm_runtime_get_sync(ddev->dev);
+		if (ret) {
+			DRM_ERROR("Failed to fixup mode, cannot get sync\n");
+			return false;
+		}
+	}
 
 	DRM_DEBUG_DRIVER("requested clock %dkHz, adjusted clock %dkHz\n",
 			 mode->clock, adjusted_mode->clock);
@@ -525,41 +540,12 @@ static void ltdc_crtc_mode_set_nofb(struct drm_crtc *crtc)
 {
 	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
 	struct drm_device *ddev = crtc->dev;
-	struct drm_connector_list_iter iter;
-	struct drm_connector *connector = NULL;
-	struct drm_encoder *encoder = NULL;
-	struct drm_bridge *bridge = NULL;
 	struct drm_display_mode *mode = &crtc->state->adjusted_mode;
 	struct videomode vm;
 	u32 hsync, vsync, accum_hbp, accum_vbp, accum_act_w, accum_act_h;
 	u32 total_width, total_height;
-	u32 bus_flags = 0;
 	u32 val;
 	int ret;
-
-	/* get encoder from crtc */
-	drm_for_each_encoder(encoder, ddev)
-		if (encoder->crtc == crtc)
-			break;
-
-	if (encoder) {
-		/* get bridge from encoder */
-		list_for_each_entry(bridge, &encoder->bridge_chain, chain_node)
-			if (bridge->encoder == encoder)
-				break;
-
-		/* Get the connector from encoder */
-		drm_connector_list_iter_begin(ddev, &iter);
-		drm_for_each_connector_iter(connector, &iter)
-			if (connector->encoder == encoder)
-				break;
-		drm_connector_list_iter_end(&iter);
-	}
-
-	if (bridge && bridge->timings)
-		bus_flags = bridge->timings->input_bus_flags;
-	else if (connector)
-		bus_flags = connector->display_info.bus_flags;
 
 	if (!pm_runtime_active(ddev->dev)) {
 		ret = pm_runtime_get_sync(ddev->dev);
@@ -596,10 +582,10 @@ static void ltdc_crtc_mode_set_nofb(struct drm_crtc *crtc)
 	if (vm.flags & DISPLAY_FLAGS_VSYNC_HIGH)
 		val |= GCR_VSPOL;
 
-	if (bus_flags & DRM_BUS_FLAG_DE_LOW)
+	if (vm.flags & DISPLAY_FLAGS_DE_LOW)
 		val |= GCR_DEPOL;
 
-	if (bus_flags & DRM_BUS_FLAG_PIXDATA_DRIVE_NEGEDGE)
+	if (vm.flags & DISPLAY_FLAGS_PIXDATA_NEGEDGE)
 		val |= GCR_PCPOL;
 
 	reg_update_bits(ldev->regs, LTDC_GCR,
@@ -625,7 +611,7 @@ static void ltdc_crtc_mode_set_nofb(struct drm_crtc *crtc)
 }
 
 static void ltdc_crtc_atomic_flush(struct drm_crtc *crtc,
-				   struct drm_atomic_state *state)
+				   struct drm_crtc_state *old_crtc_state)
 {
 	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
 	struct drm_device *ddev = crtc->dev;
@@ -650,13 +636,38 @@ static void ltdc_crtc_atomic_flush(struct drm_crtc *crtc,
 	}
 }
 
-static bool ltdc_crtc_get_scanout_position(struct drm_crtc *crtc,
-					   bool in_vblank_irq,
-					   int *vpos, int *hpos,
-					   ktime_t *stime, ktime_t *etime,
-					   const struct drm_display_mode *mode)
+static const struct drm_crtc_helper_funcs ltdc_crtc_helper_funcs = {
+	.mode_valid = ltdc_crtc_mode_valid,
+	.mode_fixup = ltdc_crtc_mode_fixup,
+	.mode_set_nofb = ltdc_crtc_mode_set_nofb,
+	.atomic_flush = ltdc_crtc_atomic_flush,
+	.atomic_enable = ltdc_crtc_atomic_enable,
+	.atomic_disable = ltdc_crtc_atomic_disable,
+};
+
+static int ltdc_crtc_enable_vblank(struct drm_crtc *crtc)
 {
-	struct drm_device *ddev = crtc->dev;
+	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
+
+	DRM_DEBUG_DRIVER("\n");
+	reg_set(ldev->regs, LTDC_IER, IER_LIE);
+
+	return 0;
+}
+
+static void ltdc_crtc_disable_vblank(struct drm_crtc *crtc)
+{
+	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
+
+	DRM_DEBUG_DRIVER("\n");
+	reg_clear(ldev->regs, LTDC_IER, IER_LIE);
+}
+
+bool ltdc_crtc_scanoutpos(struct drm_device *ddev, unsigned int pipe,
+			  bool in_vblank_irq, int *vpos, int *hpos,
+			  ktime_t *stime, ktime_t *etime,
+			  const struct drm_display_mode *mode)
+{
 	struct ltdc_device *ldev = ddev->dev_private;
 	int line, vactive_start, vactive_end, vtotal;
 
@@ -699,39 +710,6 @@ static bool ltdc_crtc_get_scanout_position(struct drm_crtc *crtc,
 	return true;
 }
 
-static const struct drm_crtc_helper_funcs ltdc_crtc_helper_funcs = {
-	.mode_valid = ltdc_crtc_mode_valid,
-	.mode_fixup = ltdc_crtc_mode_fixup,
-	.mode_set_nofb = ltdc_crtc_mode_set_nofb,
-	.atomic_flush = ltdc_crtc_atomic_flush,
-	.atomic_enable = ltdc_crtc_atomic_enable,
-	.atomic_disable = ltdc_crtc_atomic_disable,
-	.get_scanout_position = ltdc_crtc_get_scanout_position,
-};
-
-static int ltdc_crtc_enable_vblank(struct drm_crtc *crtc)
-{
-	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
-	struct drm_crtc_state *state = crtc->state;
-
-	DRM_DEBUG_DRIVER("\n");
-
-	if (state->enable)
-		reg_set(ldev->regs, LTDC_IER, IER_LIE);
-	else
-		return -EPERM;
-
-	return 0;
-}
-
-static void ltdc_crtc_disable_vblank(struct drm_crtc *crtc)
-{
-	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
-
-	DRM_DEBUG_DRIVER("\n");
-	reg_clear(ldev->regs, LTDC_IER, IER_LIE);
-}
-
 static const struct drm_crtc_funcs ltdc_crtc_funcs = {
 	.destroy = drm_crtc_cleanup,
 	.set_config = drm_atomic_helper_set_config,
@@ -741,7 +719,7 @@ static const struct drm_crtc_funcs ltdc_crtc_funcs = {
 	.atomic_destroy_state = drm_atomic_helper_crtc_destroy_state,
 	.enable_vblank = ltdc_crtc_enable_vblank,
 	.disable_vblank = ltdc_crtc_disable_vblank,
-	.get_vblank_timestamp = drm_crtc_vblank_helper_get_vblank_timestamp,
+	.gamma_set = drm_atomic_helper_legacy_gamma_set,
 };
 
 /*
@@ -1122,7 +1100,7 @@ static int ltdc_encoder_init(struct drm_device *ddev, struct drm_bridge *bridge)
 
 	drm_encoder_helper_add(encoder, &ltdc_encoder_helper_funcs);
 
-	ret = drm_bridge_attach(encoder, bridge, NULL, 0);
+	ret = drm_bridge_attach(encoder, bridge, NULL);
 	if (ret) {
 		drm_encoder_cleanup(encoder);
 		return -EINVAL;
@@ -1168,14 +1146,12 @@ static int ltdc_get_caps(struct drm_device *ddev)
 		ldev->caps.pad_max_freq_hz = 90000000;
 		if (ldev->caps.hw_version == HWVER_10200)
 			ldev->caps.pad_max_freq_hz = 65000000;
-		ldev->caps.nb_irq = 2;
 		break;
 	case HWVER_20101:
 		ldev->caps.reg_ofs = REG_OFS_4;
 		ldev->caps.pix_fmt_hw = ltdc_pix_fmt_a1;
 		ldev->caps.non_alpha_only_l1 = false;
 		ldev->caps.pad_max_freq_hz = 150000000;
-		ldev->caps.nb_irq = 4;
 		break;
 	default:
 		return -ENODEV;
@@ -1214,20 +1190,36 @@ int ltdc_load(struct drm_device *ddev)
 	struct ltdc_device *ldev = ddev->dev_private;
 	struct device *dev = ddev->dev;
 	struct device_node *np = dev->of_node;
-	struct drm_bridge *bridge;
-	struct drm_panel *panel;
+	struct drm_bridge *bridge[MAX_ENDPOINTS] = {NULL};
+	struct drm_panel *panel[MAX_ENDPOINTS] = {NULL};
 	struct drm_crtc *crtc;
 	struct reset_control *rstc;
 	struct resource *res;
-	int irq, i, nb_endpoints;
-	int ret = -ENODEV;
+	int irq, ret, i, endpoint_not_ready = -ENODEV;
 
 	DRM_DEBUG_DRIVER("\n");
 
-	/* Get number of endpoints */
-	nb_endpoints = of_graph_get_endpoint_count(np);
-	if (!nb_endpoints)
-		return -ENODEV;
+	/* Get endpoints if any */
+	for (i = 0; i < MAX_ENDPOINTS; i++) {
+		ret = drm_of_find_panel_or_bridge(np, 0, i, &panel[i],
+						  &bridge[i]);
+
+		/*
+		 * If at least one endpoint is -EPROBE_DEFER, defer probing,
+		 * else if at least one endpoint is ready, continue probing.
+		 */
+		if (ret == -EPROBE_DEFER)
+			return ret;
+		else if (!ret)
+			endpoint_not_ready = 0;
+	}
+
+	if (endpoint_not_ready)
+		return endpoint_not_ready;
+
+	rstc = devm_reset_control_get_exclusive(dev, NULL);
+
+	mutex_init(&ldev->err_lock);
 
 	ldev->pixel_clk = devm_clk_get(dev, "lcd");
 	if (IS_ERR(ldev->pixel_clk)) {
@@ -1240,43 +1232,6 @@ int ltdc_load(struct drm_device *ddev)
 		DRM_ERROR("Unable to prepare pixel clock\n");
 		return -ENODEV;
 	}
-
-	/* Get endpoints if any */
-	for (i = 0; i < nb_endpoints; i++) {
-		ret = drm_of_find_panel_or_bridge(np, 0, i, &panel, &bridge);
-
-		/*
-		 * If at least one endpoint is -ENODEV, continue probing,
-		 * else if at least one endpoint returned an error
-		 * (ie -EPROBE_DEFER) then stop probing.
-		 */
-		if (ret == -ENODEV)
-			continue;
-		else if (ret)
-			goto err;
-
-		if (panel) {
-			bridge = drm_panel_bridge_add_typed(panel,
-							    DRM_MODE_CONNECTOR_DPI);
-			if (IS_ERR(bridge)) {
-				DRM_ERROR("panel-bridge endpoint %d\n", i);
-				ret = PTR_ERR(bridge);
-				goto err;
-			}
-		}
-
-		if (bridge) {
-			ret = ltdc_encoder_init(ddev, bridge);
-			if (ret) {
-				DRM_ERROR("init encoder endpoint %d\n", i);
-				goto err;
-			}
-		}
-	}
-
-	rstc = devm_reset_control_get_exclusive(dev, NULL);
-
-	mutex_init(&ldev->err_lock);
 
 	if (!IS_ERR(rstc)) {
 		reset_control_assert(rstc);
@@ -1296,6 +1251,24 @@ int ltdc_load(struct drm_device *ddev)
 	reg_clear(ldev->regs, LTDC_IER,
 		  IER_LIE | IER_RRIE | IER_FUIE | IER_TERRIE);
 
+	for (i = 0; i < MAX_IRQ; i++) {
+		irq = platform_get_irq(pdev, i);
+		if (irq == -EPROBE_DEFER)
+			goto err;
+
+		if (irq < 0)
+			continue;
+
+		ret = devm_request_threaded_irq(dev, irq, ltdc_irq,
+						ltdc_irq_thread, IRQF_ONESHOT,
+						dev_name(dev), ddev);
+		if (ret) {
+			DRM_ERROR("Failed to register LTDC interrupt\n");
+			goto err;
+		}
+	}
+
+
 	ret = ltdc_get_caps(ddev);
 	if (ret) {
 		DRM_ERROR("hardware identifier (0x%08x) not supported!\n",
@@ -1305,21 +1278,25 @@ int ltdc_load(struct drm_device *ddev)
 
 	DRM_DEBUG_DRIVER("ltdc hw version 0x%08x\n", ldev->caps.hw_version);
 
-	for (i = 0; i < ldev->caps.nb_irq; i++) {
-		irq = platform_get_irq(pdev, i);
-		if (irq < 0) {
-			ret = irq;
-			goto err;
+	/* Add endpoints panels or bridges if any */
+	for (i = 0; i < MAX_ENDPOINTS; i++) {
+		if (panel[i]) {
+			bridge[i] = drm_panel_bridge_add_typed(panel[i],
+							       DRM_MODE_CONNECTOR_DPI);
+			if (IS_ERR(bridge[i])) {
+				DRM_ERROR("panel-bridge endpoint %d\n", i);
+				ret = PTR_ERR(bridge[i]);
+				goto err;
+			}
 		}
 
-		ret = devm_request_threaded_irq(dev, irq, ltdc_irq,
-						ltdc_irq_thread, IRQF_ONESHOT,
-						dev_name(dev), ddev);
-		if (ret) {
-			DRM_ERROR("Failed to register LTDC interrupt\n");
-			goto err;
+		if (bridge[i]) {
+			ret = ltdc_encoder_init(ddev, bridge[i]);
+			if (ret) {
+				DRM_ERROR("init encoder endpoint %d\n", i);
+				goto err;
+			}
 		}
-
 	}
 
 	crtc = devm_kzalloc(dev, sizeof(*crtc), GFP_KERNEL);
@@ -1354,8 +1331,8 @@ int ltdc_load(struct drm_device *ddev)
 
 	return 0;
 err:
-	for (i = 0; i < nb_endpoints; i++)
-		drm_of_panel_bridge_remove(ddev->dev->of_node, 0, i);
+	for (i = 0; i < MAX_ENDPOINTS; i++)
+		drm_panel_bridge_remove(bridge[i]);
 
 	clk_disable_unprepare(ldev->pixel_clk);
 
@@ -1364,14 +1341,11 @@ err:
 
 void ltdc_unload(struct drm_device *ddev)
 {
-	struct device *dev = ddev->dev;
-	int nb_endpoints, i;
+	int i;
 
 	DRM_DEBUG_DRIVER("\n");
 
-	nb_endpoints = of_graph_get_endpoint_count(dev->of_node);
-
-	for (i = 0; i < nb_endpoints; i++)
+	for (i = 0; i < MAX_ENDPOINTS; i++)
 		drm_of_panel_bridge_remove(ddev->dev->of_node, 0, i);
 
 	pm_runtime_disable(ddev->dev);

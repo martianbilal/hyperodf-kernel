@@ -341,8 +341,7 @@ ia64_do_signal (struct sigscratch *scr, long in_syscall)
 	 * need to push through a forced SIGSEGV.
 	 */
 	while (1) {
-		if (!get_signal(&ksig))
-			break;
+		get_signal(&ksig);
 
 		/*
 		 * get_signal() may have run a debugger (via notify_parent())
@@ -375,7 +374,7 @@ ia64_do_signal (struct sigscratch *scr, long in_syscall)
 					/* note: scr->pt.r10 is already -1 */
 					break;
 				}
-				fallthrough;
+				/*FALLTHRU*/
 			case ERESTARTNOINTR:
 				ia64_decrement_ip(&scr->pt);
 				restart = 0; /* don't restart twice if handle_signal() fails... */

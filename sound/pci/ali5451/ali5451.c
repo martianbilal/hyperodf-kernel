@@ -29,6 +29,7 @@
 MODULE_AUTHOR("Matt Wu <Matt_Wu@acersoftech.com.cn>");
 MODULE_DESCRIPTION("ALI M5451");
 MODULE_LICENSE("GPL");
+MODULE_SUPPORTED_DEVICE("{{ALI,M5451,pci},{ALI,M5451}}");
 
 static int index = SNDRV_DEFAULT_IDX1;	/* Index */
 static char *id = SNDRV_DEFAULT_STR1;	/* ID for this card */
@@ -1069,7 +1070,7 @@ static int snd_ali_trigger(struct snd_pcm_substream *substream,
 {
 	struct snd_ali *codec = snd_pcm_substream_chip(substream);
 	struct snd_pcm_substream *s;
-	unsigned int what, whati;
+	unsigned int what, whati, capture_flag;
 	struct snd_ali_voice *pvoice, *evoice;
 	unsigned int val;
 	int do_start;
@@ -1087,7 +1088,7 @@ static int snd_ali_trigger(struct snd_pcm_substream *substream,
 		return -EINVAL;
 	}
 
-	what = whati = 0;
+	what = whati = capture_flag = 0;
 	snd_pcm_group_for_each_entry(s, substream) {
 		if ((struct snd_ali *) snd_pcm_substream_chip(s) == codec) {
 			pvoice = s->runtime->private_data;
@@ -1109,6 +1110,8 @@ static int snd_ali_trigger(struct snd_pcm_substream *substream,
 					evoice->running = 0;
 			}
 			snd_pcm_trigger_done(s, substream);
+			if (pvoice->mode)
+				capture_flag = 1;
 		}
 	}
 	spin_lock(&codec->reg_lock);
@@ -2056,7 +2059,8 @@ static int snd_ali_create(struct snd_card *card,
 	if (err < 0)
 		return err;
 	/* check, if we can restrict PCI DMA transfers to 31 bits */
-	if (dma_set_mask_and_coherent(&pci->dev, DMA_BIT_MASK(31))) {
+	if (dma_set_mask(&pci->dev, DMA_BIT_MASK(31)) < 0 ||
+	    dma_set_coherent_mask(&pci->dev, DMA_BIT_MASK(31)) < 0) {
 		dev_err(card->dev,
 			"architecture does not support 31bit PCI busmaster DMA\n");
 		pci_disable_device(pci);

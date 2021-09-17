@@ -30,10 +30,10 @@
 
 #include <drm/drm_mm.h>
 
-#include "gt/intel_ggtt_fencing.h"
 #include "gem/i915_gem_object.h"
 
 #include "i915_gem_gtt.h"
+#include "i915_gem_fence_reg.h"
 
 #include "i915_active.h"
 #include "i915_request.h"
@@ -203,7 +203,6 @@ bool i915_vma_misplaced(const struct i915_vma *vma,
 			u64 size, u64 alignment, u64 flags);
 void __i915_vma_set_map_and_fenceable(struct i915_vma *vma);
 void i915_vma_revoke_mmap(struct i915_vma *vma);
-void __i915_vma_evict(struct i915_vma *vma);
 int __i915_vma_unbind(struct i915_vma *vma);
 int __must_check i915_vma_unbind(struct i915_vma *vma);
 void i915_vma_unlink_ctx(struct i915_vma *vma);
@@ -237,17 +236,8 @@ static inline void i915_vma_unlock(struct i915_vma *vma)
 }
 
 int __must_check
-i915_vma_pin_ww(struct i915_vma *vma, struct i915_gem_ww_ctx *ww,
-		u64 size, u64 alignment, u64 flags);
-
-static inline int __must_check
-i915_vma_pin(struct i915_vma *vma, u64 size, u64 alignment, u64 flags)
-{
-	return i915_vma_pin_ww(vma, NULL, size, alignment, flags);
-}
-
-int i915_ggtt_pin(struct i915_vma *vma, struct i915_gem_ww_ctx *ww,
-		  u32 align, unsigned int flags);
+i915_vma_pin(struct i915_vma *vma, u64 size, u64 alignment, u64 flags);
+int i915_ggtt_pin(struct i915_vma *vma, u32 align, unsigned int flags);
 
 static inline int i915_vma_pin_count(const struct i915_vma *vma)
 {
@@ -336,7 +326,7 @@ static inline struct page *i915_vma_first_page(struct i915_vma *vma)
  * True if the vma has a fence, false otherwise.
  */
 int __must_check i915_vma_pin_fence(struct i915_vma *vma);
-void i915_vma_revoke_fence(struct i915_vma *vma);
+int __must_check i915_vma_revoke_fence(struct i915_vma *vma);
 
 int __i915_vma_pin_fence(struct i915_vma *vma);
 
@@ -363,21 +353,6 @@ i915_vma_unpin_fence(struct i915_vma *vma)
 
 void i915_vma_parked(struct intel_gt *gt);
 
-static inline bool i915_vma_is_scanout(const struct i915_vma *vma)
-{
-	return test_bit(I915_VMA_SCANOUT_BIT, __i915_vma_flags(vma));
-}
-
-static inline void i915_vma_mark_scanout(struct i915_vma *vma)
-{
-	set_bit(I915_VMA_SCANOUT_BIT, __i915_vma_flags(vma));
-}
-
-static inline void i915_vma_clear_scanout(struct i915_vma *vma)
-{
-	clear_bit(I915_VMA_SCANOUT_BIT, __i915_vma_flags(vma));
-}
-
 #define for_each_until(cond) if (cond) break; else
 
 /**
@@ -399,8 +374,6 @@ void i915_vma_free(struct i915_vma *vma);
 struct i915_vma *i915_vma_make_unshrinkable(struct i915_vma *vma);
 void i915_vma_make_shrinkable(struct i915_vma *vma);
 void i915_vma_make_purgeable(struct i915_vma *vma);
-
-int i915_vma_wait_for_bind(struct i915_vma *vma);
 
 static inline int i915_vma_sync(struct i915_vma *vma)
 {

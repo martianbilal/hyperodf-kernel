@@ -1109,7 +1109,7 @@ int is_reiserfs_jr(struct reiserfs_super_block *rs);
  * ReiserFS leaves the first 64k unused, so that partition labels have
  * enough space.  If someone wants to write a fancy bootloader that
  * needs more than 64k, let us know, and this will be increased in size.
- * This number must be larger than the largest block size on any
+ * This number must be larger than than the largest block size on any
  * platform, or code will break.  -Hans
  */
 #define REISERFS_DISK_OFFSET_IN_BYTES (64 * 1024)
@@ -3102,8 +3102,7 @@ static inline void reiserfs_update_sd(struct reiserfs_transaction_handle *th,
 }
 
 void sd_attrs_to_i_attrs(__u16 sd_attrs, struct inode *inode);
-int reiserfs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
-		     struct iattr *attr);
+int reiserfs_setattr(struct dentry *dentry, struct iattr *attr);
 
 int __reiserfs_write_begin(struct page *page, unsigned from, unsigned len);
 

@@ -8,7 +8,6 @@
 #
 set -e
 TRIGGER=/sys/kernel/debug/provoke-crash/DIRECT
-CLEAR_ONCE=/sys/kernel/debug/clear_warn_once
 KSELFTEST_SKIP_TEST=4
 
 # Verify we have LKDTM available in the kernel.
@@ -26,13 +25,13 @@ fi
 # Figure out which test to run from our script name.
 test=$(basename $0 .sh)
 # Look up details about the test from master list of LKDTM tests.
-line=$(grep -E '^#?'"$test"'\b' tests.txt)
+line=$(egrep '^#?'"$test"'\b' tests.txt)
 if [ -z "$line" ]; then
 	echo "Skipped: missing test '$test' in tests.txt"
 	exit $KSELFTEST_SKIP_TEST
 fi
 # Check that the test is known to LKDTM.
-if ! grep -E -q '^'"$test"'$' "$TRIGGER" ; then
+if ! egrep -q '^'"$test"'$' "$TRIGGER" ; then
 	echo "Skipped: test '$test' missing in $TRIGGER!"
 	exit $KSELFTEST_SKIP_TEST
 fi
@@ -60,21 +59,15 @@ if [ -z "$expect" ]; then
 	expect="call trace:"
 fi
 
+# Clear out dmesg for output reporting
+dmesg -c >/dev/null
+
 # Prepare log for report checking
-LOG=$(mktemp --tmpdir -t lkdtm-log-XXXXXX)
-DMESG=$(mktemp --tmpdir -t lkdtm-dmesg-XXXXXX)
+LOG=$(mktemp --tmpdir -t lkdtm-XXXXXX)
 cleanup() {
-	rm -f "$LOG" "$DMESG"
+	rm -f "$LOG"
 }
 trap cleanup EXIT
-
-# Reset WARN_ONCE counters so we trip it each time this runs.
-if [ -w $CLEAR_ONCE ] ; then
-	echo 1 > $CLEAR_ONCE
-fi
-
-# Save existing dmesg so we can detect new content below
-dmesg > "$DMESG"
 
 # Most shells yell about signals and we're expecting the "cat" process
 # to usually be killed by the kernel. So we have to run it in a sub-shell
@@ -82,15 +75,14 @@ dmesg > "$DMESG"
 ($SHELL -c 'cat <(echo '"$test"') >'"$TRIGGER" 2>/dev/null) || true
 
 # Record and dump the results
-dmesg | comm --nocheck-order -13 "$DMESG" - > "$LOG" || true
-
+dmesg -c >"$LOG"
 cat "$LOG"
 # Check for expected output
-if grep -E -qi "$expect" "$LOG" ; then
+if egrep -qi "$expect" "$LOG" ; then
 	echo "$test: saw '$expect': ok"
 	exit 0
 else
-	if grep -E -qi XFAIL: "$LOG" ; then
+	if egrep -qi XFAIL: "$LOG" ; then
 		echo "$test: saw 'XFAIL': [SKIP]"
 		exit $KSELFTEST_SKIP_TEST
 	else

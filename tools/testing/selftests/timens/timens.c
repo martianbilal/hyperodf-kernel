@@ -10,6 +10,7 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+#include <time.h>
 #include <string.h>
 
 #include "log.h"
@@ -155,7 +156,7 @@ int main(int argc, char *argv[])
 
 	nscheck();
 
-	check_supported_timers();
+	check_config_posix_timers();
 
 	ksft_set_plan(ARRAY_SIZE(clocks) * 2);
 

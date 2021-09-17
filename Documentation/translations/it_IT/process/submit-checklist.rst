@@ -104,7 +104,7 @@ sottomissione delle patch, in particolare
     l'iniezione di fallimenti specifici per il sottosistema.
 
 22) Il nuovo codice è stato compilato con ``gcc -W`` (usate
-    ``make KCFLAGS=-W``).  Questo genererà molti avvisi, ma è ottimo
+    ``make EXTRA_CFLAGS=-W``).  Questo genererà molti avvisi, ma è ottimo
     per scovare bachi come  "warning: comparison between signed and unsigned".
 
 23) La patch è stata verificata dopo essere stata inclusa nella serie di patch
@@ -117,7 +117,7 @@ sottomissione delle patch, in particolare
     sorgenti che ne spieghi la logica: cosa fanno e perché.
 
 25) Se la patch aggiunge nuove chiamate ioctl, allora aggiornate
-    ``Documentation/userspace-api/ioctl/ioctl-number.rst``.
+    ``Documentation/ioctl/ioctl-number.rst``.
 
 26) Se il codice che avete modificato dipende o usa una qualsiasi interfaccia o
     funzionalità del kernel che è associata a uno dei seguenti simboli

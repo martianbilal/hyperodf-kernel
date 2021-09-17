@@ -17,6 +17,8 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
  *
+ * Maintained by: Jim Gill <jgill@vmware.com>
+ *
  */
 
 #include <linux/kernel.h>
@@ -585,13 +587,7 @@ static void pvscsi_complete_request(struct pvscsi_adapter *adapter,
 		case BTSTAT_SUCCESS:
 		case BTSTAT_LINKED_COMMAND_COMPLETED:
 		case BTSTAT_LINKED_COMMAND_COMPLETED_WITH_FLAG:
-			/*
-			 * Commands like INQUIRY may transfer less data than
-			 * requested by the initiator via bufflen. Set residual
-			 * count to make upper layer aware of the actual amount
-			 * of data returned.
-			 */
-			scsi_set_resid(cmd, scsi_bufflen(cmd) - e->dataLen);
+			/* If everything went fine, let's move on..  */
 			cmd->result = (DID_OK << 16);
 			break;
 
@@ -611,7 +607,7 @@ static void pvscsi_complete_request(struct pvscsi_adapter *adapter,
 		case BTSTAT_TAGREJECT:
 		case BTSTAT_BADMSG:
 			cmd->result = (DRIVER_INVALID << 24);
-			fallthrough;
+			/* fall through */
 
 		case BTSTAT_HAHARDWARE:
 		case BTSTAT_INVPHASE:
@@ -912,7 +908,7 @@ static int pvscsi_host_reset(struct scsi_cmnd *cmd)
 	use_msg = adapter->use_msg;
 
 	if (use_msg) {
-		adapter->use_msg = false;
+		adapter->use_msg = 0;
 		spin_unlock_irqrestore(&adapter->hw_lock, flags);
 
 		/*

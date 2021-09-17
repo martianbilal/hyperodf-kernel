@@ -10,13 +10,15 @@
 
 #define pr_fmt(fmt) "mmiotrace: " fmt
 
+#define DEBUG 1
+
 #include <linux/moduleparam.h>
 #include <linux/debugfs.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
+#include <asm/pgtable.h>
 #include <linux/mmiotrace.h>
-#include <linux/pgtable.h>
 #include <asm/e820/api.h> /* for ISA_START_ADDRESS */
 #include <linux/atomic.h>
 #include <linux/percpu.h>
@@ -384,7 +386,7 @@ static void enter_uniprocessor(void)
 	put_online_cpus();
 
 	for_each_cpu(cpu, downed_cpus) {
-		err = remove_cpu(cpu);
+		err = cpu_down(cpu);
 		if (!err)
 			pr_info("CPU%d is down.\n", cpu);
 		else
@@ -404,7 +406,7 @@ static void leave_uniprocessor(void)
 		return;
 	pr_notice("Re-enabling CPUs...\n");
 	for_each_cpu(cpu, downed_cpus) {
-		err = add_cpu(cpu);
+		err = cpu_up(cpu);
 		if (!err)
 			pr_info("enabled CPU%d.\n", cpu);
 		else

@@ -30,7 +30,6 @@
 #include <drm/drm_file.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_fourcc.h>
-#include <drm/drm_managed.h>
 #include <drm/drm_vblank.h>
 
 #include "drm_crtc_internal.h"
@@ -41,7 +40,7 @@
  * A plane represents an image source that can be blended with or overlayed on
  * top of a CRTC during the scanout process. Planes take their input data from a
  * &drm_framebuffer object. The plane itself specifies the cropping and scaling
- * of that image, and where it is placed on the visible area of a display
+ * of that image, and where it is placed on the visible are of a display
  * pipeline, represented by &drm_crtc. A plane can also have additional
  * properties that specify how the pixels are positioned and blended, like
  * rotation or Z-position. All these properties are stored in &drm_plane_state.
@@ -50,34 +49,14 @@
  * &struct drm_plane (possibly as part of a larger structure) and registers it
  * with a call to drm_universal_plane_init().
  *
+ * Cursor and overlay planes are optional. All drivers should provide one
+ * primary plane per CRTC to avoid surprising userspace too much. See enum
+ * drm_plane_type for a more in-depth discussion of these special uapi-relevant
+ * plane types. Special planes are associated with their CRTC by calling
+ * drm_crtc_init_with_planes().
+ *
  * The type of a plane is exposed in the immutable "type" enumeration property,
- * which has one of the following values: "Overlay", "Primary", "Cursor" (see
- * enum drm_plane_type). A plane can be compatible with multiple CRTCs, see
- * &drm_plane.possible_crtcs.
- *
- * Each CRTC must have a unique primary plane userspace can attach to enable
- * the CRTC. In other words, userspace must be able to attach a different
- * primary plane to each CRTC at the same time. Primary planes can still be
- * compatible with multiple CRTCs. There must be exactly as many primary planes
- * as there are CRTCs.
- *
- * Legacy uAPI doesn't expose the primary and cursor planes directly. DRM core
- * relies on the driver to set the primary and optionally the cursor plane used
- * for legacy IOCTLs. This is done by calling drm_crtc_init_with_planes(). All
- * drivers must provide one primary plane per CRTC to avoid surprising legacy
- * userspace too much.
- */
-
-/**
- * DOC: standard plane properties
- *
- * DRM planes have a few standardized properties:
- *
- * IN_FORMATS:
- *     Blob property which contains the set of buffer format and modifier
- *     pairs supported by this plane. The blob is a struct
- *     drm_format_modifier_blob. Without this property the plane doesn't
- *     support buffers with modifiers. Userspace cannot change this property.
+ * which has one of the following values: "Overlay", "Primary", "Cursor".
  */
 
 static unsigned int drm_num_planes(struct drm_device *dev)
@@ -173,16 +152,31 @@ done:
 	return 0;
 }
 
-__printf(9, 0)
-static int __drm_universal_plane_init(struct drm_device *dev,
-				      struct drm_plane *plane,
-				      uint32_t possible_crtcs,
-				      const struct drm_plane_funcs *funcs,
-				      const uint32_t *formats,
-				      unsigned int format_count,
-				      const uint64_t *format_modifiers,
-				      enum drm_plane_type type,
-				      const char *name, va_list ap)
+/**
+ * drm_universal_plane_init - Initialize a new universal plane object
+ * @dev: DRM device
+ * @plane: plane object to init
+ * @possible_crtcs: bitmask of possible CRTCs
+ * @funcs: callbacks for the new plane
+ * @formats: array of supported formats (DRM_FORMAT\_\*)
+ * @format_count: number of elements in @formats
+ * @format_modifiers: array of struct drm_format modifiers terminated by
+ *                    DRM_FORMAT_MOD_INVALID
+ * @type: type of plane (overlay, primary, cursor)
+ * @name: printf style format string for the plane name, or NULL for default name
+ *
+ * Initializes a plane object of type @type.
+ *
+ * Returns:
+ * Zero on success, error code on failure.
+ */
+int drm_universal_plane_init(struct drm_device *dev, struct drm_plane *plane,
+			     uint32_t possible_crtcs,
+			     const struct drm_plane_funcs *funcs,
+			     const uint32_t *formats, unsigned int format_count,
+			     const uint64_t *format_modifiers,
+			     enum drm_plane_type type,
+			     const char *name, ...)
 {
 	struct drm_mode_config *config = &dev->mode_config;
 	unsigned int format_modifier_count = 0;
@@ -222,7 +216,6 @@ static int __drm_universal_plane_init(struct drm_device *dev,
 
 	if (format_modifiers) {
 		const uint64_t *temp_modifiers = format_modifiers;
-
 		while (*temp_modifiers++ != DRM_FORMAT_MOD_INVALID)
 			format_modifier_count++;
 	}
@@ -243,7 +236,11 @@ static int __drm_universal_plane_init(struct drm_device *dev,
 	}
 
 	if (name) {
+		va_list ap;
+
+		va_start(ap, name);
 		plane->name = kvasprintf(GFP_KERNEL, name, ap);
+		va_end(ap);
 	} else {
 		plane->name = kasprintf(GFP_KERNEL, "plane-%d",
 					drm_num_planes(dev));
@@ -288,106 +285,10 @@ static int __drm_universal_plane_init(struct drm_device *dev,
 
 	return 0;
 }
-
-/**
- * drm_universal_plane_init - Initialize a new universal plane object
- * @dev: DRM device
- * @plane: plane object to init
- * @possible_crtcs: bitmask of possible CRTCs
- * @funcs: callbacks for the new plane
- * @formats: array of supported formats (DRM_FORMAT\_\*)
- * @format_count: number of elements in @formats
- * @format_modifiers: array of struct drm_format modifiers terminated by
- *                    DRM_FORMAT_MOD_INVALID
- * @type: type of plane (overlay, primary, cursor)
- * @name: printf style format string for the plane name, or NULL for default name
- *
- * Initializes a plane object of type @type. The &drm_plane_funcs.destroy hook
- * should call drm_plane_cleanup() and kfree() the plane structure. The plane
- * structure should not be allocated with devm_kzalloc().
- *
- * Note: consider using drmm_universal_plane_alloc() instead of
- * drm_universal_plane_init() to let the DRM managed resource infrastructure
- * take care of cleanup and deallocation.
- *
- * Returns:
- * Zero on success, error code on failure.
- */
-int drm_universal_plane_init(struct drm_device *dev, struct drm_plane *plane,
-			     uint32_t possible_crtcs,
-			     const struct drm_plane_funcs *funcs,
-			     const uint32_t *formats, unsigned int format_count,
-			     const uint64_t *format_modifiers,
-			     enum drm_plane_type type,
-			     const char *name, ...)
-{
-	va_list ap;
-	int ret;
-
-	WARN_ON(!funcs->destroy);
-
-	va_start(ap, name);
-	ret = __drm_universal_plane_init(dev, plane, possible_crtcs, funcs,
-					 formats, format_count, format_modifiers,
-					 type, name, ap);
-	va_end(ap);
-	return ret;
-}
 EXPORT_SYMBOL(drm_universal_plane_init);
-
-static void drmm_universal_plane_alloc_release(struct drm_device *dev, void *ptr)
-{
-	struct drm_plane *plane = ptr;
-
-	if (WARN_ON(!plane->dev))
-		return;
-
-	drm_plane_cleanup(plane);
-}
-
-void *__drmm_universal_plane_alloc(struct drm_device *dev, size_t size,
-				   size_t offset, uint32_t possible_crtcs,
-				   const struct drm_plane_funcs *funcs,
-				   const uint32_t *formats, unsigned int format_count,
-				   const uint64_t *format_modifiers,
-				   enum drm_plane_type type,
-				   const char *name, ...)
-{
-	void *container;
-	struct drm_plane *plane;
-	va_list ap;
-	int ret;
-
-	if (WARN_ON(!funcs || funcs->destroy))
-		return ERR_PTR(-EINVAL);
-
-	container = drmm_kzalloc(dev, size, GFP_KERNEL);
-	if (!container)
-		return ERR_PTR(-ENOMEM);
-
-	plane = container + offset;
-
-	va_start(ap, name);
-	ret = __drm_universal_plane_init(dev, plane, possible_crtcs, funcs,
-					 formats, format_count, format_modifiers,
-					 type, name, ap);
-	va_end(ap);
-	if (ret)
-		return ERR_PTR(ret);
-
-	ret = drmm_add_action_or_reset(dev, drmm_universal_plane_alloc_release,
-				       plane);
-	if (ret)
-		return ERR_PTR(ret);
-
-	return container;
-}
-EXPORT_SYMBOL(__drmm_universal_plane_alloc);
 
 int drm_plane_register_all(struct drm_device *dev)
 {
-	unsigned int num_planes = 0;
-	unsigned int num_zpos = 0;
 	struct drm_plane *plane;
 	int ret = 0;
 
@@ -396,14 +297,7 @@ int drm_plane_register_all(struct drm_device *dev)
 			ret = plane->funcs->late_register(plane);
 		if (ret)
 			return ret;
-
-		if (plane->zpos_property)
-			num_zpos++;
-		num_planes++;
 	}
-
-	drm_WARN(dev, num_zpos && num_planes != num_zpos,
-		 "Mixing planes with and without zpos property is invalid\n");
 
 	return 0;
 }
@@ -888,7 +782,7 @@ static int setplane_internal(struct drm_plane *plane,
 					  crtc_x, crtc_y, crtc_w, crtc_h,
 					  src_x, src_y, src_w, src_h, &ctx);
 
-	DRM_MODESET_LOCK_ALL_END(plane->dev, ctx, ret);
+	DRM_MODESET_LOCK_ALL_END(ctx, ret);
 
 	return ret;
 }
@@ -1259,14 +1153,7 @@ retry:
 	if (ret)
 		goto out;
 
-	/*
-	 * Only check the FOURCC format code, excluding modifiers. This is
-	 * enough for all legacy drivers. Atomic drivers have their own
-	 * checks in their ->atomic_check implementation, which will
-	 * return -EINVAL if any hw or driver constraint is violated due
-	 * to modifier changes.
-	 */
-	if (old_fb->format->format != fb->format->format) {
+	if (old_fb->format != fb->format) {
 		DRM_DEBUG_KMS("Page flip is not allowed to change frame buffer format.\n");
 		ret = -EINVAL;
 		goto out;
@@ -1334,76 +1221,3 @@ out:
 
 	return ret;
 }
-
-struct drm_property *
-drm_create_scaling_filter_prop(struct drm_device *dev,
-			       unsigned int supported_filters)
-{
-	struct drm_property *prop;
-	static const struct drm_prop_enum_list props[] = {
-		{ DRM_SCALING_FILTER_DEFAULT, "Default" },
-		{ DRM_SCALING_FILTER_NEAREST_NEIGHBOR, "Nearest Neighbor" },
-	};
-	unsigned int valid_mode_mask = BIT(DRM_SCALING_FILTER_DEFAULT) |
-				       BIT(DRM_SCALING_FILTER_NEAREST_NEIGHBOR);
-	int i;
-
-	if (WARN_ON((supported_filters & ~valid_mode_mask) ||
-		    ((supported_filters & BIT(DRM_SCALING_FILTER_DEFAULT)) == 0)))
-		return ERR_PTR(-EINVAL);
-
-	prop = drm_property_create(dev, DRM_MODE_PROP_ENUM,
-				   "SCALING_FILTER",
-				   hweight32(supported_filters));
-	if (!prop)
-		return ERR_PTR(-ENOMEM);
-
-	for (i = 0; i < ARRAY_SIZE(props); i++) {
-		int ret;
-
-		if (!(BIT(props[i].type) & supported_filters))
-			continue;
-
-		ret = drm_property_add_enum(prop, props[i].type,
-					    props[i].name);
-
-		if (ret) {
-			drm_property_destroy(dev, prop);
-
-			return ERR_PTR(ret);
-		}
-	}
-
-	return prop;
-}
-
-/**
- * drm_plane_create_scaling_filter_property - create a new scaling filter
- * property
- *
- * @plane: drm plane
- * @supported_filters: bitmask of supported scaling filters, must include
- *		       BIT(DRM_SCALING_FILTER_DEFAULT).
- *
- * This function lets driver to enable the scaling filter property on a given
- * plane.
- *
- * RETURNS:
- * Zero for success or -errno
- */
-int drm_plane_create_scaling_filter_property(struct drm_plane *plane,
-					     unsigned int supported_filters)
-{
-	struct drm_property *prop =
-		drm_create_scaling_filter_prop(plane->dev, supported_filters);
-
-	if (IS_ERR(prop))
-		return PTR_ERR(prop);
-
-	drm_object_attach_property(&plane->base, prop,
-				   DRM_SCALING_FILTER_DEFAULT);
-	plane->scaling_filter_property = prop;
-
-	return 0;
-}
-EXPORT_SYMBOL(drm_plane_create_scaling_filter_property);

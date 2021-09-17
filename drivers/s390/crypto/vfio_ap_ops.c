@@ -25,7 +25,6 @@
 #define VFIO_AP_MDEV_NAME_HWVIRT "VFIO AP Passthrough Device"
 
 static int vfio_ap_mdev_reset_queues(struct mdev_device *mdev);
-static struct vfio_ap_queue *vfio_ap_find_queue(int apqn);
 
 static int match_apqn(struct device *dev, const void *data)
 {
@@ -50,15 +49,20 @@ static struct vfio_ap_queue *vfio_ap_get_queue(
 					int apqn)
 {
 	struct vfio_ap_queue *q;
+	struct device *dev;
 
 	if (!test_bit_inv(AP_QID_CARD(apqn), matrix_mdev->matrix.apm))
 		return NULL;
 	if (!test_bit_inv(AP_QID_QUEUE(apqn), matrix_mdev->matrix.aqm))
 		return NULL;
 
-	q = vfio_ap_find_queue(apqn);
-	if (q)
-		q->matrix_mdev = matrix_mdev;
+	dev = driver_find_device(&matrix_dev->vfio_ap_drv->driver, NULL,
+				 &apqn, match_apqn);
+	if (!dev)
+		return NULL;
+	q = dev_get_drvdata(dev);
+	q->matrix_mdev = matrix_mdev;
+	put_device(dev);
 
 	return q;
 }
@@ -86,7 +90,7 @@ static void vfio_ap_wait_for_irqclear(int apqn)
 		case AP_RESPONSE_RESET_IN_PROGRESS:
 			if (!status.irq_enabled)
 				return;
-			fallthrough;
+			/* Fall through */
 		case AP_RESPONSE_BUSY:
 			msleep(20);
 			break;
@@ -115,18 +119,13 @@ static void vfio_ap_wait_for_irqclear(int apqn)
  */
 static void vfio_ap_free_aqic_resources(struct vfio_ap_queue *q)
 {
-	if (!q)
-		return;
-	if (q->saved_isc != VFIO_AP_ISC_INVALID &&
-	    !WARN_ON(!(q->matrix_mdev && q->matrix_mdev->kvm))) {
+	if (q->saved_isc != VFIO_AP_ISC_INVALID && q->matrix_mdev)
 		kvm_s390_gisc_unregister(q->matrix_mdev->kvm, q->saved_isc);
-		q->saved_isc = VFIO_AP_ISC_INVALID;
-	}
-	if (q->saved_pfn && !WARN_ON(!q->matrix_mdev)) {
+	if (q->saved_pfn && q->matrix_mdev)
 		vfio_unpin_pages(mdev_dev(q->matrix_mdev->mdev),
 				 &q->saved_pfn, 1);
-		q->saved_pfn = 0;
-	}
+	q->saved_pfn = 0;
+	q->saved_isc = VFIO_AP_ISC_INVALID;
 }
 
 /**
@@ -145,7 +144,7 @@ static void vfio_ap_free_aqic_resources(struct vfio_ap_queue *q)
  * Returns if ap_aqic function failed with invalid, deconfigured or
  * checkstopped AP.
  */
-static struct ap_queue_status vfio_ap_irq_disable(struct vfio_ap_queue *q)
+struct ap_queue_status vfio_ap_irq_disable(struct vfio_ap_queue *q)
 {
 	struct ap_qirq_ctrl aqic_gisa = {};
 	struct ap_queue_status status;
@@ -294,19 +293,6 @@ static int handle_pqap(struct kvm_vcpu *vcpu)
 	matrix_mdev = container_of(vcpu->kvm->arch.crypto.pqap_hook,
 				   struct ap_matrix_mdev, pqap_hook);
 
-	/*
-	 * If the KVM pointer is in the process of being set, wait until the
-	 * process has completed.
-	 */
-	wait_event_cmd(matrix_mdev->wait_for_kvm,
-		       !matrix_mdev->kvm_busy,
-		       mutex_unlock(&matrix_dev->lock),
-		       mutex_lock(&matrix_dev->lock));
-
-	/* If the there is no guest using the mdev, there is nothing to do */
-	if (!matrix_mdev->kvm)
-		goto out_unlock;
-
 	q = vfio_ap_get_queue(matrix_mdev, apqn);
 	if (!q)
 		goto out_unlock;
@@ -350,7 +336,6 @@ static int vfio_ap_mdev_create(struct kobject *kobj, struct mdev_device *mdev)
 
 	matrix_mdev->mdev = mdev;
 	vfio_ap_matrix_init(&matrix_dev->info, &matrix_mdev->matrix);
-	init_waitqueue_head(&matrix_mdev->wait_for_kvm);
 	mdev_set_drvdata(mdev, matrix_mdev);
 	matrix_mdev->pqap_hook.hook = handle_pqap;
 	matrix_mdev->pqap_hook.owner = THIS_MODULE;
@@ -365,23 +350,17 @@ static int vfio_ap_mdev_remove(struct mdev_device *mdev)
 {
 	struct ap_matrix_mdev *matrix_mdev = mdev_get_drvdata(mdev);
 
-	mutex_lock(&matrix_dev->lock);
-
-	/*
-	 * If the KVM pointer is in flux or the guest is running, disallow
-	 * un-assignment of control domain.
-	 */
-	if (matrix_mdev->kvm_busy || matrix_mdev->kvm) {
-		mutex_unlock(&matrix_dev->lock);
+	if (matrix_mdev->kvm)
 		return -EBUSY;
-	}
 
+	mutex_lock(&matrix_dev->lock);
 	vfio_ap_mdev_reset_queues(mdev);
 	list_del(&matrix_mdev->node);
+	mutex_unlock(&matrix_dev->lock);
+
 	kfree(matrix_mdev);
 	mdev_set_drvdata(mdev, NULL);
 	atomic_inc(&matrix_dev->available_instances);
-	mutex_unlock(&matrix_dev->lock);
 
 	return 0;
 }
@@ -626,31 +605,24 @@ static ssize_t assign_adapter_store(struct device *dev,
 	struct mdev_device *mdev = mdev_from_dev(dev);
 	struct ap_matrix_mdev *matrix_mdev = mdev_get_drvdata(mdev);
 
-	mutex_lock(&matrix_dev->lock);
-
-	/*
-	 * If the KVM pointer is in flux or the guest is running, disallow
-	 * un-assignment of adapter
-	 */
-	if (matrix_mdev->kvm_busy || matrix_mdev->kvm) {
-		ret = -EBUSY;
-		goto done;
-	}
+	/* If the guest is running, disallow assignment of adapter */
+	if (matrix_mdev->kvm)
+		return -EBUSY;
 
 	ret = kstrtoul(buf, 0, &apid);
 	if (ret)
-		goto done;
+		return ret;
 
-	if (apid > matrix_mdev->matrix.apm_max) {
-		ret = -ENODEV;
-		goto done;
-	}
+	if (apid > matrix_mdev->matrix.apm_max)
+		return -ENODEV;
 
 	/*
 	 * Set the bit in the AP mask (APM) corresponding to the AP adapter
 	 * number (APID). The bits in the mask, from most significant to least
 	 * significant bit, correspond to APIDs 0-255.
 	 */
+	mutex_lock(&matrix_dev->lock);
+
 	ret = vfio_ap_mdev_verify_queues_reserved_for_apid(matrix_mdev, apid);
 	if (ret)
 		goto done;
@@ -699,31 +671,22 @@ static ssize_t unassign_adapter_store(struct device *dev,
 	struct mdev_device *mdev = mdev_from_dev(dev);
 	struct ap_matrix_mdev *matrix_mdev = mdev_get_drvdata(mdev);
 
-	mutex_lock(&matrix_dev->lock);
-
-	/*
-	 * If the KVM pointer is in flux or the guest is running, disallow
-	 * un-assignment of adapter
-	 */
-	if (matrix_mdev->kvm_busy || matrix_mdev->kvm) {
-		ret = -EBUSY;
-		goto done;
-	}
+	/* If the guest is running, disallow un-assignment of adapter */
+	if (matrix_mdev->kvm)
+		return -EBUSY;
 
 	ret = kstrtoul(buf, 0, &apid);
 	if (ret)
-		goto done;
+		return ret;
 
-	if (apid > matrix_mdev->matrix.apm_max) {
-		ret = -ENODEV;
-		goto done;
-	}
+	if (apid > matrix_mdev->matrix.apm_max)
+		return -ENODEV;
 
+	mutex_lock(&matrix_dev->lock);
 	clear_bit_inv((unsigned long)apid, matrix_mdev->matrix.apm);
-	ret = count;
-done:
 	mutex_unlock(&matrix_dev->lock);
-	return ret;
+
+	return count;
 }
 static DEVICE_ATTR_WO(unassign_adapter);
 
@@ -789,24 +752,17 @@ static ssize_t assign_domain_store(struct device *dev,
 	struct ap_matrix_mdev *matrix_mdev = mdev_get_drvdata(mdev);
 	unsigned long max_apqi = matrix_mdev->matrix.aqm_max;
 
-	mutex_lock(&matrix_dev->lock);
-
-	/*
-	 * If the KVM pointer is in flux or the guest is running, disallow
-	 * assignment of domain
-	 */
-	if (matrix_mdev->kvm_busy || matrix_mdev->kvm) {
-		ret = -EBUSY;
-		goto done;
-	}
+	/* If the guest is running, disallow assignment of domain */
+	if (matrix_mdev->kvm)
+		return -EBUSY;
 
 	ret = kstrtoul(buf, 0, &apqi);
 	if (ret)
-		goto done;
-	if (apqi > max_apqi) {
-		ret = -ENODEV;
-		goto done;
-	}
+		return ret;
+	if (apqi > max_apqi)
+		return -ENODEV;
+
+	mutex_lock(&matrix_dev->lock);
 
 	ret = vfio_ap_mdev_verify_queues_reserved_for_apqi(matrix_mdev, apqi);
 	if (ret)
@@ -857,32 +813,22 @@ static ssize_t unassign_domain_store(struct device *dev,
 	struct mdev_device *mdev = mdev_from_dev(dev);
 	struct ap_matrix_mdev *matrix_mdev = mdev_get_drvdata(mdev);
 
-	mutex_lock(&matrix_dev->lock);
-
-	/*
-	 * If the KVM pointer is in flux or the guest is running, disallow
-	 * un-assignment of domain
-	 */
-	if (matrix_mdev->kvm_busy || matrix_mdev->kvm) {
-		ret = -EBUSY;
-		goto done;
-	}
+	/* If the guest is running, disallow un-assignment of domain */
+	if (matrix_mdev->kvm)
+		return -EBUSY;
 
 	ret = kstrtoul(buf, 0, &apqi);
 	if (ret)
-		goto done;
+		return ret;
 
-	if (apqi > matrix_mdev->matrix.aqm_max) {
-		ret = -ENODEV;
-		goto done;
-	}
+	if (apqi > matrix_mdev->matrix.aqm_max)
+		return -ENODEV;
 
+	mutex_lock(&matrix_dev->lock);
 	clear_bit_inv((unsigned long)apqi, matrix_mdev->matrix.aqm);
-	ret = count;
-
-done:
 	mutex_unlock(&matrix_dev->lock);
-	return ret;
+
+	return count;
 }
 static DEVICE_ATTR_WO(unassign_domain);
 
@@ -911,36 +857,27 @@ static ssize_t assign_control_domain_store(struct device *dev,
 	struct mdev_device *mdev = mdev_from_dev(dev);
 	struct ap_matrix_mdev *matrix_mdev = mdev_get_drvdata(mdev);
 
-	mutex_lock(&matrix_dev->lock);
-
-	/*
-	 * If the KVM pointer is in flux or the guest is running, disallow
-	 * assignment of control domain.
-	 */
-	if (matrix_mdev->kvm_busy || matrix_mdev->kvm) {
-		ret = -EBUSY;
-		goto done;
-	}
+	/* If the guest is running, disallow assignment of control domain */
+	if (matrix_mdev->kvm)
+		return -EBUSY;
 
 	ret = kstrtoul(buf, 0, &id);
 	if (ret)
-		goto done;
+		return ret;
 
-	if (id > matrix_mdev->matrix.adm_max) {
-		ret = -ENODEV;
-		goto done;
-	}
+	if (id > matrix_mdev->matrix.adm_max)
+		return -ENODEV;
 
 	/* Set the bit in the ADM (bitmask) corresponding to the AP control
 	 * domain number (id). The bits in the mask, from most significant to
 	 * least significant, correspond to IDs 0 up to the one less than the
 	 * number of control domains that can be assigned.
 	 */
+	mutex_lock(&matrix_dev->lock);
 	set_bit_inv(id, matrix_mdev->matrix.adm);
-	ret = count;
-done:
 	mutex_unlock(&matrix_dev->lock);
-	return ret;
+
+	return count;
 }
 static DEVICE_ATTR_WO(assign_control_domain);
 
@@ -970,30 +907,21 @@ static ssize_t unassign_control_domain_store(struct device *dev,
 	struct ap_matrix_mdev *matrix_mdev = mdev_get_drvdata(mdev);
 	unsigned long max_domid =  matrix_mdev->matrix.adm_max;
 
-	mutex_lock(&matrix_dev->lock);
-
-	/*
-	 * If the KVM pointer is in flux or the guest is running, disallow
-	 * un-assignment of control domain.
-	 */
-	if (matrix_mdev->kvm_busy || matrix_mdev->kvm) {
-		ret = -EBUSY;
-		goto done;
-	}
+	/* If the guest is running, disallow un-assignment of control domain */
+	if (matrix_mdev->kvm)
+		return -EBUSY;
 
 	ret = kstrtoul(buf, 0, &domid);
 	if (ret)
-		goto done;
-	if (domid > max_domid) {
-		ret = -ENODEV;
-		goto done;
-	}
+		return ret;
+	if (domid > max_domid)
+		return -ENODEV;
 
+	mutex_lock(&matrix_dev->lock);
 	clear_bit_inv(domid, matrix_mdev->matrix.adm);
-	ret = count;
-done:
 	mutex_unlock(&matrix_dev->lock);
-	return ret;
+
+	return count;
 }
 static DEVICE_ATTR_WO(unassign_control_domain);
 
@@ -1098,15 +1026,8 @@ static const struct attribute_group *vfio_ap_mdev_attr_groups[] = {
  * @matrix_mdev: a mediated matrix device
  * @kvm: reference to KVM instance
  *
- * Sets all data for @matrix_mdev that are needed to manage AP resources
- * for the guest whose state is represented by @kvm.
- *
- * Note: The matrix_dev->lock must be taken prior to calling
- * this function; however, the lock will be temporarily released while the
- * guest's AP configuration is set to avoid a potential lockdep splat.
- * The kvm->lock is taken to set the guest's AP configuration which, under
- * certain circumstances, will result in a circular lock dependency if this is
- * done under the @matrix_mdev->lock.
+ * Verifies no other mediated matrix device has @kvm and sets a reference to
+ * it in @matrix_mdev->kvm.
  *
  * Return 0 if no other mediated matrix device has a reference to @kvm;
  * otherwise, returns an -EPERM.
@@ -1116,25 +1037,19 @@ static int vfio_ap_mdev_set_kvm(struct ap_matrix_mdev *matrix_mdev,
 {
 	struct ap_matrix_mdev *m;
 
-	if (kvm->arch.crypto.crycbd) {
-		list_for_each_entry(m, &matrix_dev->mdev_list, node) {
-			if (m != matrix_mdev && m->kvm == kvm)
-				return -EPERM;
-		}
+	mutex_lock(&matrix_dev->lock);
 
-		kvm_get_kvm(kvm);
-		matrix_mdev->kvm_busy = true;
-		mutex_unlock(&matrix_dev->lock);
-		kvm_arch_crypto_set_masks(kvm,
-					  matrix_mdev->matrix.apm,
-					  matrix_mdev->matrix.aqm,
-					  matrix_mdev->matrix.adm);
-		mutex_lock(&matrix_dev->lock);
-		kvm->arch.crypto.pqap_hook = &matrix_mdev->pqap_hook;
-		matrix_mdev->kvm = kvm;
-		matrix_mdev->kvm_busy = false;
-		wake_up_all(&matrix_mdev->wait_for_kvm);
+	list_for_each_entry(m, &matrix_dev->mdev_list, node) {
+		if ((m != matrix_mdev) && (m->kvm == kvm)) {
+			mutex_unlock(&matrix_dev->lock);
+			return -EPERM;
+		}
 	}
+
+	matrix_mdev->kvm = kvm;
+	kvm_get_kvm(kvm);
+	kvm->arch.crypto.pqap_hook = &matrix_mdev->pqap_hook;
+	mutex_unlock(&matrix_dev->lock);
 
 	return 0;
 }
@@ -1168,132 +1083,79 @@ static int vfio_ap_mdev_iommu_notifier(struct notifier_block *nb,
 	return NOTIFY_DONE;
 }
 
-/**
- * vfio_ap_mdev_unset_kvm
- *
- * @matrix_mdev: a matrix mediated device
- *
- * Performs clean-up of resources no longer needed by @matrix_mdev.
- *
- * Note: The matrix_dev->lock must be taken prior to calling
- * this function; however, the lock will be temporarily released while the
- * guest's AP configuration is cleared to avoid a potential lockdep splat.
- * The kvm->lock is taken to clear the guest's AP configuration which, under
- * certain circumstances, will result in a circular lock dependency if this is
- * done under the @matrix_mdev->lock.
- *
- */
-static void vfio_ap_mdev_unset_kvm(struct ap_matrix_mdev *matrix_mdev)
-{
-	/*
-	 * If the KVM pointer is in the process of being set, wait until the
-	 * process has completed.
-	 */
-	wait_event_cmd(matrix_mdev->wait_for_kvm,
-		       !matrix_mdev->kvm_busy,
-		       mutex_unlock(&matrix_dev->lock),
-		       mutex_lock(&matrix_dev->lock));
-
-	if (matrix_mdev->kvm) {
-		matrix_mdev->kvm_busy = true;
-		mutex_unlock(&matrix_dev->lock);
-		kvm_arch_crypto_clear_masks(matrix_mdev->kvm);
-		mutex_lock(&matrix_dev->lock);
-		vfio_ap_mdev_reset_queues(matrix_mdev->mdev);
-		matrix_mdev->kvm->arch.crypto.pqap_hook = NULL;
-		kvm_put_kvm(matrix_mdev->kvm);
-		matrix_mdev->kvm = NULL;
-		matrix_mdev->kvm_busy = false;
-		wake_up_all(&matrix_mdev->wait_for_kvm);
-	}
-}
-
 static int vfio_ap_mdev_group_notifier(struct notifier_block *nb,
 				       unsigned long action, void *data)
 {
-	int notify_rc = NOTIFY_OK;
+	int ret;
 	struct ap_matrix_mdev *matrix_mdev;
 
 	if (action != VFIO_GROUP_NOTIFY_SET_KVM)
 		return NOTIFY_OK;
 
-	mutex_lock(&matrix_dev->lock);
 	matrix_mdev = container_of(nb, struct ap_matrix_mdev, group_notifier);
 
-	if (!data)
-		vfio_ap_mdev_unset_kvm(matrix_mdev);
-	else if (vfio_ap_mdev_set_kvm(matrix_mdev, data))
-		notify_rc = NOTIFY_DONE;
+	if (!data) {
+		matrix_mdev->kvm = NULL;
+		return NOTIFY_OK;
+	}
 
-	mutex_unlock(&matrix_dev->lock);
+	ret = vfio_ap_mdev_set_kvm(matrix_mdev, data);
+	if (ret)
+		return NOTIFY_DONE;
 
-	return notify_rc;
+	/* If there is no CRYCB pointer, then we can't copy the masks */
+	if (!matrix_mdev->kvm->arch.crypto.crycbd)
+		return NOTIFY_DONE;
+
+	kvm_arch_crypto_set_masks(matrix_mdev->kvm, matrix_mdev->matrix.apm,
+				  matrix_mdev->matrix.aqm,
+				  matrix_mdev->matrix.adm);
+
+	return NOTIFY_OK;
 }
 
-static struct vfio_ap_queue *vfio_ap_find_queue(int apqn)
+static void vfio_ap_irq_disable_apqn(int apqn)
 {
 	struct device *dev;
-	struct vfio_ap_queue *q = NULL;
+	struct vfio_ap_queue *q;
 
 	dev = driver_find_device(&matrix_dev->vfio_ap_drv->driver, NULL,
 				 &apqn, match_apqn);
 	if (dev) {
 		q = dev_get_drvdata(dev);
+		vfio_ap_irq_disable(q);
 		put_device(dev);
 	}
-
-	return q;
 }
 
-int vfio_ap_mdev_reset_queue(struct vfio_ap_queue *q,
+int vfio_ap_mdev_reset_queue(unsigned int apid, unsigned int apqi,
 			     unsigned int retry)
 {
 	struct ap_queue_status status;
-	int ret;
 	int retry2 = 2;
+	int apqn = AP_MKQID(apid, apqi);
 
-	if (!q)
-		return 0;
-
-retry_zapq:
-	status = ap_zapq(q->apqn);
-	switch (status.response_code) {
-	case AP_RESPONSE_NORMAL:
-		ret = 0;
-		break;
-	case AP_RESPONSE_RESET_IN_PROGRESS:
-		if (retry--) {
+	do {
+		status = ap_zapq(apqn);
+		switch (status.response_code) {
+		case AP_RESPONSE_NORMAL:
+			while (!status.queue_empty && retry2--) {
+				msleep(20);
+				status = ap_tapq(apqn, NULL);
+			}
+			WARN_ON_ONCE(retry2 <= 0);
+			return 0;
+		case AP_RESPONSE_RESET_IN_PROGRESS:
+		case AP_RESPONSE_BUSY:
 			msleep(20);
-			goto retry_zapq;
-		}
-		ret = -EBUSY;
-		break;
-	case AP_RESPONSE_Q_NOT_AVAIL:
-	case AP_RESPONSE_DECONFIGURED:
-	case AP_RESPONSE_CHECKSTOPPED:
-		WARN_ON_ONCE(status.irq_enabled);
-		ret = -EBUSY;
-		goto free_resources;
-	default:
-		/* things are really broken, give up */
-		WARN(true, "PQAP/ZAPQ completed with invalid rc (%x)\n",
-		     status.response_code);
-		return -EIO;
-	}
-
-	/* wait for the reset to take effect */
-	while (retry2--) {
-		if (status.queue_empty && !status.irq_enabled)
 			break;
-		msleep(20);
-		status = ap_tapq(q->apqn, NULL);
-	}
-	WARN_ON_ONCE(retry2 <= 0);
+		default:
+			/* things are really broken, give up */
+			return -EIO;
+		}
+	} while (retry--);
 
-free_resources:
-	vfio_ap_free_aqic_resources(q);
-
-	return ret;
+	return -EBUSY;
 }
 
 static int vfio_ap_mdev_reset_queues(struct mdev_device *mdev)
@@ -1301,15 +1163,13 @@ static int vfio_ap_mdev_reset_queues(struct mdev_device *mdev)
 	int ret;
 	int rc = 0;
 	unsigned long apid, apqi;
-	struct vfio_ap_queue *q;
 	struct ap_matrix_mdev *matrix_mdev = mdev_get_drvdata(mdev);
 
 	for_each_set_bit_inv(apid, matrix_mdev->matrix.apm,
 			     matrix_mdev->matrix.apm_max + 1) {
 		for_each_set_bit_inv(apqi, matrix_mdev->matrix.aqm,
 				     matrix_mdev->matrix.aqm_max + 1) {
-			q = vfio_ap_find_queue(AP_MKQID(apid, apqi));
-			ret = vfio_ap_mdev_reset_queue(q, 1);
+			ret = vfio_ap_mdev_reset_queue(apid, apqi, 1);
 			/*
 			 * Regardless whether a queue turns out to be busy, or
 			 * is not operational, we need to continue resetting
@@ -1317,6 +1177,7 @@ static int vfio_ap_mdev_reset_queues(struct mdev_device *mdev)
 			 */
 			if (ret)
 				rc = ret;
+			vfio_ap_irq_disable_apqn(AP_MKQID(apid, apqi));
 		}
 	}
 
@@ -1361,7 +1222,13 @@ static void vfio_ap_mdev_release(struct mdev_device *mdev)
 	struct ap_matrix_mdev *matrix_mdev = mdev_get_drvdata(mdev);
 
 	mutex_lock(&matrix_dev->lock);
-	vfio_ap_mdev_unset_kvm(matrix_mdev);
+	if (matrix_mdev->kvm) {
+		kvm_arch_crypto_clear_masks(matrix_mdev->kvm);
+		matrix_mdev->kvm->arch.crypto.pqap_hook = NULL;
+		vfio_ap_mdev_reset_queues(mdev);
+		kvm_put_kvm(matrix_mdev->kvm);
+		matrix_mdev->kvm = NULL;
+	}
 	mutex_unlock(&matrix_dev->lock);
 
 	vfio_unregister_notifier(mdev_dev(mdev), VFIO_IOMMU_NOTIFY,
@@ -1388,14 +1255,13 @@ static int vfio_ap_mdev_get_device_info(unsigned long arg)
 	info.num_regions = 0;
 	info.num_irqs = 0;
 
-	return copy_to_user((void __user *)arg, &info, minsz) ? -EFAULT : 0;
+	return copy_to_user((void __user *)arg, &info, minsz);
 }
 
 static ssize_t vfio_ap_mdev_ioctl(struct mdev_device *mdev,
 				    unsigned int cmd, unsigned long arg)
 {
 	int ret;
-	struct ap_matrix_mdev *matrix_mdev;
 
 	mutex_lock(&matrix_dev->lock);
 	switch (cmd) {
@@ -1403,21 +1269,6 @@ static ssize_t vfio_ap_mdev_ioctl(struct mdev_device *mdev,
 		ret = vfio_ap_mdev_get_device_info(arg);
 		break;
 	case VFIO_DEVICE_RESET:
-		matrix_mdev = mdev_get_drvdata(mdev);
-		if (WARN(!matrix_mdev, "Driver data missing from mdev!!")) {
-			ret = -EINVAL;
-			break;
-		}
-
-		/*
-		 * If the KVM pointer is in the process of being set, wait until
-		 * the process has completed.
-		 */
-		wait_event_cmd(matrix_mdev->wait_for_kvm,
-			       !matrix_mdev->kvm_busy,
-			       mutex_unlock(&matrix_dev->lock),
-			       mutex_lock(&matrix_dev->lock));
-
 		ret = vfio_ap_mdev_reset_queues(mdev);
 		break;
 	default:

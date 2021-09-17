@@ -31,6 +31,8 @@
     System Programming Guide; Section 9.11. (1997 edition - PPro).
 */
 
+#define DEBUG
+
 #include <linux/types.h> /* FIXME: kvm_para.h needs this */
 
 #include <linux/stop_machine.h>
@@ -792,6 +794,8 @@ void mtrr_ap_init(void)
 	if (!use_intel() || mtrr_aps_delayed_init)
 		return;
 
+	rcu_cpu_starting(smp_processor_id());
+
 	/*
 	 * Ideally we should hold mtrr_mutex here to avoid mtrr entries
 	 * changed, but this routine will be called in cpu boot time,
@@ -809,8 +813,7 @@ void mtrr_ap_init(void)
 }
 
 /**
- * mtrr_save_state - Save current fixed-range MTRR state of the first
- *	cpu in cpu_online_mask.
+ * Save current fixed-range MTRR state of the first cpu in cpu_online_mask.
  */
 void mtrr_save_state(void)
 {

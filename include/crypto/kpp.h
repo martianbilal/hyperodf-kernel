@@ -154,8 +154,6 @@ static inline void crypto_kpp_set_flags(struct crypto_kpp *tfm, u32 flags)
  * crypto_free_kpp() - free KPP tfm handle
  *
  * @tfm: KPP tfm handle allocated with crypto_alloc_kpp()
- *
- * If @tfm is a NULL or error pointer, this function does nothing.
  */
 static inline void crypto_free_kpp(struct crypto_kpp *tfm)
 {
@@ -189,7 +187,7 @@ static inline struct kpp_request *kpp_request_alloc(struct crypto_kpp *tfm,
  */
 static inline void kpp_request_free(struct kpp_request *req)
 {
-	kfree_sensitive(req);
+	kzfree(req);
 }
 
 /**

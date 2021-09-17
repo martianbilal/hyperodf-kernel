@@ -314,9 +314,11 @@ static int mlxsw_sp_ptp_parse(struct sk_buff *skb,
 			      u8 *p_message_type,
 			      u16 *p_sequence_id)
 {
+	unsigned int offset = 0;
 	unsigned int ptp_class;
-	struct ptp_header *hdr;
+	u8 *data;
 
+	data = skb_mac_header(skb);
 	ptp_class = ptp_classify_raw(skb);
 
 	switch (ptp_class & PTP_CLASS_VMASK) {
@@ -327,14 +329,30 @@ static int mlxsw_sp_ptp_parse(struct sk_buff *skb,
 		return -ERANGE;
 	}
 
-	hdr = ptp_parse_header(skb, ptp_class);
-	if (!hdr)
+	if (ptp_class & PTP_CLASS_VLAN)
+		offset += VLAN_HLEN;
+
+	switch (ptp_class & PTP_CLASS_PMASK) {
+	case PTP_CLASS_IPV4:
+		offset += ETH_HLEN + IPV4_HLEN(data + offset) + UDP_HLEN;
+		break;
+	case PTP_CLASS_IPV6:
+		offset += ETH_HLEN + IP6_HLEN + UDP_HLEN;
+		break;
+	case PTP_CLASS_L2:
+		offset += ETH_HLEN;
+		break;
+	default:
+		return -ERANGE;
+	}
+
+	/* PTP header is 34 bytes. */
+	if (skb->len < offset + 34)
 		return -EINVAL;
 
-	*p_message_type	 = ptp_get_msgtype(hdr, ptp_class);
-	*p_domain_number = hdr->domain_number;
-	*p_sequence_id	 = be16_to_cpu(hdr->sequence_id);
-
+	*p_message_type = data[offset] & 0x0f;
+	*p_domain_number = data[offset + 4];
+	*p_sequence_id = (u16)(data[offset + 30]) << 8 | data[offset + 31];
 	return 0;
 }
 
@@ -828,10 +846,10 @@ struct mlxsw_sp_ptp_state *mlxsw_sp1_ptp_init(struct mlxsw_sp *mlxsw_sp)
 		goto err_hashtable_init;
 
 	/* Delive these message types as PTP0. */
-	message_type = BIT(PTP_MSGTYPE_SYNC) |
-		       BIT(PTP_MSGTYPE_DELAY_REQ) |
-		       BIT(PTP_MSGTYPE_PDELAY_REQ) |
-		       BIT(PTP_MSGTYPE_PDELAY_RESP);
+	message_type = BIT(MLXSW_SP_PTP_MESSAGE_TYPE_SYNC) |
+		       BIT(MLXSW_SP_PTP_MESSAGE_TYPE_DELAY_REQ) |
+		       BIT(MLXSW_SP_PTP_MESSAGE_TYPE_PDELAY_REQ) |
+		       BIT(MLXSW_SP_PTP_MESSAGE_TYPE_PDELAY_RESP);
 	err = mlxsw_sp_ptp_mtptpt_set(mlxsw_sp, MLXSW_REG_MTPTPT_TRAP_ID_PTP0,
 				      message_type);
 	if (err)
@@ -904,8 +922,6 @@ static int mlxsw_sp_ptp_get_message_types(const struct hwtstamp_config *config,
 	case HWTSTAMP_TX_ONESTEP_SYNC:
 	case HWTSTAMP_TX_ONESTEP_P2P:
 		return -ERANGE;
-	default:
-		return -EINVAL;
 	}
 
 	switch (rx_filter) {
@@ -936,8 +952,6 @@ static int mlxsw_sp_ptp_get_message_types(const struct hwtstamp_config *config,
 	case HWTSTAMP_FILTER_SOME:
 	case HWTSTAMP_FILTER_NTP_ALL:
 		return -ERANGE;
-	default:
-		return -EINVAL;
 	}
 
 	*p_ing_types = ing_types;

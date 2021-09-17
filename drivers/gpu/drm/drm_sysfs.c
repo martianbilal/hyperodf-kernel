@@ -85,6 +85,7 @@ int drm_sysfs_init(void)
 	}
 
 	drm_class->devnode = drm_devnode;
+	drm_setup_hdcp_srm(drm_class);
 	return 0;
 }
 
@@ -97,6 +98,7 @@ void drm_sysfs_destroy(void)
 {
 	if (IS_ERR_OR_NULL(drm_class))
 		return;
+	drm_teardown_hdcp_srm(drm_class);
 	class_remove_file(drm_class, &class_attr_version.attr);
 	class_destroy(drm_class);
 	drm_class = NULL;
@@ -228,7 +230,7 @@ static ssize_t modes_show(struct device *device,
 
 	mutex_lock(&connector->dev->mode_config.mutex);
 	list_for_each_entry(mode, &connector->modes, head) {
-		written += scnprintf(buf + written, PAGE_SIZE - written, "%s\n",
+		written += snprintf(buf + written, PAGE_SIZE - written, "%s\n",
 				    mode->name);
 	}
 	mutex_unlock(&connector->dev->mode_config.mutex);
@@ -290,6 +292,9 @@ int drm_sysfs_connector_add(struct drm_connector *connector)
 		DRM_ERROR("failed to register connector device: %ld\n", PTR_ERR(connector->kdev));
 		return PTR_ERR(connector->kdev);
 	}
+
+	/* Let userspace know we have a new connector */
+	drm_sysfs_hotplug_event(dev);
 
 	if (connector->ddc)
 		return sysfs_create_link(&connector->kdev->kobj,

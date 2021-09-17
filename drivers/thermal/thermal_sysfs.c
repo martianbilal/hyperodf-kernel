@@ -49,9 +49,18 @@ static ssize_t
 mode_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct thermal_zone_device *tz = to_thermal_zone(dev);
-	int enabled = thermal_zone_device_is_enabled(tz);
+	enum thermal_device_mode mode;
+	int result;
 
-	return sprintf(buf, "%s\n", enabled ? "enabled" : "disabled");
+	if (!tz->ops->get_mode)
+		return -EPERM;
+
+	result = tz->ops->get_mode(tz, &mode);
+	if (result)
+		return result;
+
+	return sprintf(buf, "%s\n", mode == THERMAL_DEVICE_ENABLED ? "enabled"
+		       : "disabled");
 }
 
 static ssize_t
@@ -61,10 +70,13 @@ mode_store(struct device *dev, struct device_attribute *attr,
 	struct thermal_zone_device *tz = to_thermal_zone(dev);
 	int result;
 
+	if (!tz->ops->set_mode)
+		return -EPERM;
+
 	if (!strncmp(buf, "enabled", sizeof("enabled") - 1))
-		result = thermal_zone_device_enable(tz);
+		result = tz->ops->set_mode(tz, THERMAL_DEVICE_ENABLED);
 	else if (!strncmp(buf, "disabled", sizeof("disabled") - 1))
-		result = thermal_zone_device_disable(tz);
+		result = tz->ops->set_mode(tz, THERMAL_DEVICE_DISABLED);
 	else
 		result = -EINVAL;
 
@@ -112,8 +124,7 @@ trip_point_temp_store(struct device *dev, struct device_attribute *attr,
 {
 	struct thermal_zone_device *tz = to_thermal_zone(dev);
 	int trip, ret;
-	int temperature, hyst = 0;
-	enum thermal_trip_type type;
+	int temperature;
 
 	if (!tz->ops->set_trip_temp)
 		return -EPERM;
@@ -127,18 +138,6 @@ trip_point_temp_store(struct device *dev, struct device_attribute *attr,
 	ret = tz->ops->set_trip_temp(tz, trip, temperature);
 	if (ret)
 		return ret;
-
-	if (tz->ops->get_trip_hyst) {
-		ret = tz->ops->get_trip_hyst(tz, trip, &hyst);
-		if (ret)
-			return ret;
-	}
-
-	ret = tz->ops->get_trip_type(tz, trip, &type);
-	if (ret)
-		return ret;
-
-	thermal_notify_tz_trip_change(tz->id, trip, type, temperature, hyst);
 
 	thermal_zone_device_update(tz, THERMAL_EVENT_UNSPECIFIED);
 
@@ -214,6 +213,49 @@ trip_point_hyst_show(struct device *dev, struct device_attribute *attr,
 	ret = tz->ops->get_trip_hyst(tz, trip, &temperature);
 
 	return ret ? ret : sprintf(buf, "%d\n", temperature);
+}
+
+static ssize_t
+passive_store(struct device *dev, struct device_attribute *attr,
+	      const char *buf, size_t count)
+{
+	struct thermal_zone_device *tz = to_thermal_zone(dev);
+	int state;
+
+	if (sscanf(buf, "%d\n", &state) != 1)
+		return -EINVAL;
+
+	/* sanity check: values below 1000 millicelcius don't make sense
+	 * and can cause the system to go into a thermal heart attack
+	 */
+	if (state && state < 1000)
+		return -EINVAL;
+
+	if (state && !tz->forced_passive) {
+		if (!tz->passive_delay)
+			tz->passive_delay = 1000;
+		thermal_zone_device_rebind_exception(tz, "Processor",
+						     sizeof("Processor"));
+	} else if (!state && tz->forced_passive) {
+		tz->passive_delay = 0;
+		thermal_zone_device_unbind_exception(tz, "Processor",
+						     sizeof("Processor"));
+	}
+
+	tz->forced_passive = state;
+
+	thermal_zone_device_update(tz, THERMAL_EVENT_UNSPECIFIED);
+
+	return count;
+}
+
+static ssize_t
+passive_show(struct device *dev, struct device_attribute *attr,
+	     char *buf)
+{
+	struct thermal_zone_device *tz = to_thermal_zone(dev);
+
+	return sprintf(buf, "%d\n", tz->forced_passive);
 }
 
 static ssize_t
@@ -360,6 +402,7 @@ static DEVICE_ATTR_RW(sustainable_power);
 
 /* These thermal zone device attributes are created based on conditions */
 static DEVICE_ATTR_RW(mode);
+static DEVICE_ATTR_RW(passive);
 
 /* These attributes are unconditionally added to a thermal zone */
 static struct attribute *thermal_zone_dev_attrs[] = {
@@ -381,22 +424,75 @@ static struct attribute *thermal_zone_dev_attrs[] = {
 	NULL,
 };
 
-static const struct attribute_group thermal_zone_attribute_group = {
+static struct attribute_group thermal_zone_attribute_group = {
 	.attrs = thermal_zone_dev_attrs,
 };
 
+/* We expose mode only if .get_mode is present */
 static struct attribute *thermal_zone_mode_attrs[] = {
 	&dev_attr_mode.attr,
 	NULL,
 };
 
-static const struct attribute_group thermal_zone_mode_attribute_group = {
+static umode_t thermal_zone_mode_is_visible(struct kobject *kobj,
+					    struct attribute *attr,
+					    int attrno)
+{
+	struct device *dev = container_of(kobj, struct device, kobj);
+	struct thermal_zone_device *tz;
+
+	tz = container_of(dev, struct thermal_zone_device, device);
+
+	if (tz->ops->get_mode)
+		return attr->mode;
+
+	return 0;
+}
+
+static struct attribute_group thermal_zone_mode_attribute_group = {
 	.attrs = thermal_zone_mode_attrs,
+	.is_visible = thermal_zone_mode_is_visible,
+};
+
+/* We expose passive only if passive trips are present */
+static struct attribute *thermal_zone_passive_attrs[] = {
+	&dev_attr_passive.attr,
+	NULL,
+};
+
+static umode_t thermal_zone_passive_is_visible(struct kobject *kobj,
+					       struct attribute *attr,
+					       int attrno)
+{
+	struct device *dev = container_of(kobj, struct device, kobj);
+	struct thermal_zone_device *tz;
+	enum thermal_trip_type trip_type;
+	int count, passive = 0;
+
+	tz = container_of(dev, struct thermal_zone_device, device);
+
+	for (count = 0; count < tz->trips && !passive; count++) {
+		tz->ops->get_trip_type(tz, count, &trip_type);
+
+		if (trip_type == THERMAL_TRIP_PASSIVE)
+			passive = 1;
+	}
+
+	if (!passive)
+		return attr->mode;
+
+	return 0;
+}
+
+static struct attribute_group thermal_zone_passive_attribute_group = {
+	.attrs = thermal_zone_passive_attrs,
+	.is_visible = thermal_zone_passive_is_visible,
 };
 
 static const struct attribute_group *thermal_zone_attribute_groups[] = {
 	&thermal_zone_attribute_group,
 	&thermal_zone_mode_attribute_group,
+	&thermal_zone_passive_attribute_group,
 	/* This is not NULL terminated as we create the group dynamically */
 };
 
@@ -674,9 +770,6 @@ void thermal_cooling_device_stats_update(struct thermal_cooling_device *cdev,
 {
 	struct cooling_dev_stats *stats = cdev->stats;
 
-	if (!stats)
-		return;
-
 	spin_lock(&stats->lock);
 
 	if (stats->state == new_state)
@@ -878,7 +971,10 @@ trip_point_show(struct device *dev, struct device_attribute *attr, char *buf)
 	instance =
 	    container_of(attr, struct thermal_instance, attr);
 
-	return sprintf(buf, "%d\n", instance->trip);
+	if (instance->trip == THERMAL_TRIPS_NONE)
+		return sprintf(buf, "-1\n");
+	else
+		return sprintf(buf, "%d\n", instance->trip);
 }
 
 ssize_t

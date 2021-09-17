@@ -104,7 +104,6 @@ FTR_SECTION_ELSE
 #ifdef CONFIG_KVM_BOOKE_HV
 ALT_FTR_SECTION_END_IFSET(CPU_FTR_EMB_HV)
 #endif
-	mfspr	r9, SPRN_SRR1
 	BOOKE_CLEAR_BTB(r11)
 	lwz	r11, TASK_STACK - THREAD(r10)
 	rlwinm	r12,r12,0,4,2	/* Clear SO bit in CR */
@@ -114,6 +113,7 @@ ALT_FTR_SECTION_END_IFSET(CPU_FTR_EMB_HV)
 	stw	r12,_LINK(r11)
 	mfspr	r12,SPRN_SRR0
 	stw	r1, GPR1(r11)
+	mfspr	r9,SPRN_SRR1
 	stw	r1, 0(r11)
 	mr	r1, r11
 	stw	r12,_NIP(r11)
@@ -122,15 +122,60 @@ ALT_FTR_SECTION_END_IFSET(CPU_FTR_EMB_HV)
 	stw	r2,GPR2(r11)
 	addi	r12, r12, STACK_FRAME_REGS_MARKER@l
 	stw	r9,_MSR(r11)
-	li	r2, \trapno
+	li	r2, \trapno + 1
 	stw	r12, 8(r11)
 	stw	r2,_TRAP(r11)
 	SAVE_GPR(0, r11)
 	SAVE_4GPRS(3, r11)
 	SAVE_2GPRS(7, r11)
 
+	addi	r11,r1,STACK_FRAME_OVERHEAD
 	addi	r2,r10,-THREAD
-	b	transfer_to_syscall	/* jump to handler */
+	stw	r11,PT_REGS(r10)
+	/* Check to see if the dbcr0 register is set up to debug.  Use the
+	   internal debug mode bit to do this. */
+	lwz	r12,THREAD_DBCR0(r10)
+	andis.	r12,r12,DBCR0_IDM@h
+	ACCOUNT_CPU_USER_ENTRY(r2, r11, r12)
+	beq+	3f
+	/* From user and task is ptraced - load up global dbcr0 */
+	li	r12,-1			/* clear all pending debug events */
+	mtspr	SPRN_DBSR,r12
+	lis	r11,global_dbcr0@ha
+	tophys(r11,r11)
+	addi	r11,r11,global_dbcr0@l
+#ifdef CONFIG_SMP
+	lwz	r10, TASK_CPU(r2)
+	slwi	r10, r10, 3
+	add	r11, r11, r10
+#endif
+	lwz	r12,0(r11)
+	mtspr	SPRN_DBCR0,r12
+	lwz	r12,4(r11)
+	addi	r12,r12,-1
+	stw	r12,4(r11)
+
+3:
+	tovirt(r2, r2)			/* set r2 to current */
+	lis	r11, transfer_to_syscall@h
+	ori	r11, r11, transfer_to_syscall@l
+#ifdef CONFIG_TRACE_IRQFLAGS
+	/*
+	 * If MSR is changing we need to keep interrupts disabled at this point
+	 * otherwise we might risk taking an interrupt before we tell lockdep
+	 * they are enabled.
+	 */
+	lis	r10, MSR_KERNEL@h
+	ori	r10, r10, MSR_KERNEL@l
+	rlwimi	r10, r9, 0, MSR_EE
+#else
+	lis	r10, (MSR_KERNEL | MSR_EE)@h
+	ori	r10, r10, (MSR_KERNEL | MSR_EE)@l
+#endif
+	mtspr	SPRN_SRR1,r10
+	mtspr	SPRN_SRR0,r11
+	SYNC
+	RFI				/* jump to handler, enable MMU */
 .endm
 
 /* To handle the additional exception priority levels on 40x and Book-E
@@ -138,6 +183,7 @@ ALT_FTR_SECTION_END_IFSET(CPU_FTR_EMB_HV)
  *
  * On 40x critical is the only additional level
  * On 44x/e500 we have critical and machine check
+ * On e200 we have critical and debug (machine check occurs via critical)
  *
  * Additionally we reserve a SPRG for each priority level so we can free up a
  * GPR to use as the base for indirect access to the exception stacks.  This
@@ -153,7 +199,7 @@ ALT_FTR_SECTION_END_IFSET(CPU_FTR_EMB_HV)
 #define MC_STACK_BASE		mcheckirq_ctx
 #define CRIT_STACK_BASE		critirq_ctx
 
-/* only on e500mc */
+/* only on e500mc/e200 */
 #define DBG_STACK_BASE		dbgirq_ctx
 
 #define EXC_LVL_FRAME_OVERHEAD	(THREAD_SIZE - INT_FRAME_SIZE - EXC_LVL_SIZE)
@@ -359,7 +405,6 @@ label:
 									      \
 	/* continue normal handling for a debug exception... */		      \
 2:	mfspr	r4,SPRN_DBSR;						      \
-	stw	r4,_ESR(r11);		/* DebugException takes DBSR in _ESR */\
 	addi	r3,r1,STACK_FRAME_OVERHEAD;				      \
 	EXC_XFER_TEMPLATE(DebugException, 0x2008, (MSR_KERNEL & ~(MSR_ME|MSR_DE|MSR_CE)), debug_transfer_to_handler, ret_from_debug_exc)
 
@@ -413,7 +458,6 @@ label:
 									      \
 	/* continue normal handling for a critical exception... */	      \
 2:	mfspr	r4,SPRN_DBSR;						      \
-	stw	r4,_ESR(r11);		/* DebugException takes DBSR in _ESR */\
 	addi	r3,r1,STACK_FRAME_OVERHEAD;				      \
 	EXC_XFER_TEMPLATE(DebugException, 0x2002, (MSR_KERNEL & ~(MSR_ME|MSR_DE|MSR_CE)), crit_transfer_to_handler, ret_from_crit_exc)
 
@@ -431,7 +475,9 @@ label:
 	NORMAL_EXCEPTION_PROLOG(INST_STORAGE);		      \
 	mfspr	r5,SPRN_ESR;		/* Grab the ESR and save it */	      \
 	stw	r5,_ESR(r11);						      \
-	stw	r12, _DEAR(r11);	/* Pass SRR0 as arg2 */		      \
+	mr      r4,r12;                 /* Pass SRR0 as arg2 */		      \
+	stw	r4, _DEAR(r11);						      \
+	li      r5,0;                   /* Pass zero as arg3 */		      \
 	EXC_XFER_LITE(0x0400, handle_page_fault)
 
 #define ALIGNMENT_EXCEPTION						      \
@@ -485,7 +531,7 @@ struct exception_regs {
 };
 
 /* ensure this structure is always sized to a multiple of the stack alignment */
-#define STACK_EXC_LVL_FRAME_SIZE	ALIGN(sizeof (struct exception_regs), 16)
+#define STACK_EXC_LVL_FRAME_SIZE	_ALIGN_UP(sizeof (struct exception_regs), 16)
 
 #endif /* __ASSEMBLY__ */
 #endif /* __HEAD_BOOKE_H__ */

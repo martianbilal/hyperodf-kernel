@@ -10,9 +10,9 @@
  *
  * The CIPSO draft specification can be found in the kernel's Documentation
  * directory as well as the following URL:
- *   https://tools.ietf.org/id/draft-ietf-cipso-ipsecurity-01.txt
+ *   http://tools.ietf.org/id/draft-ietf-cipso-ipsecurity-01.txt
  * The FIPS-188 specification can be found at the following URL:
- *   https://www.itl.nist.gov/fipspubs/fip188.htm
+ *   http://www.itl.nist.gov/fipspubs/fip188.htm
  *
  * Author: Paul Moore <paul.moore@hp.com>
  */
@@ -283,7 +283,7 @@ static int cipso_v4_cache_check(const unsigned char *key,
 
 /**
  * cipso_v4_cache_add - Add an entry to the CIPSO cache
- * @cipso_ptr: pointer to CIPSO IP option
+ * @skb: the packet
  * @secattr: the packet's security attributes
  *
  * Description:
@@ -498,7 +498,7 @@ static void cipso_v4_doi_free_rcu(struct rcu_head *entry)
 /**
  * cipso_v4_doi_remove - Remove an existing DOI from the CIPSO protocol engine
  * @doi: the DOI value
- * @audit_info: NetLabel audit information
+ * @audit_secid: the LSM secid to use in the audit message
  *
  * Description:
  * Removes a DOI definition from the CIPSO engine.  The NetLabel routines will
@@ -519,10 +519,16 @@ int cipso_v4_doi_remove(u32 doi, struct netlbl_audit *audit_info)
 		ret_val = -ENOENT;
 		goto doi_remove_return;
 	}
+	if (!refcount_dec_and_test(&doi_def->refcount)) {
+		spin_unlock(&cipso_v4_doi_list_lock);
+		ret_val = -EBUSY;
+		goto doi_remove_return;
+	}
 	list_del_rcu(&doi_def->list);
 	spin_unlock(&cipso_v4_doi_list_lock);
 
-	cipso_v4_doi_putdef(doi_def);
+	cipso_v4_cache_invalidate();
+	call_rcu(&doi_def->rcu, cipso_v4_doi_free_rcu);
 	ret_val = 0;
 
 doi_remove_return:
@@ -579,6 +585,9 @@ void cipso_v4_doi_putdef(struct cipso_v4_doi *doi_def)
 
 	if (!refcount_dec_and_test(&doi_def->refcount))
 		return;
+	spin_lock(&cipso_v4_doi_list_lock);
+	list_del_rcu(&doi_def->list);
+	spin_unlock(&cipso_v4_doi_list_lock);
 
 	cipso_v4_cache_invalidate();
 	call_rcu(&doi_def->rcu, cipso_v4_doi_free_rcu);
@@ -1153,7 +1162,7 @@ static void cipso_v4_gentag_hdr(const struct cipso_v4_doi *doi_def,
 {
 	buf[0] = IPOPT_CIPSO;
 	buf[1] = CIPSO_V4_HDR_LEN + len;
-	put_unaligned_be32(doi_def->doi, &buf[2]);
+	*(__be32 *)&buf[2] = htonl(doi_def->doi);
 }
 
 /**
@@ -1526,7 +1535,6 @@ unsigned char *cipso_v4_optptr(const struct sk_buff *skb)
 
 /**
  * cipso_v4_validate - Validate a CIPSO option
- * @skb: the packet
  * @option: the start of the option, on error it is set to point to the error
  *
  * Description:
@@ -2058,7 +2066,7 @@ void cipso_v4_sock_delattr(struct sock *sk)
 
 /**
  * cipso_v4_req_delattr - Delete the CIPSO option from a request socket
- * @req: the request socket
+ * @reg: the request socket
  *
  * Description:
  * Removes the CIPSO option from a request socket, if present.
@@ -2150,7 +2158,6 @@ int cipso_v4_sock_getattr(struct sock *sk, struct netlbl_lsm_secattr *secattr)
 /**
  * cipso_v4_skbuff_setattr - Set the CIPSO option on a packet
  * @skb: the packet
- * @doi_def: the DOI structure
  * @secattr: the security attributes
  *
  * Description:

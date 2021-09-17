@@ -102,7 +102,7 @@ static void info_read(struct snd_info_entry *entry, struct snd_info_buffer *buff
 int snd_sb_csp_new(struct snd_sb *chip, int device, struct snd_hwdep ** rhwdep)
 {
 	struct snd_sb_csp *p;
-	int version;
+	int uninitialized_var(version);
 	int err;
 	struct snd_hwdep *hw;
 
@@ -388,7 +388,7 @@ static int snd_sb_csp_riff_load(struct snd_sb_csp * p,
 				return err;
 
 			/* fill in codec header */
-			strscpy(p->codec_name, info.codec_name, sizeof(p->codec_name));
+			strlcpy(p->codec_name, info.codec_name, sizeof(p->codec_name));
 			p->func_nr = func_nr;
 			p->mode = le16_to_cpu(funcdesc_h.flags_play_rec);
 			switch (le16_to_cpu(funcdesc_h.VOC_type)) {
@@ -1045,14 +1045,10 @@ static int snd_sb_qsound_build(struct snd_sb_csp * p)
 
 	spin_lock_init(&p->q_lock);
 
-	if ((err = snd_ctl_add(card, p->qsound_switch = snd_ctl_new1(&snd_sb_qsound_switch, p))) < 0) {
-		p->qsound_switch = NULL;
+	if ((err = snd_ctl_add(card, p->qsound_switch = snd_ctl_new1(&snd_sb_qsound_switch, p))) < 0)
 		goto __error;
-	}
-	if ((err = snd_ctl_add(card, p->qsound_space = snd_ctl_new1(&snd_sb_qsound_space, p))) < 0) {
-		p->qsound_space = NULL;
+	if ((err = snd_ctl_add(card, p->qsound_space = snd_ctl_new1(&snd_sb_qsound_space, p))) < 0)
 		goto __error;
-	}
 
 	return 0;
 

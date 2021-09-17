@@ -131,17 +131,17 @@ static struct drm_info_list cursor_debugfs_files[] = {
 	{ "cursor", cursor_dbg_show, 0, NULL },
 };
 
-static void cursor_debugfs_init(struct sti_cursor *cursor,
-				struct drm_minor *minor)
+static int cursor_debugfs_init(struct sti_cursor *cursor,
+			       struct drm_minor *minor)
 {
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(cursor_debugfs_files); i++)
 		cursor_debugfs_files[i].data = cursor;
 
-	drm_debugfs_create_files(cursor_debugfs_files,
-				 ARRAY_SIZE(cursor_debugfs_files),
-				 minor->debugfs_root, minor);
+	return drm_debugfs_create_files(cursor_debugfs_files,
+					ARRAY_SIZE(cursor_debugfs_files),
+					minor->debugfs_root, minor);
 }
 
 static void sti_cursor_argb8888_to_clut8(struct sti_cursor *cursor, u32 *src)
@@ -330,20 +330,25 @@ static const struct drm_plane_helper_funcs sti_cursor_helpers_funcs = {
 	.atomic_disable = sti_cursor_atomic_disable,
 };
 
+static void sti_cursor_destroy(struct drm_plane *drm_plane)
+{
+	DRM_DEBUG_DRIVER("\n");
+
+	drm_plane_cleanup(drm_plane);
+}
+
 static int sti_cursor_late_register(struct drm_plane *drm_plane)
 {
 	struct sti_plane *plane = to_sti_plane(drm_plane);
 	struct sti_cursor *cursor = to_sti_cursor(plane);
 
-	cursor_debugfs_init(cursor, drm_plane->dev->primary);
-
-	return 0;
+	return cursor_debugfs_init(cursor, drm_plane->dev->primary);
 }
 
 static const struct drm_plane_funcs sti_cursor_plane_helpers_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
-	.destroy = drm_plane_cleanup,
+	.destroy = sti_cursor_destroy,
 	.reset = sti_plane_reset,
 	.atomic_duplicate_state = drm_atomic_helper_plane_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_plane_destroy_state,

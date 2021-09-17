@@ -733,7 +733,7 @@ static int i2s_hw_params(struct snd_pcm_substream *substream,
 	switch (params_channels(params)) {
 	case 6:
 		val |= MOD_DC2_EN;
-		fallthrough;
+		/* Fall through */
 	case 4:
 		val |= MOD_DC1_EN;
 		break;
@@ -931,8 +931,8 @@ static int i2s_trigger(struct snd_pcm_substream *substream,
 {
 	struct samsung_i2s_priv *priv = snd_soc_dai_get_drvdata(dai);
 	int capture = (substream->stream == SNDRV_PCM_STREAM_CAPTURE);
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
-	struct i2s_dai *i2s = to_info(asoc_rtd_to_cpu(rtd, 0));
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct i2s_dai *i2s = to_info(rtd->cpu_dai);
 	unsigned long flags;
 
 	switch (cmd) {
@@ -1175,7 +1175,7 @@ static int i2s_alloc_dais(struct samsung_i2s_priv *priv,
 		dai_drv->probe = samsung_i2s_dai_probe;
 		dai_drv->remove = samsung_i2s_dai_remove;
 
-		dai_drv->symmetric_rate = 1;
+		dai_drv->symmetric_rates = 1;
 		dai_drv->ops = &samsung_i2s_dai_ops;
 
 		dai_drv->playback.channels_min = 1;
@@ -1212,7 +1212,8 @@ static int i2s_runtime_suspend(struct device *dev)
 	priv->suspend_i2scon = readl(priv->addr + I2SCON);
 	priv->suspend_i2spsr = readl(priv->addr + I2SPSR);
 
-	clk_disable_unprepare(priv->op_clk);
+	if (priv->op_clk)
+		clk_disable_unprepare(priv->op_clk);
 	clk_disable_unprepare(priv->clk);
 
 	return 0;
@@ -1621,28 +1622,28 @@ static const struct samsung_i2s_dai_data i2sv3_dai_type = {
 	.i2s_variant_regs = &i2sv3_regs,
 };
 
-static const struct samsung_i2s_dai_data i2sv5_dai_type __maybe_unused = {
+static const struct samsung_i2s_dai_data i2sv5_dai_type = {
 	.quirks = QUIRK_PRI_6CHAN | QUIRK_SEC_DAI | QUIRK_NEED_RSTCLR |
 			QUIRK_SUPPORTS_IDMA,
 	.pcm_rates = SNDRV_PCM_RATE_8000_96000,
 	.i2s_variant_regs = &i2sv3_regs,
 };
 
-static const struct samsung_i2s_dai_data i2sv6_dai_type __maybe_unused = {
+static const struct samsung_i2s_dai_data i2sv6_dai_type = {
 	.quirks = QUIRK_PRI_6CHAN | QUIRK_SEC_DAI | QUIRK_NEED_RSTCLR |
 			QUIRK_SUPPORTS_TDM | QUIRK_SUPPORTS_IDMA,
 	.pcm_rates = SNDRV_PCM_RATE_8000_96000,
 	.i2s_variant_regs = &i2sv6_regs,
 };
 
-static const struct samsung_i2s_dai_data i2sv7_dai_type __maybe_unused = {
+static const struct samsung_i2s_dai_data i2sv7_dai_type = {
 	.quirks = QUIRK_PRI_6CHAN | QUIRK_SEC_DAI | QUIRK_NEED_RSTCLR |
 			QUIRK_SUPPORTS_TDM,
 	.pcm_rates = SNDRV_PCM_RATE_8000_192000,
 	.i2s_variant_regs = &i2sv7_regs,
 };
 
-static const struct samsung_i2s_dai_data i2sv5_dai_type_i2s1 __maybe_unused = {
+static const struct samsung_i2s_dai_data i2sv5_dai_type_i2s1 = {
 	.quirks = QUIRK_PRI_6CHAN | QUIRK_NEED_RSTCLR,
 	.pcm_rates = SNDRV_PCM_RATE_8000_96000,
 	.i2s_variant_regs = &i2sv5_i2s1_regs,

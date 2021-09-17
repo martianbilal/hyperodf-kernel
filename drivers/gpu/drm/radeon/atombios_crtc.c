@@ -1787,6 +1787,7 @@ static int radeon_get_shared_dp_ppll(struct drm_crtc *crtc)
  * radeon_get_shared_nondp_ppll - return the PPLL used by another non-DP crtc
  *
  * @crtc: drm crtc
+ * @encoder: drm encoder
  *
  * Returns the PPLL (Pixel PLL) used by another non-DP crtc/encoder which can
  * be shared (i.e., same clock).
@@ -2230,7 +2231,6 @@ static const struct drm_crtc_helper_funcs atombios_helper_funcs = {
 	.prepare = atombios_crtc_prepare,
 	.commit = atombios_crtc_commit,
 	.disable = atombios_crtc_disable,
-	.get_scanout_position = radeon_get_crtc_scanout_position,
 };
 
 void radeon_atombios_init_crtc(struct drm_device *dev,

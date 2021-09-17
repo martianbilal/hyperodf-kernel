@@ -282,12 +282,16 @@ out:
 	return err;
 }
 
-static blk_qc_t brd_submit_bio(struct bio *bio)
+static blk_qc_t brd_make_request(struct request_queue *q, struct bio *bio)
 {
-	struct brd_device *brd = bio->bi_bdev->bd_disk->private_data;
-	sector_t sector = bio->bi_iter.bi_sector;
+	struct brd_device *brd = bio->bi_disk->private_data;
 	struct bio_vec bvec;
+	sector_t sector;
 	struct bvec_iter iter;
+
+	sector = bio->bi_iter.bi_sector;
+	if (bio_end_sector(bio) > get_capacity(bio->bi_disk))
+		goto io_error;
 
 	bio_for_each_segment(bvec, bio, iter) {
 		unsigned int len = bvec.bv_len;
@@ -326,7 +330,6 @@ static int brd_rw_page(struct block_device *bdev, sector_t sector,
 
 static const struct block_device_operations brd_fops = {
 	.owner =		THIS_MODULE,
-	.submit_bio =		brd_submit_bio,
 	.rw_page =		brd_rw_page,
 };
 
@@ -378,9 +381,11 @@ static struct brd_device *brd_alloc(int i)
 	spin_lock_init(&brd->brd_lock);
 	INIT_RADIX_TREE(&brd->brd_pages, GFP_ATOMIC);
 
-	brd->brd_queue = blk_alloc_queue(NUMA_NO_NODE);
+	brd->brd_queue = blk_alloc_queue(GFP_KERNEL);
 	if (!brd->brd_queue)
 		goto out_free_dev;
+
+	blk_queue_make_request(brd->brd_queue, brd_make_request);
 
 	/* This is so fdisk will align partitions on 4k, because of
 	 * direct_access API needing 4k alignment, returning a PFN
@@ -399,6 +404,7 @@ static struct brd_device *brd_alloc(int i)
 	disk->flags		= GENHD_FL_EXT_DEVT;
 	sprintf(disk->disk_name, "ram%d", i);
 	set_capacity(disk, rd_size * 2);
+	brd->brd_queue->backing_dev_info->capabilities |= BDI_CAP_SYNCHRONOUS_IO;
 
 	/* Tell the block layer that this is not a rotational device */
 	blk_queue_flag_set(QUEUE_FLAG_NONROT, brd->brd_queue);
@@ -422,15 +428,14 @@ static void brd_free(struct brd_device *brd)
 	kfree(brd);
 }
 
-static void brd_probe(dev_t dev)
+static struct brd_device *brd_init_one(int i, bool *new)
 {
 	struct brd_device *brd;
-	int i = MINOR(dev) / max_part;
 
-	mutex_lock(&brd_devices_mutex);
+	*new = false;
 	list_for_each_entry(brd, &brd_devices, brd_list) {
 		if (brd->brd_number == i)
-			goto out_unlock;
+			goto out;
 	}
 
 	brd = brd_alloc(i);
@@ -439,9 +444,9 @@ static void brd_probe(dev_t dev)
 		add_disk(brd->brd_disk);
 		list_add_tail(&brd->brd_list, &brd_devices);
 	}
-
-out_unlock:
-	mutex_unlock(&brd_devices_mutex);
+	*new = true;
+out:
+	return brd;
 }
 
 static void brd_del_one(struct brd_device *brd)
@@ -449,6 +454,23 @@ static void brd_del_one(struct brd_device *brd)
 	list_del(&brd->brd_list);
 	del_gendisk(brd->brd_disk);
 	brd_free(brd);
+}
+
+static struct kobject *brd_probe(dev_t dev, int *part, void *data)
+{
+	struct brd_device *brd;
+	struct kobject *kobj;
+	bool new;
+
+	mutex_lock(&brd_devices_mutex);
+	brd = brd_init_one(MINOR(dev) / max_part, &new);
+	kobj = brd ? get_disk_and_module(brd->brd_disk) : NULL;
+	mutex_unlock(&brd_devices_mutex);
+
+	if (new)
+		*part = 0;
+
+	return kobj;
 }
 
 static inline void brd_check_and_reset_par(void)
@@ -490,12 +512,11 @@ static int __init brd_init(void)
 	 *	dynamically.
 	 */
 
-	if (__register_blkdev(RAMDISK_MAJOR, "ramdisk", brd_probe))
+	if (register_blkdev(RAMDISK_MAJOR, "ramdisk"))
 		return -EIO;
 
 	brd_check_and_reset_par();
 
-	mutex_lock(&brd_devices_mutex);
 	for (i = 0; i < rd_nr; i++) {
 		brd = brd_alloc(i);
 		if (!brd)
@@ -513,7 +534,9 @@ static int __init brd_init(void)
 		brd->brd_disk->queue = brd->brd_queue;
 		add_disk(brd->brd_disk);
 	}
-	mutex_unlock(&brd_devices_mutex);
+
+	blk_register_region(MKDEV(RAMDISK_MAJOR, 0), 1UL << MINORBITS,
+				  THIS_MODULE, brd_probe, NULL, NULL);
 
 	pr_info("brd: module loaded\n");
 	return 0;
@@ -523,7 +546,6 @@ out_free:
 		list_del(&brd->brd_list);
 		brd_free(brd);
 	}
-	mutex_unlock(&brd_devices_mutex);
 	unregister_blkdev(RAMDISK_MAJOR, "ramdisk");
 
 	pr_info("brd: module NOT loaded !!!\n");
@@ -537,6 +559,7 @@ static void __exit brd_exit(void)
 	list_for_each_entry_safe(brd, next, &brd_devices, brd_list)
 		brd_del_one(brd);
 
+	blk_unregister_region(MKDEV(RAMDISK_MAJOR, 0), 1UL << MINORBITS);
 	unregister_blkdev(RAMDISK_MAJOR, "ramdisk");
 
 	pr_info("brd: module unloaded\n");

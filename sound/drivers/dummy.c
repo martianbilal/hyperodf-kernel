@@ -25,6 +25,7 @@
 MODULE_AUTHOR("Jaroslav Kysela <perex@perex.cz>");
 MODULE_DESCRIPTION("Dummy soundcard (/dev/null)");
 MODULE_LICENSE("GPL");
+MODULE_SUPPORTED_DEVICE("{{ALSA,Dummy soundcard}}");
 
 #define MAX_PCM_DEVICES		4
 #define MAX_PCM_SUBSTREAMS	128
@@ -235,7 +236,7 @@ struct dummy_systimer_pcm {
 static void dummy_systimer_rearm(struct dummy_systimer_pcm *dpcm)
 {
 	mod_timer(&dpcm->timer, jiffies +
-		DIV_ROUND_UP(dpcm->frac_period_rest, dpcm->rate));
+		(dpcm->frac_period_rest + dpcm->rate - 1) / dpcm->rate);
 }
 
 static void dummy_systimer_update(struct dummy_systimer_pcm *dpcm)
@@ -900,10 +901,10 @@ static int snd_card_dummy_new_mixer(struct snd_dummy *dummy)
 static void print_formats(struct snd_dummy *dummy,
 			  struct snd_info_buffer *buffer)
 {
-	snd_pcm_format_t i;
+	int i;
 
-	pcm_for_each_format(i) {
-		if (dummy->pcm_hw.formats & pcm_format_to_bits(i))
+	for (i = 0; i <= SNDRV_PCM_FORMAT_LAST; i++) {
+		if (dummy->pcm_hw.formats & (1ULL << i))
 			snd_iprintf(buffer, " %s", snd_pcm_format_name(i));
 	}
 }

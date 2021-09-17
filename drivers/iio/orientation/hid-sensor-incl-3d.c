@@ -15,6 +15,8 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/buffer.h>
+#include <linux/iio/trigger_consumer.h>
+#include <linux/iio/triggered_buffer.h>
 #include "../common/hid-sensors/hid-sensor-trigger.h"
 
 enum incl_3d_channel {
@@ -24,21 +26,15 @@ enum incl_3d_channel {
 	INCLI_3D_CHANNEL_MAX,
 };
 
-#define CHANNEL_SCAN_INDEX_TIMESTAMP INCLI_3D_CHANNEL_MAX
-
 struct incl_3d_state {
 	struct hid_sensor_hub_callbacks callbacks;
 	struct hid_sensor_common common_attributes;
 	struct hid_sensor_hub_attribute_info incl[INCLI_3D_CHANNEL_MAX];
-	struct {
-		u32 incl_val[INCLI_3D_CHANNEL_MAX];
-		u64 timestamp __aligned(8);
-	} scan;
+	u32 incl_val[INCLI_3D_CHANNEL_MAX];
 	int scale_pre_decml;
 	int scale_post_decml;
 	int scale_precision;
 	int value_offset;
-	s64 timestamp;
 };
 
 static const u32 incl_3d_addresses[INCLI_3D_CHANNEL_MAX] = {
@@ -79,8 +75,7 @@ static const struct iio_chan_spec incl_3d_channels[] = {
 		BIT(IIO_CHAN_INFO_SAMP_FREQ) |
 		BIT(IIO_CHAN_INFO_HYSTERESIS),
 		.scan_index = CHANNEL_SCAN_INDEX_Z,
-	},
-	IIO_CHAN_SOFT_TIMESTAMP(CHANNEL_SCAN_INDEX_TIMESTAMP),
+	}
 };
 
 /* Adjust channel real bits based on report descriptor */
@@ -185,6 +180,13 @@ static const struct iio_info incl_3d_info = {
 	.write_raw = &incl_3d_write_raw,
 };
 
+/* Function to push data to buffer */
+static void hid_sensor_push_data(struct iio_dev *indio_dev, u8 *data, int len)
+{
+	dev_dbg(&indio_dev->dev, "hid_sensor_push_data\n");
+	iio_push_to_buffers(indio_dev, (u8 *)data);
+}
+
 /* Callback handler to send event after all samples are received and captured */
 static int incl_3d_proc_event(struct hid_sensor_hub_device *hsdev,
 				unsigned usage_id,
@@ -194,16 +196,10 @@ static int incl_3d_proc_event(struct hid_sensor_hub_device *hsdev,
 	struct incl_3d_state *incl_state = iio_priv(indio_dev);
 
 	dev_dbg(&indio_dev->dev, "incl_3d_proc_event\n");
-	if (atomic_read(&incl_state->common_attributes.data_ready)) {
-		if (!incl_state->timestamp)
-			incl_state->timestamp = iio_get_time_ns(indio_dev);
-
-		iio_push_to_buffers_with_timestamp(indio_dev,
-						   &incl_state->scan,
-						   incl_state->timestamp);
-
-		incl_state->timestamp = 0;
-	}
+	if (atomic_read(&incl_state->common_attributes.data_ready))
+		hid_sensor_push_data(indio_dev,
+				(u8 *)incl_state->incl_val,
+				sizeof(incl_state->incl_val));
 
 	return 0;
 }
@@ -220,18 +216,13 @@ static int incl_3d_capture_sample(struct hid_sensor_hub_device *hsdev,
 
 	switch (usage_id) {
 	case HID_USAGE_SENSOR_ORIENT_TILT_X:
-		incl_state->scan.incl_val[CHANNEL_SCAN_INDEX_X] = *(u32 *)raw_data;
+		incl_state->incl_val[CHANNEL_SCAN_INDEX_X] = *(u32 *)raw_data;
 	break;
 	case HID_USAGE_SENSOR_ORIENT_TILT_Y:
-		incl_state->scan.incl_val[CHANNEL_SCAN_INDEX_Y] = *(u32 *)raw_data;
+		incl_state->incl_val[CHANNEL_SCAN_INDEX_Y] = *(u32 *)raw_data;
 	break;
 	case HID_USAGE_SENSOR_ORIENT_TILT_Z:
-		incl_state->scan.incl_val[CHANNEL_SCAN_INDEX_Z] = *(u32 *)raw_data;
-	break;
-	case HID_USAGE_SENSOR_TIME_TIMESTAMP:
-		incl_state->timestamp =
-			hid_sensor_convert_timestamp(&incl_state->common_attributes,
-						     *(s64 *)raw_data);
+		incl_state->incl_val[CHANNEL_SCAN_INDEX_Z] = *(u32 *)raw_data;
 	break;
 	default:
 		ret = -EINVAL;
@@ -350,17 +341,23 @@ static int hid_incl_3d_probe(struct platform_device *pdev)
 	}
 
 	indio_dev->num_channels = ARRAY_SIZE(incl_3d_channels);
+	indio_dev->dev.parent = &pdev->dev;
 	indio_dev->info = &incl_3d_info;
 	indio_dev->name = name;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
+	ret = iio_triggered_buffer_setup(indio_dev, &iio_pollfunc_store_time,
+		NULL, NULL);
+	if (ret) {
+		dev_err(&pdev->dev, "failed to initialize trigger buffer\n");
+		goto error_free_dev_mem;
+	}
 	atomic_set(&incl_state->common_attributes.data_ready, 0);
-
 	ret = hid_sensor_setup_trigger(indio_dev, name,
 					&incl_state->common_attributes);
 	if (ret) {
 		dev_err(&pdev->dev, "trigger setup failed\n");
-		goto error_free_dev_mem;
+		goto error_unreg_buffer_funcs;
 	}
 
 	ret = iio_device_register(indio_dev);
@@ -385,7 +382,9 @@ static int hid_incl_3d_probe(struct platform_device *pdev)
 error_iio_unreg:
 	iio_device_unregister(indio_dev);
 error_remove_trigger:
-	hid_sensor_remove_trigger(indio_dev, &incl_state->common_attributes);
+	hid_sensor_remove_trigger(&incl_state->common_attributes);
+error_unreg_buffer_funcs:
+	iio_triggered_buffer_cleanup(indio_dev);
 error_free_dev_mem:
 	kfree(indio_dev->channels);
 	return ret;
@@ -400,7 +399,8 @@ static int hid_incl_3d_remove(struct platform_device *pdev)
 
 	sensor_hub_remove_callback(hsdev, HID_USAGE_SENSOR_INCLINOMETER_3D);
 	iio_device_unregister(indio_dev);
-	hid_sensor_remove_trigger(indio_dev, &incl_state->common_attributes);
+	hid_sensor_remove_trigger(&incl_state->common_attributes);
+	iio_triggered_buffer_cleanup(indio_dev);
 	kfree(indio_dev->channels);
 
 	return 0;

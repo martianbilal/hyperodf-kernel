@@ -343,10 +343,9 @@ static int gdp_debugfs_init(struct sti_gdp *gdp, struct drm_minor *minor)
 	for (i = 0; i < nb_files; i++)
 		gdp_debugfs_files[i].data = gdp;
 
-	drm_debugfs_create_files(gdp_debugfs_files,
-				 nb_files,
-				 minor->debugfs_root, minor);
-	return 0;
+	return drm_debugfs_create_files(gdp_debugfs_files,
+					nb_files,
+					minor->debugfs_root, minor);
 }
 
 static int sti_gdp_fourcc2format(int fourcc)
@@ -884,6 +883,13 @@ static const struct drm_plane_helper_funcs sti_gdp_helpers_funcs = {
 	.atomic_disable = sti_gdp_atomic_disable,
 };
 
+static void sti_gdp_destroy(struct drm_plane *drm_plane)
+{
+	DRM_DEBUG_DRIVER("\n");
+
+	drm_plane_cleanup(drm_plane);
+}
+
 static int sti_gdp_late_register(struct drm_plane *drm_plane)
 {
 	struct sti_plane *plane = to_sti_plane(drm_plane);
@@ -895,7 +901,7 @@ static int sti_gdp_late_register(struct drm_plane *drm_plane)
 static const struct drm_plane_funcs sti_gdp_plane_helpers_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
-	.destroy = drm_plane_cleanup,
+	.destroy = sti_gdp_destroy,
 	.reset = sti_plane_reset,
 	.atomic_duplicate_state = drm_atomic_helper_plane_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_plane_destroy_state,

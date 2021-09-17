@@ -74,7 +74,7 @@ struct bam_async_desc {
 	struct list_head desc_node;
 	enum dma_transfer_direction dir;
 	size_t length;
-	struct bam_desc_hw desc[];
+	struct bam_desc_hw desc[0];
 };
 
 enum bam_reg {
@@ -381,6 +381,7 @@ struct bam_device {
 	void __iomem *regs;
 	struct device *dev;
 	struct dma_device common;
+	struct device_dma_parameters dma_parms;
 	struct bam_chan *channels;
 	u32 num_channels;
 	u32 num_ees;
@@ -630,7 +631,7 @@ static struct dma_async_tx_descriptor *bam_prep_slave_sg(struct dma_chan *chan,
 			     GFP_NOWAIT);
 
 	if (!async_desc)
-		return NULL;
+		goto err_out;
 
 	if (flags & DMA_PREP_FENCE)
 		async_desc->flags |= DESC_FLAG_NWD;
@@ -670,6 +671,10 @@ static struct dma_async_tx_descriptor *bam_prep_slave_sg(struct dma_chan *chan,
 	}
 
 	return vchan_tx_prep(&bchan->vc, &async_desc->vd, flags);
+
+err_out:
+	kfree(async_desc);
+	return NULL;
 }
 
 /**
@@ -871,7 +876,7 @@ static irqreturn_t bam_dma_irq(int irq, void *data)
 
 	ret = bam_pm_runtime_get_sync(bdev->dev);
 	if (ret < 0)
-		return IRQ_NONE;
+		return ret;
 
 	if (srcs & BAM_IRQ) {
 		clr_mask = readl_relaxed(bam_addr(bdev, 0, BAM_IRQ_STTS));
@@ -1066,13 +1071,13 @@ static void bam_start_dma(struct bam_chan *bchan)
 
 /**
  * dma_tasklet - DMA IRQ tasklet
- * @t: tasklet argument (bam controller structure)
+ * @data: tasklet argument (bam controller structure)
  *
  * Sets up next DMA operation and then processes all completed transactions
  */
-static void dma_tasklet(struct tasklet_struct *t)
+static void dma_tasklet(unsigned long data)
 {
-	struct bam_device *bdev = from_tasklet(bdev, t, task);
+	struct bam_device *bdev = (struct bam_device *)data;
 	struct bam_chan *bchan;
 	unsigned long flags;
 	unsigned int i;
@@ -1270,13 +1275,13 @@ static int bam_dma_probe(struct platform_device *pdev)
 			dev_err(bdev->dev, "num-ees unspecified in dt\n");
 	}
 
-	if (bdev->controlled_remotely)
-		bdev->bamclk = devm_clk_get_optional(bdev->dev, "bam_clk");
-	else
-		bdev->bamclk = devm_clk_get(bdev->dev, "bam_clk");
+	bdev->bamclk = devm_clk_get(bdev->dev, "bam_clk");
+	if (IS_ERR(bdev->bamclk)) {
+		if (!bdev->controlled_remotely)
+			return PTR_ERR(bdev->bamclk);
 
-	if (IS_ERR(bdev->bamclk))
-		return PTR_ERR(bdev->bamclk);
+		bdev->bamclk = NULL;
+	}
 
 	ret = clk_prepare_enable(bdev->bamclk);
 	if (ret) {
@@ -1288,7 +1293,7 @@ static int bam_dma_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_disable_clk;
 
-	tasklet_setup(&bdev->task, dma_tasklet);
+	tasklet_init(&bdev->task, dma_tasklet, (unsigned long)bdev);
 
 	bdev->channels = devm_kcalloc(bdev->dev, bdev->num_channels,
 				sizeof(*bdev->channels), GFP_KERNEL);
@@ -1311,6 +1316,7 @@ static int bam_dma_probe(struct platform_device *pdev)
 
 	/* set max dma segment size */
 	bdev->common.dev = bdev->dev;
+	bdev->common.dev->dma_parms = &bdev->dma_parms;
 	ret = dma_set_max_seg_size(bdev->common.dev, BAM_FIFO_SIZE);
 	if (ret) {
 		dev_err(bdev->dev, "cannot set maximum segment size\n");
@@ -1350,7 +1356,7 @@ static int bam_dma_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_unregister_dma;
 
-	if (!bdev->bamclk) {
+	if (bdev->controlled_remotely) {
 		pm_runtime_disable(&pdev->dev);
 		return 0;
 	}
@@ -1438,10 +1444,10 @@ static int __maybe_unused bam_dma_suspend(struct device *dev)
 {
 	struct bam_device *bdev = dev_get_drvdata(dev);
 
-	if (bdev->bamclk) {
+	if (!bdev->controlled_remotely)
 		pm_runtime_force_suspend(dev);
-		clk_unprepare(bdev->bamclk);
-	}
+
+	clk_unprepare(bdev->bamclk);
 
 	return 0;
 }
@@ -1451,13 +1457,12 @@ static int __maybe_unused bam_dma_resume(struct device *dev)
 	struct bam_device *bdev = dev_get_drvdata(dev);
 	int ret;
 
-	if (bdev->bamclk) {
-		ret = clk_prepare(bdev->bamclk);
-		if (ret)
-			return ret;
+	ret = clk_prepare(bdev->bamclk);
+	if (ret)
+		return ret;
 
+	if (!bdev->controlled_remotely)
 		pm_runtime_force_resume(dev);
-	}
 
 	return 0;
 }

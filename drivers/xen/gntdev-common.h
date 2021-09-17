@@ -15,7 +15,6 @@
 #include <linux/mman.h>
 #include <linux/mmu_notifier.h>
 #include <linux/types.h>
-#include <xen/interface/event_channel.h>
 
 struct gntdev_dmabuf_priv;
 
@@ -39,7 +38,7 @@ struct gntdev_unmap_notify {
 	int flags;
 	/* Address relative to the start of the gntdev_grant_map. */
 	int addr;
-	evtchn_port_t event;
+	int event;
 };
 
 struct gntdev_grant_map {

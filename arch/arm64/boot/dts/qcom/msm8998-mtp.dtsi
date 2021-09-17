@@ -95,22 +95,10 @@
 };
 
 &funnel4 {
-	// FIXME: Figure out why clock late_initcall crashes the board with
-	// this enabled.
-	// status = "okay";
-};
-
-&funnel5 {
-	// FIXME: Figure out why clock late_initcall crashes the board with
-	// this enabled.
-	// status = "okay";
-};
-
-&pcie0 {
 	status = "okay";
 };
 
-&pcie_phy {
+&funnel5 {
 	status = "okay";
 };
 
@@ -243,7 +231,7 @@
 			regulator-min-microvolt = <1880000>;
 			regulator-max-microvolt = <1880000>;
 		};
-		vreg_l15a_1p8: l15 {
+		vreg_15a_1p8: l15 {
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
 		};
@@ -353,7 +341,6 @@
 };
 
 &ufshc {
-	status = "okay";
 	vcc-supply = <&vreg_l20a_2p95>;
 	vccq-supply = <&vreg_l26a_1p2>;
 	vccq2-supply = <&vreg_s4a_1p8>;
@@ -363,7 +350,6 @@
 };
 
 &ufsphy {
-	status = "okay";
 	vdda-phy-supply = <&vreg_l1a_0p875>;
 	vdda-pll-supply = <&vreg_l2a_1p2>;
 	vddp-ref-clk-supply = <&vreg_l26a_1p2>;

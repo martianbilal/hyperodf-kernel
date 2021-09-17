@@ -247,7 +247,7 @@ static inline void memcpy_swab32(u32 *dest, u32 *src, int cnt)
 }
 #endif
 
-static DEFINE_SPINLOCK(mdio_lock);
+static spinlock_t mdio_lock;
 static struct eth_regs __iomem *mdio_regs; /* mdio command and status only */
 static struct mii_bus *mdio_bus;
 static int ports_open;
@@ -528,6 +528,7 @@ static int ixp4xx_mdio_register(struct eth_regs __iomem *regs)
 
 	mdio_regs = regs;
 	__raw_writel(DEFAULT_CORE_CNTRL, &mdio_regs->core_control);
+	spin_lock_init(&mdio_lock);
 	mdio_bus->name = "IXP4xx MII Bus";
 	mdio_bus->read = &ixp4xx_mdio_read;
 	mdio_bus->write = &ixp4xx_mdio_write;
@@ -1085,7 +1086,7 @@ static int init_queues(struct port *port)
 	int i;
 
 	if (!ports_open) {
-		dma_pool = dma_pool_create(DRV_NAME, &port->netdev->dev,
+		dma_pool = dma_pool_create(DRV_NAME, port->netdev->dev.parent,
 					   POOL_ALLOC_SIZE, 32, 0);
 		if (!dma_pool)
 			return -ENOMEM;
@@ -1435,9 +1436,6 @@ static int ixp4xx_eth_probe(struct platform_device *pdev)
 	ndev->netdev_ops = &ixp4xx_netdev_ops;
 	ndev->ethtool_ops = &ixp4xx_ethtool_ops;
 	ndev->tx_queue_len = 100;
-	/* Inherit the DMA masks from the platform device */
-	ndev->dev.dma_mask = dev->dma_mask;
-	ndev->dev.coherent_dma_mask = dev->coherent_dma_mask;
 
 	netif_napi_add(ndev, &port->napi, eth_poll, NAPI_WEIGHT);
 

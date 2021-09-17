@@ -40,13 +40,10 @@ struct dce_hwseq_wa {
 	bool false_optc_underflow;
 	bool DEGVIDCN10_254;
 	bool DEGVIDCN21;
-	bool disallow_self_refresh_during_multi_plane_transition;
 };
 
 struct hwseq_wa_state {
 	bool DEGVIDCN10_253_applied;
-	bool disallow_self_refresh_during_multi_plane_transition_applied;
-	unsigned int disallow_self_refresh_during_multi_plane_transition_applied_on_frame;
 };
 
 struct pipe_ctx;
@@ -143,8 +140,6 @@ struct hwseq_private_funcs {
 			const struct dc_plane_state *plane_state);
 	bool (*set_shaper_3dlut)(struct pipe_ctx *pipe_ctx,
 			const struct dc_plane_state *plane_state);
-	void (*PLAT_58856_wa)(struct dc_state *context,
-			struct pipe_ctx *pipe_ctx);
 };
 
 struct dce_hwseq {

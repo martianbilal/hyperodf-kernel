@@ -15,13 +15,9 @@
 #include <linux/pm_runtime.h>
 #include <soc/mediatek/smi.h>
 #include <dt-bindings/memory/mt2701-larb-port.h>
-#include <dt-bindings/memory/mtk-memory-port.h>
 
 /* mt8173 */
 #define SMI_LARB_MMU_EN		0xf00
-
-/* mt8167 */
-#define MT8167_SMI_LARB_MMU_EN	0xfc0
 
 /* mt2701 */
 #define REG_SMI_SECUR_CON_BASE		0x5c0
@@ -44,10 +40,6 @@
 /* mt2712 */
 #define SMI_LARB_NONSEC_CON(id)	(0x380 + ((id) * 4))
 #define F_MMU_EN		BIT(0)
-#define BANK_SEL(id)		({			\
-	u32 _id = (id) & 0x3;				\
-	(_id << 8 | _id << 10 | _id << 12 | _id << 14);	\
-})
 
 /* SMI COMMON */
 #define SMI_BUS_SEL			0x220
@@ -68,7 +60,7 @@ struct mtk_smi_common_plat {
 
 struct mtk_smi_larb_gen {
 	int port_in_larb[MTK_LARB_NR_MAX + 1];
-	void (*config_port)(struct device *dev);
+	void (*config_port)(struct device *);
 	unsigned int			larb_direct_to_common_mask;
 	bool				has_gals;
 };
@@ -92,7 +84,6 @@ struct mtk_smi_larb { /* larb: local arbiter */
 	const struct mtk_smi_larb_gen	*larb_gen;
 	int				larbid;
 	u32				*mmu;
-	unsigned char			*bank;
 };
 
 static int mtk_smi_clk_enable(const struct mtk_smi *smi)
@@ -136,7 +127,7 @@ static void mtk_smi_clk_disable(const struct mtk_smi *smi)
 
 int mtk_smi_larb_get(struct device *larbdev)
 {
-	int ret = pm_runtime_resume_and_get(larbdev);
+	int ret = pm_runtime_get_sync(larbdev);
 
 	return (ret < 0) ? ret : 0;
 }
@@ -159,7 +150,6 @@ mtk_smi_larb_bind(struct device *dev, struct device *master, void *data)
 		if (dev == larb_mmu[i].dev) {
 			larb->larbid = i;
 			larb->mmu = &larb_mmu[i].mmu;
-			larb->bank = larb_mmu[i].bank;
 			return 0;
 		}
 	}
@@ -178,7 +168,6 @@ static void mtk_smi_larb_config_port_gen2_general(struct device *dev)
 	for_each_set_bit(i, (unsigned long *)larb->mmu, 32) {
 		reg = readl_relaxed(larb->base + SMI_LARB_NONSEC_CON(i));
 		reg |= F_MMU_EN;
-		reg |= BANK_SEL(larb->bank[i]);
 		writel(reg, larb->base + SMI_LARB_NONSEC_CON(i));
 	}
 }
@@ -188,13 +177,6 @@ static void mtk_smi_larb_config_port_mt8173(struct device *dev)
 	struct mtk_smi_larb *larb = dev_get_drvdata(dev);
 
 	writel(*larb->mmu, larb->base + SMI_LARB_MMU_EN);
-}
-
-static void mtk_smi_larb_config_port_mt8167(struct device *dev)
-{
-	struct mtk_smi_larb *larb = dev_get_drvdata(dev);
-
-	writel(*larb->mmu, larb->base + MT8167_SMI_LARB_MMU_EN);
 }
 
 static void mtk_smi_larb_config_port_gen1(struct device *dev)
@@ -244,11 +226,6 @@ static const struct mtk_smi_larb_gen mtk_smi_larb_mt8173 = {
 	.config_port = mtk_smi_larb_config_port_mt8173,
 };
 
-static const struct mtk_smi_larb_gen mtk_smi_larb_mt8167 = {
-	/* mt8167 do not need the port in larb */
-	.config_port = mtk_smi_larb_config_port_mt8167,
-};
-
 static const struct mtk_smi_larb_gen mtk_smi_larb_mt2701 = {
 	.port_in_larb = {
 		LARB0_PORT_OFFSET, LARB1_PORT_OFFSET,
@@ -262,13 +239,6 @@ static const struct mtk_smi_larb_gen mtk_smi_larb_mt2712 = {
 	.larb_direct_to_common_mask = BIT(8) | BIT(9),      /* bdpsys */
 };
 
-static const struct mtk_smi_larb_gen mtk_smi_larb_mt6779 = {
-	.config_port  = mtk_smi_larb_config_port_gen2_general,
-	.larb_direct_to_common_mask =
-		BIT(4) | BIT(6) | BIT(11) | BIT(12) | BIT(13),
-		/* DUMMY | IPU0 | IPU1 | CCU | MDLA */
-};
-
 static const struct mtk_smi_larb_gen mtk_smi_larb_mt8183 = {
 	.has_gals                   = true,
 	.config_port                = mtk_smi_larb_config_port_gen2_general,
@@ -276,15 +246,7 @@ static const struct mtk_smi_larb_gen mtk_smi_larb_mt8183 = {
 				      /* IPU0 | IPU1 | CCU */
 };
 
-static const struct mtk_smi_larb_gen mtk_smi_larb_mt8192 = {
-	.config_port                = mtk_smi_larb_config_port_gen2_general,
-};
-
 static const struct of_device_id mtk_smi_larb_of_ids[] = {
-	{
-		.compatible = "mediatek,mt8167-smi-larb",
-		.data = &mtk_smi_larb_mt8167
-	},
 	{
 		.compatible = "mediatek,mt8173-smi-larb",
 		.data = &mtk_smi_larb_mt8173
@@ -298,16 +260,8 @@ static const struct of_device_id mtk_smi_larb_of_ids[] = {
 		.data = &mtk_smi_larb_mt2712
 	},
 	{
-		.compatible = "mediatek,mt6779-smi-larb",
-		.data = &mtk_smi_larb_mt6779
-	},
-	{
 		.compatible = "mediatek,mt8183-smi-larb",
 		.data = &mtk_smi_larb_mt8183
-	},
-	{
-		.compatible = "mediatek,mt8192-smi-larb",
-		.data = &mtk_smi_larb_mt8192
 	},
 	{}
 };
@@ -382,7 +336,7 @@ static int __maybe_unused mtk_smi_larb_resume(struct device *dev)
 	int ret;
 
 	/* Power on smi-common. */
-	ret = pm_runtime_resume_and_get(larb->smi_common_dev);
+	ret = pm_runtime_get_sync(larb->smi_common_dev);
 	if (ret < 0) {
 		dev_err(dev, "Failed to pm get for smi-common(%d).\n", ret);
 		return ret;
@@ -434,13 +388,6 @@ static const struct mtk_smi_common_plat mtk_smi_common_gen2 = {
 	.gen = MTK_SMI_GEN2,
 };
 
-static const struct mtk_smi_common_plat mtk_smi_common_mt6779 = {
-	.gen		= MTK_SMI_GEN2,
-	.has_gals	= true,
-	.bus_sel	= F_MMU1_LARB(1) | F_MMU1_LARB(2) | F_MMU1_LARB(4) |
-			  F_MMU1_LARB(5) | F_MMU1_LARB(6) | F_MMU1_LARB(7),
-};
-
 static const struct mtk_smi_common_plat mtk_smi_common_mt8183 = {
 	.gen      = MTK_SMI_GEN2,
 	.has_gals = true,
@@ -448,20 +395,9 @@ static const struct mtk_smi_common_plat mtk_smi_common_mt8183 = {
 		    F_MMU1_LARB(7),
 };
 
-static const struct mtk_smi_common_plat mtk_smi_common_mt8192 = {
-	.gen      = MTK_SMI_GEN2,
-	.has_gals = true,
-	.bus_sel  = F_MMU1_LARB(1) | F_MMU1_LARB(2) | F_MMU1_LARB(5) |
-		    F_MMU1_LARB(6),
-};
-
 static const struct of_device_id mtk_smi_common_of_ids[] = {
 	{
 		.compatible = "mediatek,mt8173-smi-common",
-		.data = &mtk_smi_common_gen2,
-	},
-	{
-		.compatible = "mediatek,mt8167-smi-common",
 		.data = &mtk_smi_common_gen2,
 	},
 	{
@@ -473,16 +409,8 @@ static const struct of_device_id mtk_smi_common_of_ids[] = {
 		.data = &mtk_smi_common_gen2,
 	},
 	{
-		.compatible = "mediatek,mt6779-smi-common",
-		.data = &mtk_smi_common_mt6779,
-	},
-	{
 		.compatible = "mediatek,mt8183-smi-common",
 		.data = &mtk_smi_common_mt8183,
-	},
-	{
-		.compatible = "mediatek,mt8192-smi-common",
-		.data = &mtk_smi_common_mt8192,
 	},
 	{}
 };
@@ -595,22 +523,26 @@ static struct platform_driver mtk_smi_common_driver = {
 	}
 };
 
-static struct platform_driver * const smidrivers[] = {
-	&mtk_smi_common_driver,
-	&mtk_smi_larb_driver,
-};
-
 static int __init mtk_smi_init(void)
 {
-	return platform_register_drivers(smidrivers, ARRAY_SIZE(smidrivers));
+	int ret;
+
+	ret = platform_driver_register(&mtk_smi_common_driver);
+	if (ret != 0) {
+		pr_err("Failed to register SMI driver\n");
+		return ret;
+	}
+
+	ret = platform_driver_register(&mtk_smi_larb_driver);
+	if (ret != 0) {
+		pr_err("Failed to register SMI-LARB driver\n");
+		goto err_unreg_smi;
+	}
+	return ret;
+
+err_unreg_smi:
+	platform_driver_unregister(&mtk_smi_common_driver);
+	return ret;
 }
+
 module_init(mtk_smi_init);
-
-static void __exit mtk_smi_exit(void)
-{
-	platform_unregister_drivers(smidrivers, ARRAY_SIZE(smidrivers));
-}
-module_exit(mtk_smi_exit);
-
-MODULE_DESCRIPTION("MediaTek SMI driver");
-MODULE_LICENSE("GPL v2");

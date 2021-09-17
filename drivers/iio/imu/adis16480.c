@@ -10,7 +10,6 @@
 #include <linux/of_irq.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
-#include <linux/math.h>
 #include <linux/mutex.h>
 #include <linux/device.h>
 #include <linux/kernel.h>
@@ -18,7 +17,6 @@
 #include <linux/slab.h>
 #include <linux/sysfs.h>
 #include <linux/module.h>
-#include <linux/lcm.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -140,7 +138,7 @@ struct adis16480_chip_info {
 	unsigned int max_dec_rate;
 	const unsigned int *filter_freqs;
 	bool has_pps_clk_mode;
-	const struct adis_data adis_data;
+	const struct adis_timeout *timeouts;
 };
 
 enum adis16480_int_pin {
@@ -171,11 +169,6 @@ static const char * const adis16480_int_pin_names[4] = {
 	[ADIS16480_PIN_DIO3] = "DIO3",
 	[ADIS16480_PIN_DIO4] = "DIO4",
 };
-
-static bool low_rate_allow;
-module_param(low_rate_allow, bool, 0444);
-MODULE_PARM_DESC(low_rate_allow,
-		 "Allow IMU rates below the minimum advisable when external clk is used in PPS mode (default: N)");
 
 #ifdef CONFIG_DEBUG_FS
 
@@ -291,18 +284,22 @@ DEFINE_DEBUGFS_ATTRIBUTE(adis16480_flash_count_fops,
 static int adis16480_debugfs_init(struct iio_dev *indio_dev)
 {
 	struct adis16480 *adis16480 = iio_priv(indio_dev);
-	struct dentry *d = iio_get_debugfs_dentry(indio_dev);
 
 	debugfs_create_file_unsafe("firmware_revision", 0400,
-		d, adis16480, &adis16480_firmware_revision_fops);
+		indio_dev->debugfs_dentry, adis16480,
+		&adis16480_firmware_revision_fops);
 	debugfs_create_file_unsafe("firmware_date", 0400,
-		d, adis16480, &adis16480_firmware_date_fops);
+		indio_dev->debugfs_dentry, adis16480,
+		&adis16480_firmware_date_fops);
 	debugfs_create_file_unsafe("serial_number", 0400,
-		d, adis16480, &adis16480_serial_number_fops);
+		indio_dev->debugfs_dentry, adis16480,
+		&adis16480_serial_number_fops);
 	debugfs_create_file_unsafe("product_id", 0400,
-		d, adis16480, &adis16480_product_id_fops);
+		indio_dev->debugfs_dentry, adis16480,
+		&adis16480_product_id_fops);
 	debugfs_create_file_unsafe("flash_count", 0400,
-		d, adis16480, &adis16480_flash_count_fops);
+		indio_dev->debugfs_dentry, adis16480,
+		&adis16480_flash_count_fops);
 
 	return 0;
 }
@@ -319,8 +316,7 @@ static int adis16480_debugfs_init(struct iio_dev *indio_dev)
 static int adis16480_set_freq(struct iio_dev *indio_dev, int val, int val2)
 {
 	struct adis16480 *st = iio_priv(indio_dev);
-	unsigned int t, sample_rate = st->clk_freq;
-	int ret;
+	unsigned int t, reg;
 
 	if (val < 0 || val2 < 0)
 		return -EINVAL;
@@ -329,65 +325,28 @@ static int adis16480_set_freq(struct iio_dev *indio_dev, int val, int val2)
 	if (t == 0)
 		return -EINVAL;
 
-	mutex_lock(&st->adis.state_lock);
 	/*
-	 * When using PPS mode, the input clock needs to be scaled so that we have an IMU
-	 * sample rate between (optimally) 4000 and 4250. After this, we can use the
-	 * decimation filter to lower the sampling rate in order to get what the user wants.
-	 * Optimally, the user sample rate is a multiple of both the IMU sample rate and
-	 * the input clock. Hence, calculating the sync_scale dynamically gives us better
-	 * chances of achieving a perfect/integer value for DEC_RATE. The math here is:
-	 *	1. lcm of the input clock and the desired output rate.
-	 *	2. get the highest multiple of the previous result lower than the adis max rate.
-	 *	3. The last result becomes the IMU sample rate. Use that to calculate SYNC_SCALE
-	 *	   and DEC_RATE (to get the user output rate)
+	 * When using PPS mode, the rate of data collection is equal to the
+	 * product of the external clock frequency and the scale factor in the
+	 * SYNC_SCALE register.
+	 * When using sync mode, or internal clock, the output data rate is
+	 * equal with  the clock frequency divided by DEC_RATE + 1.
 	 */
 	if (st->clk_mode == ADIS16480_CLK_PPS) {
-		unsigned long scaled_rate = lcm(st->clk_freq, t);
-		int sync_scale;
-
-		/*
-		 * If lcm is bigger than the IMU maximum sampling rate there's no perfect
-		 * solution. In this case, we get the highest multiple of the input clock
-		 * lower than the IMU max sample rate.
-		 */
-		if (scaled_rate > st->chip_info->int_clk)
-			scaled_rate = st->chip_info->int_clk / st->clk_freq * st->clk_freq;
-		else
-			scaled_rate = st->chip_info->int_clk / scaled_rate * scaled_rate;
-
-		/*
-		 * This is not an hard requirement but it's not advised to run the IMU
-		 * with a sample rate lower than 4000Hz due to possible undersampling
-		 * issues. However, there are users that might really want to take the risk.
-		 * Hence, we provide a module parameter for them. If set, we allow sample
-		 * rates lower than 4KHz. By default, we won't allow this and we just roundup
-		 * the rate to the next multiple of the input clock bigger than 4KHz. This
-		 * is done like this as in some cases (when DEC_RATE is 0) might give
-		 * us the closest value to the one desired by the user...
-		 */
-		if (scaled_rate < 4000000 && !low_rate_allow)
-			scaled_rate = roundup(4000000, st->clk_freq);
-
-		sync_scale = scaled_rate / st->clk_freq;
-		ret = __adis_write_reg_16(&st->adis, ADIS16495_REG_SYNC_SCALE, sync_scale);
-		if (ret)
-			goto error;
-
-		sample_rate = scaled_rate;
+		t = t / st->clk_freq;
+		reg = ADIS16495_REG_SYNC_SCALE;
+	} else {
+		t = st->clk_freq / t;
+		reg = ADIS16480_REG_DEC_RATE;
 	}
-
-	t = DIV_ROUND_CLOSEST(sample_rate, t);
-	if (t)
-		t--;
 
 	if (t > st->chip_info->max_dec_rate)
 		t = st->chip_info->max_dec_rate;
 
-	ret = __adis_write_reg_16(&st->adis, ADIS16480_REG_DEC_RATE, t);
-error:
-	mutex_unlock(&st->adis.state_lock);
-	return ret;
+	if ((t != 0) && (st->clk_mode != ADIS16480_CLK_PPS))
+		t--;
+
+	return adis_write_reg_16(&st->adis, reg, t);
 }
 
 static int adis16480_get_freq(struct iio_dev *indio_dev, int *val, int *val2)
@@ -395,35 +354,34 @@ static int adis16480_get_freq(struct iio_dev *indio_dev, int *val, int *val2)
 	struct adis16480 *st = iio_priv(indio_dev);
 	uint16_t t;
 	int ret;
-	unsigned int freq, sample_rate = st->clk_freq;
+	unsigned int freq;
+	unsigned int reg;
 
-	mutex_lock(&st->adis.state_lock);
+	if (st->clk_mode == ADIS16480_CLK_PPS)
+		reg = ADIS16495_REG_SYNC_SCALE;
+	else
+		reg = ADIS16480_REG_DEC_RATE;
 
-	if (st->clk_mode == ADIS16480_CLK_PPS) {
-		u16 sync_scale;
-
-		ret = __adis_read_reg_16(&st->adis, ADIS16495_REG_SYNC_SCALE, &sync_scale);
-		if (ret)
-			goto error;
-
-		sample_rate = st->clk_freq * sync_scale;
-	}
-
-	ret = __adis_read_reg_16(&st->adis, ADIS16480_REG_DEC_RATE, &t);
+	ret = adis_read_reg_16(&st->adis, reg, &t);
 	if (ret)
-		goto error;
+		return ret;
 
-	mutex_unlock(&st->adis.state_lock);
-
-	freq = DIV_ROUND_CLOSEST(sample_rate, (t + 1));
+	/*
+	 * When using PPS mode, the rate of data collection is equal to the
+	 * product of the external clock frequency and the scale factor in the
+	 * SYNC_SCALE register.
+	 * When using sync mode, or internal clock, the output data rate is
+	 * equal with  the clock frequency divided by DEC_RATE + 1.
+	 */
+	if (st->clk_mode == ADIS16480_CLK_PPS)
+		freq = st->clk_freq * t;
+	else
+		freq = st->clk_freq / (t + 1);
 
 	*val = freq / 1000;
 	*val2 = (freq % 1000) * 1000;
 
 	return IIO_VAL_INT_PLUS_MICRO;
-error:
-	mutex_unlock(&st->adis.state_lock);
-	return ret;
 }
 
 enum {
@@ -838,58 +796,6 @@ enum adis16480_variant {
 	ADIS16497_3,
 };
 
-#define ADIS16480_DIAG_STAT_XGYRO_FAIL 0
-#define ADIS16480_DIAG_STAT_YGYRO_FAIL 1
-#define ADIS16480_DIAG_STAT_ZGYRO_FAIL 2
-#define ADIS16480_DIAG_STAT_XACCL_FAIL 3
-#define ADIS16480_DIAG_STAT_YACCL_FAIL 4
-#define ADIS16480_DIAG_STAT_ZACCL_FAIL 5
-#define ADIS16480_DIAG_STAT_XMAGN_FAIL 8
-#define ADIS16480_DIAG_STAT_YMAGN_FAIL 9
-#define ADIS16480_DIAG_STAT_ZMAGN_FAIL 10
-#define ADIS16480_DIAG_STAT_BARO_FAIL 11
-
-static const char * const adis16480_status_error_msgs[] = {
-	[ADIS16480_DIAG_STAT_XGYRO_FAIL] = "X-axis gyroscope self-test failure",
-	[ADIS16480_DIAG_STAT_YGYRO_FAIL] = "Y-axis gyroscope self-test failure",
-	[ADIS16480_DIAG_STAT_ZGYRO_FAIL] = "Z-axis gyroscope self-test failure",
-	[ADIS16480_DIAG_STAT_XACCL_FAIL] = "X-axis accelerometer self-test failure",
-	[ADIS16480_DIAG_STAT_YACCL_FAIL] = "Y-axis accelerometer self-test failure",
-	[ADIS16480_DIAG_STAT_ZACCL_FAIL] = "Z-axis accelerometer self-test failure",
-	[ADIS16480_DIAG_STAT_XMAGN_FAIL] = "X-axis magnetometer self-test failure",
-	[ADIS16480_DIAG_STAT_YMAGN_FAIL] = "Y-axis magnetometer self-test failure",
-	[ADIS16480_DIAG_STAT_ZMAGN_FAIL] = "Z-axis magnetometer self-test failure",
-	[ADIS16480_DIAG_STAT_BARO_FAIL] = "Barometer self-test failure",
-};
-
-static int adis16480_enable_irq(struct adis *adis, bool enable);
-
-#define ADIS16480_DATA(_prod_id, _timeouts)				\
-{									\
-	.diag_stat_reg = ADIS16480_REG_DIAG_STS,			\
-	.glob_cmd_reg = ADIS16480_REG_GLOB_CMD,				\
-	.prod_id_reg = ADIS16480_REG_PROD_ID,				\
-	.prod_id = (_prod_id),						\
-	.has_paging = true,						\
-	.read_delay = 5,						\
-	.write_delay = 5,						\
-	.self_test_mask = BIT(1),					\
-	.self_test_reg = ADIS16480_REG_GLOB_CMD,			\
-	.status_error_msgs = adis16480_status_error_msgs,		\
-	.status_error_mask = BIT(ADIS16480_DIAG_STAT_XGYRO_FAIL) |	\
-		BIT(ADIS16480_DIAG_STAT_YGYRO_FAIL) |			\
-		BIT(ADIS16480_DIAG_STAT_ZGYRO_FAIL) |			\
-		BIT(ADIS16480_DIAG_STAT_XACCL_FAIL) |			\
-		BIT(ADIS16480_DIAG_STAT_YACCL_FAIL) |			\
-		BIT(ADIS16480_DIAG_STAT_ZACCL_FAIL) |			\
-		BIT(ADIS16480_DIAG_STAT_XMAGN_FAIL) |			\
-		BIT(ADIS16480_DIAG_STAT_YMAGN_FAIL) |			\
-		BIT(ADIS16480_DIAG_STAT_ZMAGN_FAIL) |			\
-		BIT(ADIS16480_DIAG_STAT_BARO_FAIL),			\
-	.enable_irq = adis16480_enable_irq,				\
-	.timeouts = (_timeouts),					\
-}
-
 static const struct adis_timeout adis16485_timeouts = {
 	.reset_ms = 560,
 	.sw_reset_ms = 120,
@@ -932,7 +838,7 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.int_clk = 2460000,
 		.max_dec_rate = 2048,
 		.filter_freqs = adis16480_def_filter_freqs,
-		.adis_data = ADIS16480_DATA(16375, &adis16485_timeouts),
+		.timeouts = &adis16485_timeouts,
 	},
 	[ADIS16480] = {
 		.channels = adis16480_channels,
@@ -945,7 +851,7 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.int_clk = 2460000,
 		.max_dec_rate = 2048,
 		.filter_freqs = adis16480_def_filter_freqs,
-		.adis_data = ADIS16480_DATA(16480, &adis16480_timeouts),
+		.timeouts = &adis16480_timeouts,
 	},
 	[ADIS16485] = {
 		.channels = adis16485_channels,
@@ -958,7 +864,7 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.int_clk = 2460000,
 		.max_dec_rate = 2048,
 		.filter_freqs = adis16480_def_filter_freqs,
-		.adis_data = ADIS16480_DATA(16485, &adis16485_timeouts),
+		.timeouts = &adis16485_timeouts,
 	},
 	[ADIS16488] = {
 		.channels = adis16480_channels,
@@ -971,7 +877,7 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.int_clk = 2460000,
 		.max_dec_rate = 2048,
 		.filter_freqs = adis16480_def_filter_freqs,
-		.adis_data = ADIS16480_DATA(16488, &adis16485_timeouts),
+		.timeouts = &adis16485_timeouts,
 	},
 	[ADIS16490] = {
 		.channels = adis16485_channels,
@@ -985,7 +891,7 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.max_dec_rate = 4250,
 		.filter_freqs = adis16495_def_filter_freqs,
 		.has_pps_clk_mode = true,
-		.adis_data = ADIS16480_DATA(16490, &adis16495_timeouts),
+		.timeouts = &adis16495_timeouts,
 	},
 	[ADIS16495_1] = {
 		.channels = adis16485_channels,
@@ -999,7 +905,7 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.max_dec_rate = 4250,
 		.filter_freqs = adis16495_def_filter_freqs,
 		.has_pps_clk_mode = true,
-		.adis_data = ADIS16480_DATA(16495, &adis16495_1_timeouts),
+		.timeouts = &adis16495_1_timeouts,
 	},
 	[ADIS16495_2] = {
 		.channels = adis16485_channels,
@@ -1013,7 +919,7 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.max_dec_rate = 4250,
 		.filter_freqs = adis16495_def_filter_freqs,
 		.has_pps_clk_mode = true,
-		.adis_data = ADIS16480_DATA(16495, &adis16495_1_timeouts),
+		.timeouts = &adis16495_1_timeouts,
 	},
 	[ADIS16495_3] = {
 		.channels = adis16485_channels,
@@ -1027,7 +933,7 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.max_dec_rate = 4250,
 		.filter_freqs = adis16495_def_filter_freqs,
 		.has_pps_clk_mode = true,
-		.adis_data = ADIS16480_DATA(16495, &adis16495_1_timeouts),
+		.timeouts = &adis16495_1_timeouts,
 	},
 	[ADIS16497_1] = {
 		.channels = adis16485_channels,
@@ -1041,7 +947,7 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.max_dec_rate = 4250,
 		.filter_freqs = adis16495_def_filter_freqs,
 		.has_pps_clk_mode = true,
-		.adis_data = ADIS16480_DATA(16497, &adis16495_1_timeouts),
+		.timeouts = &adis16495_1_timeouts,
 	},
 	[ADIS16497_2] = {
 		.channels = adis16485_channels,
@@ -1055,7 +961,7 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.max_dec_rate = 4250,
 		.filter_freqs = adis16495_def_filter_freqs,
 		.has_pps_clk_mode = true,
-		.adis_data = ADIS16480_DATA(16497, &adis16495_1_timeouts),
+		.timeouts = &adis16495_1_timeouts,
 	},
 	[ADIS16497_3] = {
 		.channels = adis16485_channels,
@@ -1069,7 +975,7 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.max_dec_rate = 4250,
 		.filter_freqs = adis16495_def_filter_freqs,
 		.has_pps_clk_mode = true,
-		.adis_data = ADIS16480_DATA(16497, &adis16495_1_timeouts),
+		.timeouts = &adis16495_1_timeouts,
 	},
 };
 
@@ -1107,6 +1013,87 @@ static int adis16480_enable_irq(struct adis *adis, bool enable)
 
 	return __adis_write_reg_16(adis, ADIS16480_REG_FNCTIO_CTRL, val);
 }
+
+static int adis16480_initial_setup(struct iio_dev *indio_dev)
+{
+	struct adis16480 *st = iio_priv(indio_dev);
+	uint16_t prod_id;
+	unsigned int device_id;
+	int ret;
+
+	adis_reset(&st->adis);
+	msleep(70);
+
+	ret = adis_write_reg_16(&st->adis, ADIS16480_REG_GLOB_CMD, BIT(1));
+	if (ret)
+		return ret;
+	msleep(30);
+
+	ret = adis_check_status(&st->adis);
+	if (ret)
+		return ret;
+
+	ret = adis_read_reg_16(&st->adis, ADIS16480_REG_PROD_ID, &prod_id);
+	if (ret)
+		return ret;
+
+	ret = sscanf(indio_dev->name, "adis%u\n", &device_id);
+	if (ret != 1)
+		return -EINVAL;
+
+	if (prod_id != device_id)
+		dev_warn(&indio_dev->dev, "Device ID(%u) and product ID(%u) do not match.",
+				device_id, prod_id);
+
+	return 0;
+}
+
+#define ADIS16480_DIAG_STAT_XGYRO_FAIL 0
+#define ADIS16480_DIAG_STAT_YGYRO_FAIL 1
+#define ADIS16480_DIAG_STAT_ZGYRO_FAIL 2
+#define ADIS16480_DIAG_STAT_XACCL_FAIL 3
+#define ADIS16480_DIAG_STAT_YACCL_FAIL 4
+#define ADIS16480_DIAG_STAT_ZACCL_FAIL 5
+#define ADIS16480_DIAG_STAT_XMAGN_FAIL 8
+#define ADIS16480_DIAG_STAT_YMAGN_FAIL 9
+#define ADIS16480_DIAG_STAT_ZMAGN_FAIL 10
+#define ADIS16480_DIAG_STAT_BARO_FAIL 11
+
+static const char * const adis16480_status_error_msgs[] = {
+	[ADIS16480_DIAG_STAT_XGYRO_FAIL] = "X-axis gyroscope self-test failure",
+	[ADIS16480_DIAG_STAT_YGYRO_FAIL] = "Y-axis gyroscope self-test failure",
+	[ADIS16480_DIAG_STAT_ZGYRO_FAIL] = "Z-axis gyroscope self-test failure",
+	[ADIS16480_DIAG_STAT_XACCL_FAIL] = "X-axis accelerometer self-test failure",
+	[ADIS16480_DIAG_STAT_YACCL_FAIL] = "Y-axis accelerometer self-test failure",
+	[ADIS16480_DIAG_STAT_ZACCL_FAIL] = "Z-axis accelerometer self-test failure",
+	[ADIS16480_DIAG_STAT_XMAGN_FAIL] = "X-axis magnetometer self-test failure",
+	[ADIS16480_DIAG_STAT_YMAGN_FAIL] = "Y-axis magnetometer self-test failure",
+	[ADIS16480_DIAG_STAT_ZMAGN_FAIL] = "Z-axis magnetometer self-test failure",
+	[ADIS16480_DIAG_STAT_BARO_FAIL] = "Barometer self-test failure",
+};
+
+static const struct adis_data adis16480_data = {
+	.diag_stat_reg = ADIS16480_REG_DIAG_STS,
+	.glob_cmd_reg = ADIS16480_REG_GLOB_CMD,
+	.has_paging = true,
+
+	.read_delay = 5,
+	.write_delay = 5,
+
+	.status_error_msgs = adis16480_status_error_msgs,
+	.status_error_mask = BIT(ADIS16480_DIAG_STAT_XGYRO_FAIL) |
+		BIT(ADIS16480_DIAG_STAT_YGYRO_FAIL) |
+		BIT(ADIS16480_DIAG_STAT_ZGYRO_FAIL) |
+		BIT(ADIS16480_DIAG_STAT_XACCL_FAIL) |
+		BIT(ADIS16480_DIAG_STAT_YACCL_FAIL) |
+		BIT(ADIS16480_DIAG_STAT_ZACCL_FAIL) |
+		BIT(ADIS16480_DIAG_STAT_XMAGN_FAIL) |
+		BIT(ADIS16480_DIAG_STAT_YMAGN_FAIL) |
+		BIT(ADIS16480_DIAG_STAT_ZMAGN_FAIL) |
+		BIT(ADIS16480_DIAG_STAT_BARO_FAIL),
+
+	.enable_irq = adis16480_enable_irq,
+};
 
 static int adis16480_config_irq_pin(struct device_node *of_node,
 				    struct adis16480 *st)
@@ -1148,12 +1135,12 @@ static int adis16480_config_irq_pin(struct device_node *of_node,
 	/*
 	 * Get the interrupt line behaviour. The data ready polarity can be
 	 * configured as positive or negative, corresponding to
-	 * IRQ_TYPE_EDGE_RISING or IRQ_TYPE_EDGE_FALLING respectively.
+	 * IRQF_TRIGGER_RISING or IRQF_TRIGGER_FALLING respectively.
 	 */
 	irq_type = irqd_get_trigger_type(desc);
-	if (irq_type == IRQ_TYPE_EDGE_RISING) { /* Default */
+	if (irq_type == IRQF_TRIGGER_RISING) { /* Default */
 		val |= ADIS16480_DRDY_POL(1);
-	} else if (irq_type == IRQ_TYPE_EDGE_FALLING) {
+	} else if (irq_type == IRQF_TRIGGER_FALLING) {
 		val |= ADIS16480_DRDY_POL(0);
 	} else {
 		dev_err(&st->adis.spi->dev,
@@ -1258,14 +1245,20 @@ static int adis16480_get_ext_clocks(struct adis16480 *st)
 	return 0;
 }
 
-static void adis16480_stop(void *data)
+static struct adis_data *adis16480_adis_data_alloc(struct adis16480 *st,
+						   struct device *dev)
 {
-	adis16480_stop_device(data);
-}
+	struct adis_data *data;
 
-static void adis16480_clk_disable(void *data)
-{
-	clk_disable_unprepare(data);
+	data = devm_kmalloc(dev, sizeof(struct adis_data), GFP_KERNEL);
+	if (!data)
+		return ERR_PTR(-ENOMEM);
+
+	memcpy(data, &adis16480_data, sizeof(*data));
+
+	data->timeouts = st->chip_info->timeouts;
+
+	return data;
 }
 
 static int adis16480_probe(struct spi_device *spi)
@@ -1285,23 +1278,18 @@ static int adis16480_probe(struct spi_device *spi)
 	st = iio_priv(indio_dev);
 
 	st->chip_info = &adis16480_chip_info[id->driver_data];
+	indio_dev->dev.parent = &spi->dev;
 	indio_dev->name = spi_get_device_id(spi)->name;
 	indio_dev->channels = st->chip_info->channels;
 	indio_dev->num_channels = st->chip_info->num_channels;
 	indio_dev->info = &adis16480_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
-	adis16480_data = &st->chip_info->adis_data;
+	adis16480_data = adis16480_adis_data_alloc(st, &spi->dev);
+	if (IS_ERR(adis16480_data))
+		return PTR_ERR(adis16480_data);
 
 	ret = adis_init(&st->adis, indio_dev, spi, adis16480_data);
-	if (ret)
-		return ret;
-
-	ret = __adis_initial_startup(&st->adis);
-	if (ret)
-		return ret;
-
-	ret = devm_add_action_or_reset(&spi->dev, adis16480_stop, indio_dev);
 	if (ret)
 		return ret;
 
@@ -1318,39 +1306,47 @@ static int adis16480_probe(struct spi_device *spi)
 		if (ret)
 			return ret;
 
-		ret = devm_add_action_or_reset(&spi->dev, adis16480_clk_disable, st->ext_clk);
-		if (ret)
-			return ret;
-
 		st->clk_freq = clk_get_rate(st->ext_clk);
 		st->clk_freq *= 1000; /* micro */
-		if (st->clk_mode == ADIS16480_CLK_PPS) {
-			u16 sync_scale;
-
-			/*
-			 * In PPS mode, the IMU sample rate is the clk_freq * sync_scale. Hence,
-			 * default the IMU sample rate to the highest multiple of the input clock
-			 * lower than the IMU max sample rate. The internal sample rate is the
-			 * max...
-			 */
-			sync_scale = st->chip_info->int_clk / st->clk_freq;
-			ret = __adis_write_reg_16(&st->adis, ADIS16495_REG_SYNC_SCALE, sync_scale);
-			if (ret)
-				return ret;
-		}
 	} else {
 		st->clk_freq = st->chip_info->int_clk;
 	}
 
-	ret = devm_adis_setup_buffer_and_trigger(&st->adis, indio_dev, NULL);
+	ret = adis_setup_buffer_and_trigger(&st->adis, indio_dev, NULL);
 	if (ret)
-		return ret;
+		goto error_clk_disable_unprepare;
 
-	ret = devm_iio_device_register(&spi->dev, indio_dev);
+	ret = adis16480_initial_setup(indio_dev);
 	if (ret)
-		return ret;
+		goto error_cleanup_buffer;
+
+	ret = iio_device_register(indio_dev);
+	if (ret)
+		goto error_stop_device;
 
 	adis16480_debugfs_init(indio_dev);
+
+	return 0;
+
+error_stop_device:
+	adis16480_stop_device(indio_dev);
+error_cleanup_buffer:
+	adis_cleanup_buffer_and_trigger(&st->adis, indio_dev);
+error_clk_disable_unprepare:
+	clk_disable_unprepare(st->ext_clk);
+	return ret;
+}
+
+static int adis16480_remove(struct spi_device *spi)
+{
+	struct iio_dev *indio_dev = spi_get_drvdata(spi);
+	struct adis16480 *st = iio_priv(indio_dev);
+
+	iio_device_unregister(indio_dev);
+	adis16480_stop_device(indio_dev);
+
+	adis_cleanup_buffer_and_trigger(&st->adis, indio_dev);
+	clk_disable_unprepare(st->ext_clk);
 
 	return 0;
 }
@@ -1394,6 +1390,7 @@ static struct spi_driver adis16480_driver = {
 	},
 	.id_table = adis16480_ids,
 	.probe = adis16480_probe,
+	.remove = adis16480_remove,
 };
 module_spi_driver(adis16480_driver);
 

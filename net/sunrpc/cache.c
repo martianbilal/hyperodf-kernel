@@ -32,13 +32,13 @@
 #include <linux/sunrpc/cache.h>
 #include <linux/sunrpc/stats.h>
 #include <linux/sunrpc/rpc_pipe_fs.h>
-#include <trace/events/sunrpc.h>
 #include "netns.h"
 
 #define	 RPCDBG_FACILITY RPCDBG_CACHE
 
 static bool cache_defer_req(struct cache_req *req, struct cache_head *item);
 static void cache_revisit_request(struct cache_head *item);
+static bool cache_listeners_exist(struct cache_detail *detail);
 
 static void cache_init(struct cache_head *h, struct cache_detail *detail)
 {
@@ -65,14 +65,13 @@ static struct cache_head *sunrpc_cache_find_rcu(struct cache_detail *detail,
 
 	rcu_read_lock();
 	hlist_for_each_entry_rcu(tmp, head, cache_list) {
-		if (!detail->match(tmp, key))
-			continue;
-		if (test_bit(CACHE_VALID, &tmp->flags) &&
-		    cache_is_expired(detail, tmp))
-			continue;
-		tmp = cache_get_rcu(tmp);
-		rcu_read_unlock();
-		return tmp;
+		if (detail->match(tmp, key)) {
+			if (cache_is_expired(detail, tmp))
+				continue;
+			tmp = cache_get_rcu(tmp);
+			rcu_read_unlock();
+			return tmp;
+		}
 	}
 	rcu_read_unlock();
 	return NULL;
@@ -114,21 +113,18 @@ static struct cache_head *sunrpc_cache_add_entry(struct cache_detail *detail,
 	spin_lock(&detail->hash_lock);
 
 	/* check if entry appeared while we slept */
-	hlist_for_each_entry_rcu(tmp, head, cache_list,
-				 lockdep_is_held(&detail->hash_lock)) {
-		if (!detail->match(tmp, key))
-			continue;
-		if (test_bit(CACHE_VALID, &tmp->flags) &&
-		    cache_is_expired(detail, tmp)) {
-			sunrpc_begin_cache_remove_entry(tmp, detail);
-			trace_cache_entry_expired(detail, tmp);
-			freeme = tmp;
-			break;
+	hlist_for_each_entry_rcu(tmp, head, cache_list) {
+		if (detail->match(tmp, key)) {
+			if (cache_is_expired(detail, tmp)) {
+				sunrpc_begin_cache_remove_entry(tmp, detail);
+				freeme = tmp;
+				break;
+			}
+			cache_get(tmp);
+			spin_unlock(&detail->hash_lock);
+			cache_put(new, detail);
+			return tmp;
 		}
-		cache_get(tmp);
-		spin_unlock(&detail->hash_lock);
-		cache_put(new, detail);
-		return tmp;
 	}
 
 	hlist_add_head_rcu(&new->cache_list, head);
@@ -178,25 +174,6 @@ static void cache_fresh_unlocked(struct cache_head *head,
 	}
 }
 
-static void cache_make_negative(struct cache_detail *detail,
-				struct cache_head *h)
-{
-	set_bit(CACHE_NEGATIVE, &h->flags);
-	trace_cache_entry_make_negative(detail, h);
-}
-
-static void cache_entry_update(struct cache_detail *detail,
-			       struct cache_head *h,
-			       struct cache_head *new)
-{
-	if (!test_bit(CACHE_NEGATIVE, &new->flags)) {
-		detail->update(h, new);
-		trace_cache_entry_update(detail, h);
-	} else {
-		cache_make_negative(detail, h);
-	}
-}
-
 struct cache_head *sunrpc_cache_update(struct cache_detail *detail,
 				       struct cache_head *new, struct cache_head *old, int hash)
 {
@@ -209,7 +186,10 @@ struct cache_head *sunrpc_cache_update(struct cache_detail *detail,
 	if (!test_bit(CACHE_VALID, &old->flags)) {
 		spin_lock(&detail->hash_lock);
 		if (!test_bit(CACHE_VALID, &old->flags)) {
-			cache_entry_update(detail, old, new);
+			if (test_bit(CACHE_NEGATIVE, &new->flags))
+				set_bit(CACHE_NEGATIVE, &old->flags);
+			else
+				detail->update(old, new);
 			cache_fresh_locked(old, new->expiry_time, detail);
 			spin_unlock(&detail->hash_lock);
 			cache_fresh_unlocked(old, detail);
@@ -227,7 +207,10 @@ struct cache_head *sunrpc_cache_update(struct cache_detail *detail,
 	detail->init(tmp, old);
 
 	spin_lock(&detail->hash_lock);
-	cache_entry_update(detail, tmp, new);
+	if (test_bit(CACHE_NEGATIVE, &new->flags))
+		set_bit(CACHE_NEGATIVE, &tmp->flags);
+	else
+		detail->update(tmp, new);
 	hlist_add_head(&tmp->cache_list, &detail->hash_table[hash]);
 	detail->entries++;
 	cache_get(tmp);
@@ -240,6 +223,13 @@ struct cache_head *sunrpc_cache_update(struct cache_detail *detail,
 	return tmp;
 }
 EXPORT_SYMBOL_GPL(sunrpc_cache_update);
+
+static int cache_make_upcall(struct cache_detail *cd, struct cache_head *h)
+{
+	if (cd->cache_upcall)
+		return cd->cache_upcall(cd, h);
+	return sunrpc_cache_pipe_upcall(cd, h);
+}
 
 static inline int cache_is_valid(struct cache_head *h)
 {
@@ -269,7 +259,7 @@ static int try_to_negate_entry(struct cache_detail *detail, struct cache_head *h
 	spin_lock(&detail->hash_lock);
 	rv = cache_is_valid(h);
 	if (rv == -EAGAIN) {
-		cache_make_negative(detail, h);
+		set_bit(CACHE_NEGATIVE, &h->flags);
 		cache_fresh_locked(h, seconds_since_boot()+CACHE_NEW_EXPIRY,
 				   detail);
 		rv = -ENOENT;
@@ -313,14 +303,17 @@ int cache_check(struct cache_detail *detail,
 		   (h->expiry_time != 0 && age > refresh_age/2)) {
 		dprintk("RPC:       Want update, refage=%lld, age=%lld\n",
 				refresh_age, age);
-		switch (detail->cache_upcall(detail, h)) {
-		case -EINVAL:
+		if (!test_and_set_bit(CACHE_PENDING, &h->flags)) {
+			switch (cache_make_upcall(detail, h)) {
+			case -EINVAL:
+				rv = try_to_negate_entry(detail, h);
+				break;
+			case -EAGAIN:
+				cache_fresh_unlocked(h, detail);
+				break;
+			}
+		} else if (!cache_listeners_exist(detail))
 			rv = try_to_negate_entry(detail, h);
-			break;
-		case -EAGAIN:
-			cache_fresh_unlocked(h, detail);
-			break;
-		}
 	}
 
 	if (rv == -EAGAIN) {
@@ -475,7 +468,6 @@ static int cache_clean(void)
 				continue;
 
 			sunrpc_begin_cache_remove_entry(ch, current_detail);
-			trace_cache_entry_expired(current_detail, ch);
 			rv = 1;
 			break;
 		}
@@ -498,17 +490,16 @@ static int cache_clean(void)
  */
 static void do_cache_clean(struct work_struct *work)
 {
-	int delay;
-
-	if (list_empty(&cache_list))
-		return;
-
+	int delay = 5;
 	if (cache_clean() == -1)
 		delay = round_jiffies_relative(30*HZ);
-	else
-		delay = 5;
 
-	queue_delayed_work(system_power_efficient_wq, &cache_cleaner, delay);
+	if (list_empty(&cache_list))
+		delay = 0;
+
+	if (delay)
+		queue_delayed_work(system_power_efficient_wq,
+				   &cache_cleaner, delay);
 }
 
 
@@ -778,6 +769,7 @@ void cache_clean_deferred(void *owner)
  */
 
 static DEFINE_SPINLOCK(queue_lock);
+static DEFINE_MUTEX(queue_io_mutex);
 
 struct cache_queue {
 	struct list_head	list;
@@ -905,26 +897,44 @@ static ssize_t cache_do_downcall(char *kaddr, const char __user *buf,
 	return ret;
 }
 
+static ssize_t cache_slow_downcall(const char __user *buf,
+				   size_t count, struct cache_detail *cd)
+{
+	static char write_buf[8192]; /* protected by queue_io_mutex */
+	ssize_t ret = -EINVAL;
+
+	if (count >= sizeof(write_buf))
+		goto out;
+	mutex_lock(&queue_io_mutex);
+	ret = cache_do_downcall(write_buf, buf, count, cd);
+	mutex_unlock(&queue_io_mutex);
+out:
+	return ret;
+}
+
 static ssize_t cache_downcall(struct address_space *mapping,
 			      const char __user *buf,
 			      size_t count, struct cache_detail *cd)
 {
-	char *write_buf;
+	struct page *page;
+	char *kaddr;
 	ssize_t ret = -ENOMEM;
 
-	if (count >= 32768) { /* 32k is max userland buffer, lets check anyway */
-		ret = -EINVAL;
-		goto out;
-	}
+	if (count >= PAGE_SIZE)
+		goto out_slow;
 
-	write_buf = kvmalloc(count + 1, GFP_KERNEL);
-	if (!write_buf)
-		goto out;
+	page = find_or_create_page(mapping, 0, GFP_KERNEL);
+	if (!page)
+		goto out_slow;
 
-	ret = cache_do_downcall(write_buf, buf, count, cd);
-	kvfree(write_buf);
-out:
+	kaddr = kmap(page);
+	ret = cache_do_downcall(kaddr, buf, count, cd);
+	kunmap(page);
+	unlock_page(page);
+	put_page(page);
 	return ret;
+out_slow:
+	return cache_slow_downcall(buf, count, cd);
 }
 
 static ssize_t cache_write(struct file *filp, const char __user *buf,
@@ -1186,12 +1196,20 @@ static bool cache_listeners_exist(struct cache_detail *detail)
  *
  * Each request is at most one page long.
  */
-static int cache_pipe_upcall(struct cache_detail *detail, struct cache_head *h)
+int sunrpc_cache_pipe_upcall(struct cache_detail *detail, struct cache_head *h)
 {
+
 	char *buf;
 	struct cache_request *crq;
 	int ret = 0;
 
+	if (!detail->cache_request)
+		return -EINVAL;
+
+	if (!cache_listeners_exist(detail)) {
+		warn_no_listener(detail);
+		return -EINVAL;
+	}
 	if (test_bit(CACHE_CLEANED, &h->flags))
 		/* Too late to make an upcall */
 		return -EAGAIN;
@@ -1214,7 +1232,6 @@ static int cache_pipe_upcall(struct cache_detail *detail, struct cache_head *h)
 	if (test_bit(CACHE_PENDING, &h->flags)) {
 		crq->item = cache_get(h);
 		list_add_tail(&crq->q.list, &detail->queue);
-		trace_cache_entry_upcall(detail, h);
 	} else
 		/* Lost a race, no longer PENDING, so don't enqueue */
 		ret = -EAGAIN;
@@ -1226,26 +1243,7 @@ static int cache_pipe_upcall(struct cache_detail *detail, struct cache_head *h)
 	}
 	return ret;
 }
-
-int sunrpc_cache_pipe_upcall(struct cache_detail *detail, struct cache_head *h)
-{
-	if (test_and_set_bit(CACHE_PENDING, &h->flags))
-		return 0;
-	return cache_pipe_upcall(detail, h);
-}
 EXPORT_SYMBOL_GPL(sunrpc_cache_pipe_upcall);
-
-int sunrpc_cache_pipe_upcall_timeout(struct cache_detail *detail,
-				     struct cache_head *h)
-{
-	if (!cache_listeners_exist(detail)) {
-		warn_no_listener(detail);
-		trace_cache_entry_no_listener(detail, h);
-		return -EINVAL;
-	}
-	return sunrpc_cache_pipe_upcall(detail, h);
-}
-EXPORT_SYMBOL_GPL(sunrpc_cache_pipe_upcall_timeout);
 
 /*
  * parse a message from user-space and pass it
@@ -1418,10 +1416,10 @@ static int c_show(struct seq_file *m, void *p)
 	cache_get(cp);
 	if (cache_check(cd, cp, NULL))
 		/* cache_check does a cache_put on failure */
-		seq_puts(m, "# ");
+		seq_printf(m, "# ");
 	else {
 		if (cache_is_expired(cd, cp))
-			seq_puts(m, "# ");
+			seq_printf(m, "# ");
 		cache_put(cp, cd);
 	}
 

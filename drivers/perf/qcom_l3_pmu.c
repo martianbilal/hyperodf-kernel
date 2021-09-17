@@ -630,7 +630,7 @@ static struct attribute *qcom_l3_cache_pmu_formats[] = {
 	NULL,
 };
 
-static const struct attribute_group qcom_l3_cache_pmu_format_group = {
+static struct attribute_group qcom_l3_cache_pmu_format_group = {
 	.name = "format",
 	.attrs = qcom_l3_cache_pmu_formats,
 };
@@ -663,7 +663,7 @@ static struct attribute *qcom_l3_cache_pmu_events[] = {
 	NULL
 };
 
-static const struct attribute_group qcom_l3_cache_pmu_events_group = {
+static struct attribute_group qcom_l3_cache_pmu_events_group = {
 	.name = "events",
 	.attrs = qcom_l3_cache_pmu_events,
 };
@@ -685,7 +685,7 @@ static struct attribute *qcom_l3_cache_pmu_cpumask_attrs[] = {
 	NULL,
 };
 
-static const struct attribute_group qcom_l3_cache_pmu_cpumask_attr_group = {
+static struct attribute_group qcom_l3_cache_pmu_cpumask_attr_group = {
 	.attrs = qcom_l3_cache_pmu_cpumask_attrs,
 };
 
@@ -814,7 +814,6 @@ static struct platform_driver qcom_l3_cache_pmu_driver = {
 	.driver = {
 		.name = "qcom-l3cache-pmu",
 		.acpi_match_table = ACPI_PTR(qcom_l3_cache_pmu_acpi_match),
-		.suppress_bind_attrs = true,
 	},
 	.probe = qcom_l3_cache_pmu_probe,
 };

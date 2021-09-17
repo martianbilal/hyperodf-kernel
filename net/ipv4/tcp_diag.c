@@ -179,15 +179,15 @@ static size_t tcp_diag_get_aux_size(struct sock *sk, bool net_admin)
 }
 
 static void tcp_diag_dump(struct sk_buff *skb, struct netlink_callback *cb,
-			  const struct inet_diag_req_v2 *r)
+			  const struct inet_diag_req_v2 *r, struct nlattr *bc)
 {
-	inet_diag_dump_icsk(&tcp_hashinfo, skb, cb, r);
+	inet_diag_dump_icsk(&tcp_hashinfo, skb, cb, r, bc);
 }
 
-static int tcp_diag_dump_one(struct netlink_callback *cb,
+static int tcp_diag_dump_one(struct sk_buff *in_skb, const struct nlmsghdr *nlh,
 			     const struct inet_diag_req_v2 *req)
 {
-	return inet_diag_dump_one_icsk(&tcp_hashinfo, cb, req);
+	return inet_diag_dump_one_icsk(&tcp_hashinfo, in_skb, nlh, req);
 }
 
 #ifdef CONFIG_INET_DIAG_DESTROY

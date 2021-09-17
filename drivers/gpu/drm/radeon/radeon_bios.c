@@ -108,33 +108,25 @@ static bool radeon_read_bios(struct radeon_device *rdev)
 
 static bool radeon_read_platform_bios(struct radeon_device *rdev)
 {
-	phys_addr_t rom = rdev->pdev->rom;
-	size_t romlen = rdev->pdev->romlen;
-	void __iomem *bios;
+	uint8_t __iomem *bios;
+	size_t size;
 
 	rdev->bios = NULL;
 
-	if (!rom || romlen == 0)
+	bios = pci_platform_rom(rdev->pdev, &size);
+	if (!bios) {
 		return false;
+	}
 
-	rdev->bios = kzalloc(romlen, GFP_KERNEL);
-	if (!rdev->bios)
+	if (size == 0 || bios[0] != 0x55 || bios[1] != 0xaa) {
 		return false;
-
-	bios = ioremap(rom, romlen);
-	if (!bios)
-		goto free_bios;
-
-	memcpy_fromio(rdev->bios, bios, romlen);
-	iounmap(bios);
-
-	if (rdev->bios[0] != 0x55 || rdev->bios[1] != 0xaa)
-		goto free_bios;
+	}
+	rdev->bios = kmemdup(bios, size, GFP_KERNEL);
+	if (rdev->bios == NULL) {
+		return false;
+	}
 
 	return true;
-free_bios:
-	kfree(rdev->bios);
-	return false;
 }
 
 #ifdef CONFIG_ACPI
@@ -205,7 +197,7 @@ static bool radeon_atrm_get_bios(struct radeon_device *rdev)
 			continue;
 
 		status = acpi_get_handle(dhandle, "ATRM", &atrm_handle);
-		if (ACPI_SUCCESS(status)) {
+		if (!ACPI_FAILURE(status)) {
 			found = true;
 			break;
 		}
@@ -218,7 +210,7 @@ static bool radeon_atrm_get_bios(struct radeon_device *rdev)
 				continue;
 
 			status = acpi_get_handle(dhandle, "ATRM", &atrm_handle);
-			if (ACPI_SUCCESS(status)) {
+			if (!ACPI_FAILURE(status)) {
 				found = true;
 				break;
 			}
@@ -528,7 +520,7 @@ static bool legacy_read_disabled_bios(struct radeon_device *rdev)
 	crtc_ext_cntl = RREG32(RADEON_CRTC_EXT_CNTL);
 	fp2_gen_cntl = 0;
 
-	if (rdev->pdev->device == PCI_DEVICE_ID_ATI_RADEON_QY) {
+	if (rdev->ddev->pdev->device == PCI_DEVICE_ID_ATI_RADEON_QY) {
 		fp2_gen_cntl = RREG32(RADEON_FP2_GEN_CNTL);
 	}
 
@@ -565,7 +557,7 @@ static bool legacy_read_disabled_bios(struct radeon_device *rdev)
 		(RADEON_CRTC_SYNC_TRISTAT |
 		 RADEON_CRTC_DISPLAY_DIS)));
 
-	if (rdev->pdev->device == PCI_DEVICE_ID_ATI_RADEON_QY) {
+	if (rdev->ddev->pdev->device == PCI_DEVICE_ID_ATI_RADEON_QY) {
 		WREG32(RADEON_FP2_GEN_CNTL, (fp2_gen_cntl & ~RADEON_FP2_ON));
 	}
 
@@ -583,7 +575,7 @@ static bool legacy_read_disabled_bios(struct radeon_device *rdev)
 		WREG32(RADEON_CRTC2_GEN_CNTL, crtc2_gen_cntl);
 	}
 	WREG32(RADEON_CRTC_EXT_CNTL, crtc_ext_cntl);
-	if (rdev->pdev->device == PCI_DEVICE_ID_ATI_RADEON_QY) {
+	if (rdev->ddev->pdev->device == PCI_DEVICE_ID_ATI_RADEON_QY) {
 		WREG32(RADEON_FP2_GEN_CNTL, fp2_gen_cntl);
 	}
 	return r;

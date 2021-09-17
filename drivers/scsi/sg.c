@@ -829,7 +829,8 @@ sg_common_write(Sg_fd * sfp, Sg_request * srp,
 
 	srp->rq->timeout = timeout;
 	kref_get(&sfp->f_ref); /* sg_rq_end_io() does kref_put(). */
-	blk_execute_rq_nowait(sdp->disk, srp->rq, at_head, sg_rq_end_io);
+	blk_execute_rq_nowait(sdp->device->request_queue, sdp->disk,
+			      srp->rq, at_head, sg_rq_end_io);
 	return 0;
 }
 
@@ -1819,7 +1820,14 @@ sg_start_req(Sg_request *srp, unsigned char *cmd)
 		struct iovec *iov = NULL;
 		struct iov_iter i;
 
-		res = import_iovec(rw, hp->dxferp, iov_count, 0, &iov, &i);
+#ifdef CONFIG_COMPAT
+		if (in_compat_syscall())
+			res = compat_import_iovec(rw, hp->dxferp, iov_count,
+						  0, &iov, &i);
+		else
+#endif
+			res = import_iovec(rw, hp->dxferp, iov_count,
+					   0, &iov, &i);
 		if (res < 0)
 			return res;
 

@@ -155,7 +155,7 @@ int hclge_mac_mdio_config(struct hclge_dev *hdev)
 	ret = mdiobus_register(mdio_bus);
 	if (ret) {
 		dev_err(mdio_bus->parent,
-			"failed to register MDIO bus, ret = %d\n", ret);
+			"Failed to register MDIO bus ret = %#x\n", ret);
 		return ret;
 	}
 
@@ -254,8 +254,6 @@ void hclge_mac_start_phy(struct hclge_dev *hdev)
 
 	if (!phydev)
 		return;
-
-	phy_loopback(phydev, false);
 
 	phy_start(phydev);
 }

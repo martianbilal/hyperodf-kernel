@@ -4,7 +4,6 @@
 #ifndef _LAN743X_H
 #define _LAN743X_H
 
-#include <linux/phy.h>
 #include "lan743x_ptp.h"
 
 #define DRIVER_AUTHOR   "Bryan Whitehead <Bryan.Whitehead@microchip.com>"
@@ -105,14 +104,10 @@
 	((value << 0) & FCT_FLOW_CTL_ON_THRESHOLD_)
 
 #define MAC_CR				(0x100)
-#define MAC_CR_MII_EN_			BIT(19)
 #define MAC_CR_EEE_EN_			BIT(17)
 #define MAC_CR_ADD_			BIT(12)
 #define MAC_CR_ASD_			BIT(11)
 #define MAC_CR_CNTR_RST_		BIT(5)
-#define MAC_CR_DPX_			BIT(3)
-#define MAC_CR_CFG_H_			BIT(2)
-#define MAC_CR_CFG_L_			BIT(1)
 #define MAC_CR_RST_			BIT(0)
 
 #define MAC_RX				(0x104)
@@ -616,8 +611,7 @@ struct lan743x_intr {
 	int			number_of_vectors;
 	bool			using_vectors;
 
-	bool			software_isr_flag;
-	wait_queue_head_t	software_isr_wq;
+	int			software_isr_flag;
 };
 
 #define LAN743X_MAX_FRAME_SIZE			(9 * 1024)
@@ -661,7 +655,7 @@ struct lan743x_tx {
 
 	struct lan743x_tx_buffer_info *buffer_info;
 
-	__le32		*head_cpu_ptr;
+	u32		*head_cpu_ptr;
 	dma_addr_t	head_dma_ptr;
 	int		last_head;
 	int		last_tail;
@@ -691,7 +685,7 @@ struct lan743x_rx {
 
 	struct lan743x_rx_buffer_info *buffer_info;
 
-	__le32		*head_cpu_ptr;
+	u32		*head_cpu_ptr;
 	dma_addr_t	head_dma_ptr;
 	u32		last_head;
 	u32		last_tail;
@@ -699,8 +693,6 @@ struct lan743x_rx {
 	struct napi_struct napi;
 
 	u32		frame_count;
-
-	struct sk_buff *skb_head, *skb_tail;
 };
 
 struct lan743x_adapter {
@@ -713,6 +705,9 @@ struct lan743x_adapter {
 	struct pci_dev		*pdev;
 	struct lan743x_csr      csr;
 	struct lan743x_intr     intr;
+
+	/* lock, used to prevent concurrent access to data port */
+	struct mutex		dp_lock;
 
 	struct lan743x_gpio	gpio;
 	struct lan743x_ptp	ptp;
@@ -777,10 +772,10 @@ struct lan743x_adapter {
 #define TX_DESC_DATA3_FRAME_LENGTH_MSS_MASK_	(0x3FFF0000)
 
 struct lan743x_tx_descriptor {
-	__le32     data0;
-	__le32     data1;
-	__le32     data2;
-	__le32     data3;
+	u32     data0;
+	u32     data1;
+	u32     data2;
+	u32     data3;
 } __aligned(DEFAULT_DMA_DESCRIPTOR_SPACING);
 
 #define TX_BUFFER_INFO_FLAG_ACTIVE		BIT(0)
@@ -815,10 +810,10 @@ struct lan743x_tx_buffer_info {
 #define RX_HEAD_PADDING		NET_IP_ALIGN
 
 struct lan743x_rx_descriptor {
-	__le32     data0;
-	__le32     data1;
-	__le32     data2;
-	__le32     data3;
+	u32     data0;
+	u32     data1;
+	u32     data2;
+	u32     data3;
 } __aligned(DEFAULT_DMA_DESCRIPTOR_SPACING);
 
 #define RX_BUFFER_INFO_FLAG_ACTIVE      BIT(0)
@@ -833,7 +828,8 @@ struct lan743x_rx_buffer_info {
 #define LAN743X_RX_RING_SIZE        (65)
 
 #define RX_PROCESS_RESULT_NOTHING_TO_DO     (0)
-#define RX_PROCESS_RESULT_BUFFER_RECEIVED   (1)
+#define RX_PROCESS_RESULT_PACKET_RECEIVED   (1)
+#define RX_PROCESS_RESULT_PACKET_DROPPED    (2)
 
 u32 lan743x_csr_read(struct lan743x_adapter *adapter, int offset);
 void lan743x_csr_write(struct lan743x_adapter *adapter, int offset, u32 data);

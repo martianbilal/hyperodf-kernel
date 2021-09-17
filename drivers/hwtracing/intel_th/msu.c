@@ -138,7 +138,6 @@ struct msc {
 	struct list_head	win_list;
 	struct sg_table		single_sgt;
 	struct msc_window	*cur_win;
-	struct msc_window	*switch_on_unlock;
 	unsigned long		nr_pages;
 	unsigned long		single_sz;
 	unsigned int		single_wrap : 1;
@@ -155,13 +154,10 @@ struct msc {
 
 	struct list_head	iter_list;
 
-	bool			stop_on_full;
-
 	/* config */
 	unsigned int		enabled : 1,
 				wrap	: 1,
-				do_irq	: 1,
-				multi_is_broken : 1;
+				do_irq	: 1;
 	unsigned int		mode;
 	unsigned int		burst_len;
 	unsigned int		index;
@@ -1669,7 +1665,7 @@ static int intel_th_msc_init(struct msc *msc)
 {
 	atomic_set(&msc->user_count, -1);
 
-	msc->mode = msc->multi_is_broken ? MSC_MODE_SINGLE : MSC_MODE_MULTI;
+	msc->mode = MSC_MODE_MULTI;
 	mutex_init(&msc->buf_mutex);
 	INIT_LIST_HEAD(&msc->win_list);
 	INIT_LIST_HEAD(&msc->iter_list);
@@ -1721,10 +1717,6 @@ void intel_th_msc_window_unlock(struct device *dev, struct sg_table *sgt)
 		return;
 
 	msc_win_set_lockout(win, WIN_LOCKED, WIN_READY);
-	if (msc->switch_on_unlock == win) {
-		msc->switch_on_unlock = NULL;
-		msc_win_switch(msc);
-	}
 }
 EXPORT_SYMBOL_GPL(intel_th_msc_window_unlock);
 
@@ -1765,11 +1757,7 @@ static irqreturn_t intel_th_msc_interrupt(struct intel_th_device *thdev)
 
 	/* next window: if READY, proceed, if LOCKED, stop the trace */
 	if (msc_win_set_lockout(next_win, WIN_READY, WIN_INUSE)) {
-		if (msc->stop_on_full)
-			schedule_work(&msc->work);
-		else
-			msc->switch_on_unlock = next_win;
-
+		schedule_work(&msc->work);
 		return IRQ_HANDLED;
 	}
 
@@ -1889,9 +1877,6 @@ mode_store(struct device *dev, struct device_attribute *attr, const char *buf,
 	return -EINVAL;
 
 found:
-	if (i == MSC_MODE_MULTI && msc->multi_is_broken)
-		return -EOPNOTSUPP;
-
 	mutex_lock(&msc->buf_mutex);
 	ret = 0;
 
@@ -2002,7 +1987,7 @@ nr_pages_store(struct device *dev, struct device_attribute *attr,
 		}
 
 		nr_wins++;
-		rewin = krealloc_array(win, nr_wins, sizeof(*win), GFP_KERNEL);
+		rewin = krealloc(win, sizeof(*win) * nr_wins, GFP_KERNEL);
 		if (!rewin) {
 			kfree(win);
 			return -ENOMEM;
@@ -2062,36 +2047,11 @@ win_switch_store(struct device *dev, struct device_attribute *attr,
 
 static DEVICE_ATTR_WO(win_switch);
 
-static ssize_t stop_on_full_show(struct device *dev,
-				 struct device_attribute *attr, char *buf)
-{
-	struct msc *msc = dev_get_drvdata(dev);
-
-	return sprintf(buf, "%d\n", msc->stop_on_full);
-}
-
-static ssize_t stop_on_full_store(struct device *dev,
-				  struct device_attribute *attr,
-				  const char *buf, size_t size)
-{
-	struct msc *msc = dev_get_drvdata(dev);
-	int ret;
-
-	ret = kstrtobool(buf, &msc->stop_on_full);
-	if (ret)
-		return ret;
-
-	return size;
-}
-
-static DEVICE_ATTR_RW(stop_on_full);
-
 static struct attribute *msc_output_attrs[] = {
 	&dev_attr_wrap.attr,
 	&dev_attr_mode.attr,
 	&dev_attr_nr_pages.attr,
 	&dev_attr_win_switch.attr,
-	&dev_attr_stop_on_full.attr,
 	NULL,
 };
 
@@ -2122,9 +2082,6 @@ static int intel_th_msc_probe(struct intel_th_device *thdev)
 	res = intel_th_device_get_resource(thdev, IORESOURCE_IRQ, 1);
 	if (!res)
 		msc->do_irq = 1;
-
-	if (INTEL_TH_CAP(to_intel_th(thdev), multi_is_broken))
-		msc->multi_is_broken = 1;
 
 	msc->index = thdev->id;
 

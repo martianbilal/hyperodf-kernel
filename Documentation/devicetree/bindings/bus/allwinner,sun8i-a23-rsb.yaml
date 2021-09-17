@@ -21,10 +21,8 @@ properties:
     oneOf:
       - const: allwinner,sun8i-a23-rsb
       - items:
-          - enum:
-              - allwinner,sun8i-a83t-rsb
-              - allwinner,sun50i-h616-rsb
-          - const: allwinner,sun8i-a23-rsb
+        - const: allwinner,sun8i-a83t-rsb
+        - const: allwinner,sun8i-a23-rsb
 
   reg:
     maxItems: 1

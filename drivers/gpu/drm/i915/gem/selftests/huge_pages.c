@@ -139,7 +139,6 @@ static void put_huge_pages(struct drm_i915_gem_object *obj,
 }
 
 static const struct drm_i915_gem_object_ops huge_page_ops = {
-	.name = "huge-gem",
 	.flags = I915_GEM_OBJECT_HAS_STRUCT_PAGE |
 		 I915_GEM_OBJECT_IS_SHRINKABLE,
 	.get_pages = get_huge_pages,
@@ -284,14 +283,12 @@ static void fake_put_huge_pages(struct drm_i915_gem_object *obj,
 }
 
 static const struct drm_i915_gem_object_ops fake_ops = {
-	.name = "fake-gem",
 	.flags = I915_GEM_OBJECT_IS_SHRINKABLE,
 	.get_pages = fake_get_huge_pages,
 	.put_pages = fake_put_huge_pages,
 };
 
 static const struct drm_i915_gem_object_ops fake_ops_single = {
-	.name = "fake-gem",
 	.flags = I915_GEM_OBJECT_IS_SHRINKABLE,
 	.get_pages = fake_get_huge_pages_single,
 	.put_pages = fake_put_huge_pages,
@@ -368,27 +365,6 @@ static int igt_check_page_sizes(struct i915_vma *vma)
 		err = -EINVAL;
 	}
 
-	/*
-	 * The dma-api is like a box of chocolates when it comes to the
-	 * alignment of dma addresses, however for LMEM we have total control
-	 * and so can guarantee alignment, likewise when we allocate our blocks
-	 * they should appear in descending order, and if we know that we align
-	 * to the largest page size for the GTT address, we should be able to
-	 * assert that if we see 2M physical pages then we should also get 2M
-	 * GTT pages. If we don't then something might be wrong in our
-	 * construction of the backing pages.
-	 *
-	 * Maintaining alignment is required to utilise huge pages in the ppGGT.
-	 */
-	if (i915_gem_object_is_lmem(obj) &&
-	    IS_ALIGNED(vma->node.start, SZ_2M) &&
-	    vma->page_sizes.sg & SZ_2M &&
-	    vma->page_sizes.gtt < SZ_2M) {
-		pr_err("gtt pages mismatch for LMEM, expected 2M GTT pages, sg(%u), gtt(%u)\n",
-		       vma->page_sizes.sg, vma->page_sizes.gtt);
-		err = -EINVAL;
-	}
-
 	if (obj->mm.page_sizes.gtt) {
 		pr_err("obj->page_sizes.gtt(%u) should never be set\n",
 		       obj->mm.page_sizes.gtt);
@@ -414,7 +390,7 @@ static int igt_mock_exhaust_device_supported_pages(void *arg)
 	 */
 
 	for (i = 1; i < BIT(ARRAY_SIZE(page_sizes)); i++) {
-		unsigned int combination = SZ_4K; /* Required for ppGTT */
+		unsigned int combination = 0;
 
 		for (j = 0; j < ARRAY_SIZE(page_sizes); j++) {
 			if (i & BIT(j))
@@ -445,7 +421,7 @@ static int igt_mock_exhaust_device_supported_pages(void *arg)
 
 			err = i915_vma_pin(vma, 0, 0, PIN_USER);
 			if (err)
-				goto out_put;
+				goto out_close;
 
 			err = igt_check_page_sizes(vma);
 
@@ -456,6 +432,8 @@ static int igt_mock_exhaust_device_supported_pages(void *arg)
 			}
 
 			i915_vma_unpin(vma);
+			i915_vma_close(vma);
+
 			i915_gem_object_put(obj);
 
 			if (err)
@@ -465,6 +443,8 @@ static int igt_mock_exhaust_device_supported_pages(void *arg)
 
 	goto out_device;
 
+out_close:
+	i915_vma_close(vma);
 out_put:
 	i915_gem_object_put(obj);
 out_device:
@@ -512,7 +492,7 @@ static int igt_mock_memory_region_huge_pages(void *arg)
 
 			err = i915_vma_pin(vma, 0, 0, PIN_USER);
 			if (err)
-				goto out_put;
+				goto out_close;
 
 			err = igt_check_page_sizes(vma);
 			if (err)
@@ -535,6 +515,8 @@ static int igt_mock_memory_region_huge_pages(void *arg)
 			}
 
 			i915_vma_unpin(vma);
+			i915_vma_close(vma);
+
 			__i915_gem_object_put_pages(obj);
 			i915_gem_object_put(obj);
 		}
@@ -544,6 +526,8 @@ static int igt_mock_memory_region_huge_pages(void *arg)
 
 out_unpin:
 	i915_vma_unpin(vma);
+out_close:
+	i915_vma_close(vma);
 out_put:
 	i915_gem_object_put(obj);
 out_region:
@@ -603,8 +587,10 @@ static int igt_mock_ppgtt_misaligned_dma(void *arg)
 		}
 
 		err = i915_vma_pin(vma, 0, 0, flags);
-		if (err)
+		if (err) {
+			i915_vma_close(vma);
 			goto out_unpin;
+		}
 
 
 		err = igt_check_page_sizes(vma);
@@ -617,8 +603,10 @@ static int igt_mock_ppgtt_misaligned_dma(void *arg)
 
 		i915_vma_unpin(vma);
 
-		if (err)
+		if (err) {
+			i915_vma_close(vma);
 			goto out_unpin;
+		}
 
 		/*
 		 * Try all the other valid offsets until the next
@@ -627,12 +615,16 @@ static int igt_mock_ppgtt_misaligned_dma(void *arg)
 		 */
 		for (offset = 4096; offset < page_size; offset += 4096) {
 			err = i915_vma_unbind(vma);
-			if (err)
+			if (err) {
+				i915_vma_close(vma);
 				goto out_unpin;
+			}
 
 			err = i915_vma_pin(vma, 0, 0, flags | offset);
-			if (err)
+			if (err) {
+				i915_vma_close(vma);
 				goto out_unpin;
+			}
 
 			err = igt_check_page_sizes(vma);
 
@@ -644,14 +636,18 @@ static int igt_mock_ppgtt_misaligned_dma(void *arg)
 
 			i915_vma_unpin(vma);
 
-			if (err)
+			if (err) {
+				i915_vma_close(vma);
 				goto out_unpin;
+			}
 
 			if (igt_timeout(end_time,
 					"%s timed out at offset %x with page-size %x\n",
 					__func__, offset, page_size))
 				break;
 		}
+
+		i915_vma_close(vma);
 
 		i915_gem_object_unpin_pages(obj);
 		__i915_gem_object_put_pages(obj);
@@ -674,6 +670,12 @@ static void close_object_list(struct list_head *objects,
 	struct drm_i915_gem_object *obj, *on;
 
 	list_for_each_entry_safe(obj, on, objects, st_link) {
+		struct i915_vma *vma;
+
+		vma = i915_vma_instance(obj, &ppgtt->vm, NULL);
+		if (!IS_ERR(vma))
+			i915_vma_close(vma);
+
 		list_del(&obj->st_link);
 		i915_gem_object_unpin_pages(obj);
 		__i915_gem_object_put_pages(obj);
@@ -910,7 +912,7 @@ static int igt_mock_ppgtt_64K(void *arg)
 
 			err = i915_vma_pin(vma, 0, 0, flags);
 			if (err)
-				goto out_object_unpin;
+				goto out_vma_close;
 
 			err = igt_check_page_sizes(vma);
 			if (err)
@@ -943,6 +945,8 @@ static int igt_mock_ppgtt_64K(void *arg)
 			}
 
 			i915_vma_unpin(vma);
+			i915_vma_close(vma);
+
 			i915_gem_object_unpin_pages(obj);
 			__i915_gem_object_put_pages(obj);
 			i915_gem_object_put(obj);
@@ -953,6 +957,8 @@ static int igt_mock_ppgtt_64K(void *arg)
 
 out_vma_unpin:
 	i915_vma_unpin(vma);
+out_vma_close:
+	i915_vma_close(vma);
 out_object_unpin:
 	i915_gem_object_unpin_pages(obj);
 out_object_put:
@@ -968,7 +974,7 @@ static int gpu_write(struct intel_context *ce,
 {
 	int err;
 
-	i915_gem_object_lock(vma->obj, NULL);
+	i915_gem_object_lock(vma->obj);
 	err = i915_gem_object_set_to_gtt_domain(vma->obj, true);
 	i915_gem_object_unlock(vma->obj);
 	if (err)
@@ -985,10 +991,9 @@ __cpu_check_shmem(struct drm_i915_gem_object *obj, u32 dword, u32 val)
 	unsigned long n;
 	int err;
 
-	i915_gem_object_lock(obj, NULL);
 	err = i915_gem_object_prepare_read(obj, &needs_flush);
 	if (err)
-		goto err_unlock;
+		return err;
 
 	for (n = 0; n < obj->base.size >> PAGE_SHIFT; ++n) {
 		u32 *ptr = kmap_atomic(i915_gem_object_get_page(obj, n));
@@ -1008,8 +1013,6 @@ __cpu_check_shmem(struct drm_i915_gem_object *obj, u32 dword, u32 val)
 	}
 
 	i915_gem_object_finish_access(obj);
-err_unlock:
-	i915_gem_object_unlock(obj);
 
 	return err;
 }
@@ -1067,7 +1070,7 @@ static int __igt_write_huge(struct intel_context *ce,
 
 	err = i915_vma_unbind(vma);
 	if (err)
-		return err;
+		goto out_vma_close;
 
 	err = i915_vma_pin(vma, size, 0, flags | offset);
 	if (err) {
@@ -1078,7 +1081,7 @@ static int __igt_write_huge(struct intel_context *ce,
 		if (err == -ENOSPC && i915_is_ggtt(ce->vm))
 			err = 0;
 
-		return err;
+		goto out_vma_close;
 	}
 
 	err = igt_check_page_sizes(vma);
@@ -1099,6 +1102,8 @@ static int __igt_write_huge(struct intel_context *ce,
 
 out_vma_unpin:
 	i915_vma_unpin(vma);
+out_vma_close:
+	__i915_vma_put(vma);
 	return err;
 }
 
@@ -1199,6 +1204,107 @@ static int igt_write_huge(struct i915_gem_context *ctx,
 	i915_gem_context_unlock_engines(ctx);
 
 	kfree(order);
+
+	return err;
+}
+
+static int igt_ppgtt_exhaust_huge(void *arg)
+{
+	struct i915_gem_context *ctx = arg;
+	struct drm_i915_private *i915 = ctx->i915;
+	unsigned long supported = INTEL_INFO(i915)->page_sizes;
+	static unsigned int pages[ARRAY_SIZE(page_sizes)];
+	struct drm_i915_gem_object *obj;
+	unsigned int size_mask;
+	unsigned int page_mask;
+	int n, i;
+	int err = -ENODEV;
+
+	if (supported == I915_GTT_PAGE_SIZE_4K)
+		return 0;
+
+	/*
+	 * Sanity check creating objects with a varying mix of page sizes --
+	 * ensuring that our writes lands in the right place.
+	 */
+
+	n = 0;
+	for_each_set_bit(i, &supported, ilog2(I915_GTT_MAX_PAGE_SIZE) + 1)
+		pages[n++] = BIT(i);
+
+	for (size_mask = 2; size_mask < BIT(n); size_mask++) {
+		unsigned int size = 0;
+
+		for (i = 0; i < n; i++) {
+			if (size_mask & BIT(i))
+				size |= pages[i];
+		}
+
+		/*
+		 * For our page mask we want to enumerate all the page-size
+		 * combinations which will fit into our chosen object size.
+		 */
+		for (page_mask = 2; page_mask <= size_mask; page_mask++) {
+			unsigned int page_sizes = 0;
+
+			for (i = 0; i < n; i++) {
+				if (page_mask & BIT(i))
+					page_sizes |= pages[i];
+			}
+
+			/*
+			 * Ensure that we can actually fill the given object
+			 * with our chosen page mask.
+			 */
+			if (!IS_ALIGNED(size, BIT(__ffs(page_sizes))))
+				continue;
+
+			obj = huge_pages_object(i915, size, page_sizes);
+			if (IS_ERR(obj)) {
+				err = PTR_ERR(obj);
+				goto out_device;
+			}
+
+			err = i915_gem_object_pin_pages(obj);
+			if (err) {
+				i915_gem_object_put(obj);
+
+				if (err == -ENOMEM) {
+					pr_info("unable to get pages, size=%u, pages=%u\n",
+						size, page_sizes);
+					err = 0;
+					break;
+				}
+
+				pr_err("pin_pages failed, size=%u, pages=%u\n",
+				       size_mask, page_mask);
+
+				goto out_device;
+			}
+
+			/* Force the page-size for the gtt insertion */
+			obj->mm.page_sizes.sg = page_sizes;
+
+			err = igt_write_huge(ctx, obj);
+			if (err) {
+				pr_err("exhaust write-huge failed with size=%u\n",
+				       size);
+				goto out_unpin;
+			}
+
+			i915_gem_object_unpin_pages(obj);
+			__i915_gem_object_put_pages(obj);
+			i915_gem_object_put(obj);
+		}
+	}
+
+	goto out_device;
+
+out_unpin:
+	i915_gem_object_unpin_pages(obj);
+	i915_gem_object_put(obj);
+out_device:
+	mkwrite_device_info(i915)->page_sizes = supported;
 
 	return err;
 }
@@ -1354,7 +1460,6 @@ static int igt_ppgtt_sanity_check(void *arg)
 		unsigned int flags;
 	} backends[] = {
 		{ igt_create_system, 0,                        },
-		{ igt_create_local,  0,                        },
 		{ igt_create_local,  I915_BO_ALLOC_CONTIGUOUS, },
 	};
 	struct {
@@ -1437,6 +1542,151 @@ out:
 	return err;
 }
 
+static int igt_ppgtt_pin_update(void *arg)
+{
+	struct i915_gem_context *ctx = arg;
+	struct drm_i915_private *dev_priv = ctx->i915;
+	unsigned long supported = INTEL_INFO(dev_priv)->page_sizes;
+	struct drm_i915_gem_object *obj;
+	struct i915_gem_engines_iter it;
+	struct i915_address_space *vm;
+	struct intel_context *ce;
+	struct i915_vma *vma;
+	unsigned int flags = PIN_USER | PIN_OFFSET_FIXED;
+	unsigned int n;
+	int first, last;
+	int err = 0;
+
+	/*
+	 * Make sure there's no funny business when doing a PIN_UPDATE -- in the
+	 * past we had a subtle issue with being able to incorrectly do multiple
+	 * alloc va ranges on the same object when doing a PIN_UPDATE, which
+	 * resulted in some pretty nasty bugs, though only when using
+	 * huge-gtt-pages.
+	 */
+
+	vm = i915_gem_context_get_vm_rcu(ctx);
+	if (!i915_vm_is_4lvl(vm)) {
+		pr_info("48b PPGTT not supported, skipping\n");
+		goto out_vm;
+	}
+
+	first = ilog2(I915_GTT_PAGE_SIZE_64K);
+	last = ilog2(I915_GTT_PAGE_SIZE_2M);
+
+	for_each_set_bit_from(first, &supported, last + 1) {
+		unsigned int page_size = BIT(first);
+
+		obj = i915_gem_object_create_internal(dev_priv, page_size);
+		if (IS_ERR(obj)) {
+			err = PTR_ERR(obj);
+			goto out_vm;
+		}
+
+		vma = i915_vma_instance(obj, vm, NULL);
+		if (IS_ERR(vma)) {
+			err = PTR_ERR(vma);
+			goto out_put;
+		}
+
+		err = i915_vma_pin(vma, SZ_2M, 0, flags);
+		if (err)
+			goto out_close;
+
+		if (vma->page_sizes.sg < page_size) {
+			pr_info("Unable to allocate page-size %x, finishing test early\n",
+				page_size);
+			goto out_unpin;
+		}
+
+		err = igt_check_page_sizes(vma);
+		if (err)
+			goto out_unpin;
+
+		if (vma->page_sizes.gtt != page_size) {
+			dma_addr_t addr = i915_gem_object_get_dma_address(obj, 0);
+
+			/*
+			 * The only valid reason for this to ever fail would be
+			 * if the dma-mapper screwed us over when we did the
+			 * dma_map_sg(), since it has the final say over the dma
+			 * address.
+			 */
+			if (IS_ALIGNED(addr, page_size)) {
+				pr_err("page_sizes.gtt=%u, expected=%u\n",
+				       vma->page_sizes.gtt, page_size);
+				err = -EINVAL;
+			} else {
+				pr_info("dma address misaligned, finishing test early\n");
+			}
+
+			goto out_unpin;
+		}
+
+		err = i915_vma_bind(vma, I915_CACHE_NONE, PIN_UPDATE, NULL);
+		if (err)
+			goto out_unpin;
+
+		i915_vma_unpin(vma);
+		i915_vma_close(vma);
+
+		i915_gem_object_put(obj);
+	}
+
+	obj = i915_gem_object_create_internal(dev_priv, PAGE_SIZE);
+	if (IS_ERR(obj)) {
+		err = PTR_ERR(obj);
+		goto out_vm;
+	}
+
+	vma = i915_vma_instance(obj, vm, NULL);
+	if (IS_ERR(vma)) {
+		err = PTR_ERR(vma);
+		goto out_put;
+	}
+
+	err = i915_vma_pin(vma, 0, 0, flags);
+	if (err)
+		goto out_close;
+
+	/*
+	 * Make sure we don't end up with something like where the pde is still
+	 * pointing to the 2M page, and the pt we just filled-in is dangling --
+	 * we can check this by writing to the first page where it would then
+	 * land in the now stale 2M page.
+	 */
+
+	n = 0;
+	for_each_gem_engine(ce, i915_gem_context_lock_engines(ctx), it) {
+		if (!intel_engine_can_store_dword(ce->engine))
+			continue;
+
+		err = gpu_write(ce, vma, n++, 0xdeadbeaf);
+		if (err)
+			break;
+	}
+	i915_gem_context_unlock_engines(ctx);
+	if (err)
+		goto out_unpin;
+
+	while (n--) {
+		err = cpu_check(obj, n, 0xdeadbeaf);
+		if (err)
+			goto out_unpin;
+	}
+
+out_unpin:
+	i915_vma_unpin(vma);
+out_close:
+	i915_vma_close(vma);
+out_put:
+	i915_gem_object_put(obj);
+out_vm:
+	i915_vm_put(vm);
+
+	return err;
+}
+
 static int igt_tmpfs_fallback(void *arg)
 {
 	struct i915_gem_context *ctx = arg;
@@ -1480,11 +1730,13 @@ static int igt_tmpfs_fallback(void *arg)
 
 	err = i915_vma_pin(vma, 0, 0, PIN_USER);
 	if (err)
-		goto out_put;
+		goto out_close;
 
 	err = igt_check_page_sizes(vma);
 
 	i915_vma_unpin(vma);
+out_close:
+	i915_vma_close(vma);
 out_put:
 	i915_gem_object_put(obj);
 out_restore:
@@ -1531,7 +1783,7 @@ static int igt_shrink_thp(void *arg)
 
 	err = i915_vma_pin(vma, 0, 0, flags);
 	if (err)
-		goto out_put;
+		goto out_close;
 
 	if (obj->mm.page_sizes.phys < I915_GTT_PAGE_SIZE_2M) {
 		pr_info("failed to allocate THP, finishing test early\n");
@@ -1555,7 +1807,7 @@ static int igt_shrink_thp(void *arg)
 	i915_gem_context_unlock_engines(ctx);
 	i915_vma_unpin(vma);
 	if (err)
-		goto out_put;
+		goto out_close;
 
 	/*
 	 * Now that the pages are *unpinned* shrink-all should invoke
@@ -1565,18 +1817,18 @@ static int igt_shrink_thp(void *arg)
 	if (i915_gem_object_has_pages(obj)) {
 		pr_err("shrink-all didn't truncate the pages\n");
 		err = -EINVAL;
-		goto out_put;
+		goto out_close;
 	}
 
 	if (obj->mm.page_sizes.sg || obj->mm.page_sizes.phys) {
 		pr_err("residual page-size bits left\n");
 		err = -EINVAL;
-		goto out_put;
+		goto out_close;
 	}
 
 	err = i915_vma_pin(vma, 0, 0, flags);
 	if (err)
-		goto out_put;
+		goto out_close;
 
 	while (n--) {
 		err = cpu_check(obj, n, 0xdeadbeaf);
@@ -1586,6 +1838,8 @@ static int igt_shrink_thp(void *arg)
 
 out_unpin:
 	i915_vma_unpin(vma);
+out_close:
+	i915_vma_close(vma);
 out_put:
 	i915_gem_object_put(obj);
 out_vm:
@@ -1624,22 +1878,23 @@ int i915_gem_huge_page_mock_selftests(void)
 	if (!i915_vm_is_4lvl(&ppgtt->vm)) {
 		pr_err("failed to create 48b PPGTT\n");
 		err = -EINVAL;
-		goto out_put;
+		goto out_close;
 	}
 
 	/* If we were ever hit this then it's time to mock the 64K scratch */
 	if (!i915_vm_has_scratch_64K(&ppgtt->vm)) {
 		pr_err("PPGTT missing 64K scratch page\n");
 		err = -EINVAL;
-		goto out_put;
+		goto out_close;
 	}
 
 	err = i915_subtests(tests, ppgtt);
 
-out_put:
+out_close:
 	i915_vm_put(&ppgtt->vm);
+
 out_unlock:
-	mock_destroy_device(dev_priv);
+	drm_dev_put(&dev_priv->drm);
 	return err;
 }
 
@@ -1647,7 +1902,9 @@ int i915_gem_huge_page_live_selftests(struct drm_i915_private *i915)
 {
 	static const struct i915_subtest tests[] = {
 		SUBTEST(igt_shrink_thp),
+		SUBTEST(igt_ppgtt_pin_update),
 		SUBTEST(igt_tmpfs_fallback),
+		SUBTEST(igt_ppgtt_exhaust_huge),
 		SUBTEST(igt_ppgtt_smoke_huge),
 		SUBTEST(igt_ppgtt_sanity_check),
 	};

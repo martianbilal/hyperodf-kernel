@@ -110,6 +110,7 @@ i915_gem_context_clear_user_engines(struct i915_gem_context *ctx)
 
 /* i915_gem_context.c */
 void i915_gem_init__contexts(struct drm_i915_private *i915);
+void i915_gem_driver_release__contexts(struct drm_i915_private *i915);
 
 int i915_gem_context_open(struct drm_i915_private *i915,
 			  struct drm_file *file);
@@ -191,16 +192,12 @@ i915_gem_context_unlock_engines(struct i915_gem_context *ctx)
 static inline struct intel_context *
 i915_gem_context_get_engine(struct i915_gem_context *ctx, unsigned int idx)
 {
-	struct intel_context *ce;
+	struct intel_context *ce = ERR_PTR(-EINVAL);
 
 	rcu_read_lock(); {
 		struct i915_gem_engines *e = rcu_dereference(ctx->engines);
-		if (unlikely(!e)) /* context was closed! */
-			ce = ERR_PTR(-ENOENT);
-		else if (likely(idx < e->num_engines && e->engines[idx]))
+		if (likely(idx < e->num_engines && e->engines[idx]))
 			ce = intel_context_get(e->engines[idx]);
-		else
-			ce = ERR_PTR(-EINVAL);
 	} rcu_read_unlock();
 
 	return ce;
@@ -210,6 +207,7 @@ static inline void
 i915_gem_engines_iter_init(struct i915_gem_engines_iter *it,
 			   struct i915_gem_engines *engines)
 {
+	GEM_BUG_ON(!engines);
 	it->engines = engines;
 	it->idx = 0;
 }
@@ -223,9 +221,5 @@ i915_gem_engines_iter_next(struct i915_gem_engines_iter *it);
 
 struct i915_lut_handle *i915_lut_handle_alloc(void);
 void i915_lut_handle_free(struct i915_lut_handle *lut);
-
-int i915_gem_user_to_context_sseu(struct intel_gt *gt,
-				  const struct drm_i915_gem_context_param_sseu *user,
-				  struct intel_sseu *context);
 
 #endif /* !__I915_GEM_CONTEXT_H__ */

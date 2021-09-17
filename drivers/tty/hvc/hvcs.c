@@ -196,6 +196,8 @@ module_param(hvcs_parm_num_devs, int, 0);
 
 static const char hvcs_driver_name[] = "hvcs";
 static const char hvcs_device_node[] = "hvcs";
+static const char hvcs_driver_string[]
+	= "IBM hvcs (Hypervisor Virtual Console Server) Driver";
 
 /* Status of partner info rescan triggered via sysfs. */
 static int hvcs_rescan_status;
@@ -317,6 +319,7 @@ static void hvcs_hangup(struct tty_struct * tty);
 
 static int hvcs_probe(struct vio_dev *dev,
 		const struct vio_device_id *id);
+static int hvcs_remove(struct vio_dev *dev);
 static int __init hvcs_module_init(void);
 static void __exit hvcs_module_exit(void);
 static int hvcs_initialize(void);
@@ -604,7 +607,7 @@ static int hvcs_io(struct hvcs_struct *hvcsd)
 		hvcsd->todo_mask |= HVCS_QUICK_READ;
 
 	spin_unlock_irqrestore(&hvcsd->lock, flags);
-	/* This is synch -- FIXME :js: it is not! */
+	/* This is synch because tty->low_latency == 1 */
 	if(got)
 		tty_flip_buffer_push(&hvcsd->port);
 
@@ -818,11 +821,14 @@ static int hvcs_probe(
 	return 0;
 }
 
-static void hvcs_remove(struct vio_dev *dev)
+static int hvcs_remove(struct vio_dev *dev)
 {
 	struct hvcs_struct *hvcsd = dev_get_drvdata(&dev->dev);
 	unsigned long flags;
 	struct tty_struct *tty;
+
+	if (!hvcsd)
+		return -ENODEV;
 
 	/* By this time the vty-server won't be getting any more interrupts */
 
@@ -848,6 +854,7 @@ static void hvcs_remove(struct vio_dev *dev)
 
 	printk(KERN_INFO "HVCS: vty-server@%X removed from the"
 			" vio bus.\n", dev->unit_address);
+	return 0;
 };
 
 static struct vio_driver hvcs_vio_driver = {
@@ -1211,6 +1218,13 @@ static void hvcs_close(struct tty_struct *tty, struct file *filp)
 
 		tty_wait_until_sent(tty, HVCS_CLOSE_WAIT);
 
+		/*
+		 * This line is important because it tells hvcs_open that this
+		 * device needs to be re-configured the next time hvcs_open is
+		 * called.
+		 */
+		tty->driver_data = NULL;
+
 		free_irq(irq, hvcsd);
 		return;
 	} else if (hvcsd->port.count < 0) {
@@ -1224,13 +1238,6 @@ static void hvcs_close(struct tty_struct *tty, struct file *filp)
 static void hvcs_cleanup(struct tty_struct * tty)
 {
 	struct hvcs_struct *hvcsd = tty->driver_data;
-
-	/*
-	 * This line is important because it tells hvcs_open that this
-	 * device needs to be re-configured the next time hvcs_open is
-	 * called.
-	 */
-	tty->driver_data = NULL;
 
 	tty_port_put(&hvcsd->port);
 }

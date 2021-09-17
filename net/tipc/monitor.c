@@ -108,7 +108,7 @@ const int tipc_max_domain_size = sizeof(struct tipc_mon_domain);
  */
 static int dom_rec_len(struct tipc_mon_domain *dom, u16 mcnt)
 {
-	return (offsetof(struct tipc_mon_domain, members)) + (mcnt * sizeof(u32));
+	return ((void *)&dom->members - (void *)dom) + (mcnt * sizeof(u32));
 }
 
 /* dom_size() : calculate size of own domain based on number of peers
@@ -322,13 +322,9 @@ static void mon_assign_roles(struct tipc_monitor *mon, struct tipc_peer *head)
 void tipc_mon_remove_peer(struct net *net, u32 addr, int bearer_id)
 {
 	struct tipc_monitor *mon = tipc_monitor(net, bearer_id);
-	struct tipc_peer *self;
+	struct tipc_peer *self = get_self(net, bearer_id);
 	struct tipc_peer *peer, *prev, *head;
 
-	if (!mon)
-		return;
-
-	self = get_self(net, bearer_id);
 	write_lock_bh(&mon->lock);
 	peer = get_peer(mon, addr);
 	if (!peer)
@@ -411,15 +407,11 @@ exit:
 void tipc_mon_peer_down(struct net *net, u32 addr, int bearer_id)
 {
 	struct tipc_monitor *mon = tipc_monitor(net, bearer_id);
-	struct tipc_peer *self;
+	struct tipc_peer *self = get_self(net, bearer_id);
 	struct tipc_peer *peer, *head;
 	struct tipc_mon_domain *dom;
 	int applied;
 
-	if (!mon)
-		return;
-
-	self = get_self(net, bearer_id);
 	write_lock_bh(&mon->lock);
 	peer = get_peer(mon, addr);
 	if (!peer) {

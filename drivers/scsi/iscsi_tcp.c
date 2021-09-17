@@ -180,7 +180,7 @@ static void iscsi_sw_tcp_state_change(struct sock *sk)
 }
 
 /**
- * iscsi_sw_tcp_write_space - Called when more output buffer space is available
+ * iscsi_write_space - Called when more output buffer space is available
  * @sk: socket space is available for
  **/
 static void iscsi_sw_tcp_write_space(struct sock *sk)
@@ -353,7 +353,7 @@ error:
 }
 
 /**
- * iscsi_sw_tcp_xmit_qlen - return the number of bytes queued for xmit
+ * iscsi_tcp_xmit_qlen - return the number of bytes queued for xmit
  * @conn: iscsi connection
  */
 static inline int iscsi_sw_tcp_xmit_qlen(struct iscsi_conn *conn)
@@ -736,7 +736,6 @@ static int iscsi_sw_tcp_conn_get_param(struct iscsi_cls_conn *cls_conn,
 	struct iscsi_tcp_conn *tcp_conn = conn->dd_data;
 	struct iscsi_sw_tcp_conn *tcp_sw_conn = tcp_conn->dd_data;
 	struct sockaddr_in6 addr;
-	struct socket *sock;
 	int rc;
 
 	switch(param) {
@@ -748,17 +747,13 @@ static int iscsi_sw_tcp_conn_get_param(struct iscsi_cls_conn *cls_conn,
 			spin_unlock_bh(&conn->session->frwd_lock);
 			return -ENOTCONN;
 		}
-		sock = tcp_sw_conn->sock;
-		sock_hold(sock->sk);
-		spin_unlock_bh(&conn->session->frwd_lock);
-
 		if (param == ISCSI_PARAM_LOCAL_PORT)
-			rc = kernel_getsockname(sock,
+			rc = kernel_getsockname(tcp_sw_conn->sock,
 						(struct sockaddr *)&addr);
 		else
-			rc = kernel_getpeername(sock,
+			rc = kernel_getpeername(tcp_sw_conn->sock,
 						(struct sockaddr *)&addr);
-		sock_put(sock->sk);
+		spin_unlock_bh(&conn->session->frwd_lock);
 		if (rc < 0)
 			return rc;
 
@@ -780,7 +775,6 @@ static int iscsi_sw_tcp_host_get_param(struct Scsi_Host *shost,
 	struct iscsi_tcp_conn *tcp_conn;
 	struct iscsi_sw_tcp_conn *tcp_sw_conn;
 	struct sockaddr_in6 addr;
-	struct socket *sock;
 	int rc;
 
 	switch (param) {
@@ -795,18 +789,16 @@ static int iscsi_sw_tcp_host_get_param(struct Scsi_Host *shost,
 			return -ENOTCONN;
 		}
 		tcp_conn = conn->dd_data;
+
 		tcp_sw_conn = tcp_conn->dd_data;
-		sock = tcp_sw_conn->sock;
-		if (!sock) {
+		if (!tcp_sw_conn->sock) {
 			spin_unlock_bh(&session->frwd_lock);
 			return -ENOTCONN;
 		}
-		sock_hold(sock->sk);
-		spin_unlock_bh(&session->frwd_lock);
 
-		rc = kernel_getsockname(sock,
+		rc = kernel_getsockname(tcp_sw_conn->sock,
 					(struct sockaddr *)&addr);
-		sock_put(sock->sk);
+		spin_unlock_bh(&session->frwd_lock);
 		if (rc < 0)
 			return rc;
 
@@ -847,7 +839,6 @@ iscsi_sw_tcp_session_create(struct iscsi_endpoint *ep, uint16_t cmds_max,
 	struct iscsi_session *session;
 	struct iscsi_sw_tcp_host *tcp_sw_host;
 	struct Scsi_Host *shost;
-	int rc;
 
 	if (ep) {
 		printk(KERN_ERR "iscsi_tcp: invalid ep %p.\n", ep);
@@ -865,11 +856,6 @@ iscsi_sw_tcp_session_create(struct iscsi_endpoint *ep, uint16_t cmds_max,
 	shost->max_channel = 0;
 	shost->max_cmd_len = SCSI_MAX_VARLEN_CDB_SIZE;
 
-	rc = iscsi_host_get_max_scsi_cmds(shost, cmds_max);
-	if (rc < 0)
-		goto free_host;
-	shost->can_queue = rc;
-
 	if (iscsi_host_add(shost, NULL))
 		goto free_host;
 
@@ -884,6 +870,7 @@ iscsi_sw_tcp_session_create(struct iscsi_endpoint *ep, uint16_t cmds_max,
 	tcp_sw_host = iscsi_host_priv(shost);
 	tcp_sw_host->session = session;
 
+	shost->can_queue = session->scsi_cmds_max;
 	if (iscsi_tcp_r2tpool_alloc(session))
 		goto remove_session;
 	return cls_session;
@@ -975,8 +962,8 @@ static int iscsi_sw_tcp_slave_configure(struct scsi_device *sdev)
 	struct iscsi_conn *conn = session->leadconn;
 
 	if (conn->datadgst_en)
-		blk_queue_flag_set(QUEUE_FLAG_STABLE_WRITES,
-				   sdev->request_queue);
+		sdev->request_queue->backing_dev_info->capabilities
+			|= BDI_CAP_STABLE_WRITES;
 	blk_queue_dma_alignment(sdev->request_queue, 0);
 	return 0;
 }
@@ -986,7 +973,7 @@ static struct scsi_host_template iscsi_sw_tcp_sht = {
 	.name			= "iSCSI Initiator over TCP/IP",
 	.queuecommand           = iscsi_queuecommand,
 	.change_queue_depth	= scsi_change_queue_depth,
-	.can_queue		= ISCSI_TOTAL_CMDS_MAX,
+	.can_queue		= ISCSI_DEF_XMIT_CMDS_MAX - 1,
 	.sg_tablesize		= 4096,
 	.max_sectors		= 0xFFFF,
 	.cmd_per_lun		= ISCSI_DEF_CMD_PER_LUN,

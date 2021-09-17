@@ -25,9 +25,8 @@ static int acpi_fan_remove(struct platform_device *pdev);
 
 static const struct acpi_device_id fan_device_ids[] = {
 	{"PNP0C0B", 0},
+	{"INT1044", 0},
 	{"INT3404", 0},
-	{"INTC1044", 0},
-	{"INTC1048", 0},
 	{"", 0},
 };
 MODULE_DEVICE_TABLE(acpi, fan_device_ids);
@@ -277,29 +276,29 @@ static ssize_t show_state(struct device *dev, struct device_attribute *attr, cha
 	int count;
 
 	if (fps->control == 0xFFFFFFFF || fps->control > 100)
-		count = scnprintf(buf, PAGE_SIZE, "not-defined:");
+		count = snprintf(buf, PAGE_SIZE, "not-defined:");
 	else
-		count = scnprintf(buf, PAGE_SIZE, "%lld:", fps->control);
+		count = snprintf(buf, PAGE_SIZE, "%lld:", fps->control);
 
 	if (fps->trip_point == 0xFFFFFFFF || fps->trip_point > 9)
-		count += scnprintf(&buf[count], PAGE_SIZE - count, "not-defined:");
+		count += snprintf(&buf[count], PAGE_SIZE, "not-defined:");
 	else
-		count += scnprintf(&buf[count], PAGE_SIZE - count, "%lld:", fps->trip_point);
+		count += snprintf(&buf[count], PAGE_SIZE, "%lld:", fps->trip_point);
 
 	if (fps->speed == 0xFFFFFFFF)
-		count += scnprintf(&buf[count], PAGE_SIZE - count, "not-defined:");
+		count += snprintf(&buf[count], PAGE_SIZE, "not-defined:");
 	else
-		count += scnprintf(&buf[count], PAGE_SIZE - count, "%lld:", fps->speed);
+		count += snprintf(&buf[count], PAGE_SIZE, "%lld:", fps->speed);
 
 	if (fps->noise_level == 0xFFFFFFFF)
-		count += scnprintf(&buf[count], PAGE_SIZE - count, "not-defined:");
+		count += snprintf(&buf[count], PAGE_SIZE, "not-defined:");
 	else
-		count += scnprintf(&buf[count], PAGE_SIZE - count, "%lld:", fps->noise_level * 100);
+		count += snprintf(&buf[count], PAGE_SIZE, "%lld:", fps->noise_level * 100);
 
 	if (fps->power == 0xFFFFFFFF)
-		count += scnprintf(&buf[count], PAGE_SIZE - count, "not-defined\n");
+		count += snprintf(&buf[count], PAGE_SIZE, "not-defined\n");
 	else
-		count += scnprintf(&buf[count], PAGE_SIZE - count, "%lld\n", fps->power);
+		count += snprintf(&buf[count], PAGE_SIZE, "%lld\n", fps->power);
 
 	return count;
 }
@@ -352,7 +351,6 @@ static int acpi_fan_get_fps(struct acpi_device *device)
 		struct acpi_fan_fps *fps = &fan->fps[i];
 
 		snprintf(fps->name, ACPI_FPS_NAME_LEN, "state%d", i);
-		sysfs_attr_init(&fps->dev_attr.attr);
 		fps->dev_attr.show = show_state;
 		fps->dev_attr.store = NULL;
 		fps->dev_attr.attr.name = fps->name;

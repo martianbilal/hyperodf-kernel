@@ -56,8 +56,6 @@ required:
   - '#reset-cells'
   - '#power-domain-cells'
 
-additionalProperties: false
-
 examples:
   - |
     clock-controller@300000 {

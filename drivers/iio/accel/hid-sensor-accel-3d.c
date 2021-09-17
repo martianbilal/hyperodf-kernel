@@ -14,6 +14,8 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/buffer.h>
+#include <linux/iio/trigger_consumer.h>
+#include <linux/iio/triggered_buffer.h>
 #include "../common/hid-sensors/hid-sensor-trigger.h"
 
 enum accel_3d_channel {
@@ -23,7 +25,6 @@ enum accel_3d_channel {
 	ACCEL_3D_CHANNEL_MAX,
 };
 
-#define CHANNEL_SCAN_INDEX_TIMESTAMP ACCEL_3D_CHANNEL_MAX
 struct accel_3d_state {
 	struct hid_sensor_hub_callbacks callbacks;
 	struct hid_sensor_common common_attributes;
@@ -76,7 +77,7 @@ static const struct iio_chan_spec accel_3d_channels[] = {
 		BIT(IIO_CHAN_INFO_HYSTERESIS),
 		.scan_index = CHANNEL_SCAN_INDEX_Z,
 	},
-	IIO_CHAN_SOFT_TIMESTAMP(CHANNEL_SCAN_INDEX_TIMESTAMP)
+	IIO_CHAN_SOFT_TIMESTAMP(3)
 };
 
 /* Channel definitions */
@@ -111,8 +112,7 @@ static const struct iio_chan_spec gravity_channels[] = {
 		BIT(IIO_CHAN_INFO_SAMP_FREQ) |
 		BIT(IIO_CHAN_INFO_HYSTERESIS),
 		.scan_index = CHANNEL_SCAN_INDEX_Z,
-	},
-	IIO_CHAN_SOFT_TIMESTAMP(CHANNEL_SCAN_INDEX_TIMESTAMP),
+	}
 };
 
 /* Adjust channel real bits based on report descriptor */
@@ -386,17 +386,23 @@ static int hid_accel_3d_probe(struct platform_device *pdev)
 		goto error_free_dev_mem;
 	}
 
+	indio_dev->dev.parent = &pdev->dev;
 	indio_dev->info = &accel_3d_info;
 	indio_dev->name = name;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
+	ret = iio_triggered_buffer_setup(indio_dev, &iio_pollfunc_store_time,
+		NULL, NULL);
+	if (ret) {
+		dev_err(&pdev->dev, "failed to initialize trigger buffer\n");
+		goto error_free_dev_mem;
+	}
 	atomic_set(&accel_state->common_attributes.data_ready, 0);
-
 	ret = hid_sensor_setup_trigger(indio_dev, name,
 					&accel_state->common_attributes);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "trigger setup failed\n");
-		goto error_free_dev_mem;
+		goto error_unreg_buffer_funcs;
 	}
 
 	ret = iio_device_register(indio_dev);
@@ -420,7 +426,9 @@ static int hid_accel_3d_probe(struct platform_device *pdev)
 error_iio_unreg:
 	iio_device_unregister(indio_dev);
 error_remove_trigger:
-	hid_sensor_remove_trigger(indio_dev, &accel_state->common_attributes);
+	hid_sensor_remove_trigger(&accel_state->common_attributes);
+error_unreg_buffer_funcs:
+	iio_triggered_buffer_cleanup(indio_dev);
 error_free_dev_mem:
 	kfree(indio_dev->channels);
 	return ret;
@@ -435,7 +443,8 @@ static int hid_accel_3d_remove(struct platform_device *pdev)
 
 	sensor_hub_remove_callback(hsdev, hsdev->usage);
 	iio_device_unregister(indio_dev);
-	hid_sensor_remove_trigger(indio_dev, &accel_state->common_attributes);
+	hid_sensor_remove_trigger(&accel_state->common_attributes);
+	iio_triggered_buffer_cleanup(indio_dev);
 	kfree(indio_dev->channels);
 
 	return 0;

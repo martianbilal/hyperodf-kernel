@@ -51,7 +51,7 @@ int vmw_getparam_ioctl(struct drm_device *dev, void *data,
 		param->value = vmw_overlay_num_free_overlays(dev_priv);
 		break;
 	case DRM_VMW_PARAM_3D:
-		param->value = vmw_supports_3d(dev_priv) ? 1 : 0;
+		param->value = vmw_fifo_have_3d(dev_priv) ? 1 : 0;
 		break;
 	case DRM_VMW_PARAM_HW_CAPS:
 		param->value = dev_priv->capabilities;
@@ -67,6 +67,7 @@ int vmw_getparam_ioctl(struct drm_device *dev, void *data,
 		break;
 	case DRM_VMW_PARAM_FIFO_HW_VERSION:
 	{
+		u32 *fifo_mem = dev_priv->mmio_virt;
 		const struct vmw_fifo_state *fifo = &dev_priv->fifo;
 
 		if ((dev_priv->capabilities & SVGA_CAP_GBOBJECTS)) {
@@ -75,11 +76,11 @@ int vmw_getparam_ioctl(struct drm_device *dev, void *data,
 		}
 
 		param->value =
-			vmw_fifo_mem_read(dev_priv,
-					  ((fifo->capabilities &
-					    SVGA_FIFO_CAP_3D_HWVERSION_REVISED) ?
-						   SVGA_FIFO_3D_HWVERSION_REVISED :
-						   SVGA_FIFO_3D_HWVERSION));
+			vmw_mmio_read(fifo_mem +
+				      ((fifo->capabilities &
+					SVGA_FIFO_CAP_3D_HWVERSION_REVISED) ?
+				       SVGA_FIFO_3D_HWVERSION_REVISED :
+				       SVGA_FIFO_3D_HWVERSION));
 		break;
 	}
 	case DRM_VMW_PARAM_MAX_SURF_MEMORY:
@@ -113,13 +114,10 @@ int vmw_getparam_ioctl(struct drm_device *dev, void *data,
 			(dev_priv->active_display_unit == vmw_du_screen_target);
 		break;
 	case DRM_VMW_PARAM_DX:
-		param->value = has_sm4_context(dev_priv);
+		param->value = dev_priv->has_dx;
 		break;
 	case DRM_VMW_PARAM_SM4_1:
-		param->value = has_sm4_1_context(dev_priv);
-		break;
-	case DRM_VMW_PARAM_SM5:
-		param->value = has_sm5_context(dev_priv);
+		param->value = dev_priv->has_sm4_1;
 		break;
 	default:
 		return -EINVAL;
@@ -128,17 +126,14 @@ int vmw_getparam_ioctl(struct drm_device *dev, void *data,
 	return 0;
 }
 
-static u32 vmw_mask_legacy_multisample(unsigned int cap, u32 fmt_value)
+static u32 vmw_mask_multisample(unsigned int cap, u32 fmt_value)
 {
 	/*
 	 * A version of user-space exists which use MULTISAMPLE_MASKABLESAMPLES
 	 * to check the sample count supported by virtual device. Since there
 	 * never was support for multisample count for backing MOB return 0.
-	 *
-	 * MULTISAMPLE_MASKABLESAMPLES devcap is marked as deprecated by virtual
-	 * device.
 	 */
-	if (cap == SVGA3D_DEVCAP_DEAD5)
+	if (cap == SVGA3D_DEVCAP_MULTISAMPLE_MASKABLESAMPLES)
 		return 0;
 
 	return fmt_value;
@@ -169,7 +164,7 @@ static int vmw_fill_compat_cap(struct vmw_private *dev_priv, void *bounce,
 	for (i = 0; i < max_size; ++i) {
 		vmw_write(dev_priv, SVGA_REG_DEV_CAP, i);
 		compat_cap->pairs[i][0] = i;
-		compat_cap->pairs[i][1] = vmw_mask_legacy_multisample
+		compat_cap->pairs[i][1] = vmw_mask_multisample
 			(i, vmw_read(dev_priv, SVGA_REG_DEV_CAP));
 	}
 	spin_unlock(&dev_priv->cap_lock);
@@ -225,7 +220,7 @@ int vmw_get_cap_3d_ioctl(struct drm_device *dev, void *data,
 		spin_lock(&dev_priv->cap_lock);
 		for (i = 0; i < num; ++i) {
 			vmw_write(dev_priv, SVGA_REG_DEV_CAP, i);
-			*bounce32++ = vmw_mask_legacy_multisample
+			*bounce32++ = vmw_mask_multisample
 				(i, vmw_read(dev_priv, SVGA_REG_DEV_CAP));
 		}
 		spin_unlock(&dev_priv->cap_lock);
@@ -234,7 +229,7 @@ int vmw_get_cap_3d_ioctl(struct drm_device *dev, void *data,
 		if (unlikely(ret != 0))
 			goto out_err;
 	} else {
-		fifo_mem = dev_priv->fifo_mem;
+		fifo_mem = dev_priv->mmio_virt;
 		memcpy(bounce, &fifo_mem[SVGA_FIFO_3D_CAPS], size);
 	}
 

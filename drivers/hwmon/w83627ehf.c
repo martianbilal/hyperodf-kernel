@@ -1110,7 +1110,7 @@ clear_caseopen(struct device *dev, struct w83627ehf_data *data, int channel,
 static umode_t w83627ehf_attrs_visible(struct kobject *kobj,
 				       struct attribute *a, int n)
 {
-	struct device *dev = kobj_to_dev(kobj);
+	struct device *dev = container_of(kobj, struct device, kobj);
 	struct w83627ehf_data *data = dev_get_drvdata(dev);
 	struct device_attribute *devattr;
 	struct sensor_device_attribute *sda;
@@ -1951,12 +1951,8 @@ static int w83627ehf_probe(struct platform_device *pdev)
 							 data,
 							 &w83627ehf_chip_info,
 							 w83627ehf_groups);
-	if (IS_ERR(hwmon_dev)) {
-		err = PTR_ERR(hwmon_dev);
-		goto exit_release;
-	}
 
-	return 0;
+	return PTR_ERR_OR_ZERO(hwmon_dev);
 
 exit_release:
 	release_region(res->start, IOREGION_LENGTH);

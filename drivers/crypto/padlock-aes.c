@@ -18,7 +18,6 @@
 #include <linux/errno.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
-#include <linux/mm.h>
 #include <linux/percpu.h>
 #include <linux/smp.h>
 #include <linux/slab.h>
@@ -475,7 +474,7 @@ static struct skcipher_alg cbc_aes_alg = {
 };
 
 static const struct x86_cpu_id padlock_cpu_id[] = {
-	X86_MATCH_FEATURE(X86_FEATURE_XCRYPT, NULL),
+	X86_FEATURE_MATCH(X86_FEATURE_XCRYPT),
 	{}
 };
 MODULE_DEVICE_TABLE(x86cpu, padlock_cpu_id);

@@ -29,9 +29,6 @@
 /* Slave address for the HDCP registers in the receiver */
 #define DRM_HDCP_DDC_ADDR			0x3A
 
-/* Value to use at the end of the SHA-1 bytestream used for repeaters */
-#define DRM_HDCP_SHA1_TERMINATOR		0x80
-
 /* HDCP register offsets for HDMI/DVI devices */
 #define DRM_HDCP_DDC_BKSV			0x00
 #define DRM_HDCP_DDC_RI_PRIME			0x08
@@ -101,11 +98,11 @@
 
 /* Following Macros take a byte at a time for bit(s) masking */
 /*
- * TODO: HDCP_2_2_MAX_CONTENT_STREAMS_CNT is based upon actual
- * H/W MST streams capacity.
- * This required to be moved out to platform specific header.
+ * TODO: This has to be changed for DP MST, as multiple stream on
+ * same port is possible.
+ * For HDCP2.2 on HDMI and DP SST this value is always 1.
  */
-#define HDCP_2_2_MAX_CONTENT_STREAMS_CNT	4
+#define HDCP_2_2_MAX_CONTENT_STREAMS_CNT	1
 #define HDCP_2_2_TXCAP_MASK_LEN			2
 #define HDCP_2_2_RXCAPS_LEN			3
 #define HDCP_2_2_RX_REPEATER(x)			((x) & BIT(0))
@@ -279,7 +276,7 @@ void drm_hdcp_cpu_to_be24(u8 seq_num[HDCP_2_2_SEQ_NUM_LEN], u32 val)
 #define DRM_HDCP_2_VRL_LENGTH_SIZE		3
 #define DRM_HDCP_2_DCP_SIG_SIZE			384
 #define DRM_HDCP_2_NO_OF_DEV_PLUS_RESERVED_SZ	4
-#define DRM_HDCP_2_KSV_COUNT_2_LSBITS(byte)	(((byte) & 0xC0) >> 6)
+#define DRM_HDCP_2_KSV_COUNT_2_LSBITS(byte)	(((byte) & 0xC) >> 6)
 
 struct hdcp_srm_header {
 	u8 srm_id;
@@ -291,8 +288,8 @@ struct hdcp_srm_header {
 struct drm_device;
 struct drm_connector;
 
-int drm_hdcp_check_ksvs_revoked(struct drm_device *dev,
-				u8 *ksvs, u32 ksv_count);
+bool drm_hdcp_check_ksvs_revoked(struct drm_device *dev,
+				 u8 *ksvs, u32 ksv_count);
 int drm_connector_attach_content_protection_property(
 		struct drm_connector *connector, bool hdcp_content_type);
 void drm_hdcp_update_content_protection(struct drm_connector *connector,

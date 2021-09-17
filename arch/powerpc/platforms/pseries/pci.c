@@ -55,8 +55,9 @@ struct pe_map_bar_entry {
 	__be32     reserved;  /* Reserved Space */
 };
 
-static int pseries_send_map_pe(struct pci_dev *pdev, u16 num_vfs,
-			       struct pe_map_bar_entry *vf_pe_array)
+int pseries_send_map_pe(struct pci_dev *pdev,
+			u16 num_vfs,
+			struct pe_map_bar_entry *vf_pe_array)
 {
 	struct pci_dn *pdn;
 	int rc;
@@ -87,7 +88,7 @@ static int pseries_send_map_pe(struct pci_dev *pdev, u16 num_vfs,
 	return rc;
 }
 
-static void pseries_set_pe_num(struct pci_dev *pdev, u16 vf_index, __be16 pe_num)
+void pseries_set_pe_num(struct pci_dev *pdev, u16 vf_index, __be16 pe_num)
 {
 	struct pci_dn *pdn;
 
@@ -101,7 +102,7 @@ static void pseries_set_pe_num(struct pci_dev *pdev, u16 vf_index, __be16 pe_num
 		pdn->pe_num_map[vf_index]);
 }
 
-static int pseries_associate_pes(struct pci_dev *pdev, u16 num_vfs)
+int pseries_associate_pes(struct pci_dev *pdev, u16 num_vfs)
 {
 	struct pci_dn *pdn;
 	int i, rc, vf_index;
@@ -145,7 +146,7 @@ static int pseries_associate_pes(struct pci_dev *pdev, u16 num_vfs)
 	return rc;
 }
 
-static int pseries_pci_sriov_enable(struct pci_dev *pdev, u16 num_vfs)
+int pseries_pci_sriov_enable(struct pci_dev *pdev, u16 num_vfs)
 {
 	struct pci_dn         *pdn;
 	int                    rc;
@@ -188,14 +189,14 @@ static int pseries_pci_sriov_enable(struct pci_dev *pdev, u16 num_vfs)
 	return rc;
 }
 
-static int pseries_pcibios_sriov_enable(struct pci_dev *pdev, u16 num_vfs)
+int pseries_pcibios_sriov_enable(struct pci_dev *pdev, u16 num_vfs)
 {
 	/* Allocate PCI data */
 	add_sriov_vf_pdns(pdev);
 	return pseries_pci_sriov_enable(pdev, num_vfs);
 }
 
-static int pseries_pcibios_sriov_disable(struct pci_dev *pdev)
+int pseries_pcibios_sriov_disable(struct pci_dev *pdev)
 {
 	struct pci_dn         *pdn;
 
@@ -289,25 +290,6 @@ static void fixup_winbond_82c105(struct pci_dev* dev)
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_WINBOND, PCI_DEVICE_ID_WINBOND_82C105,
 			 fixup_winbond_82c105);
 
-static enum pci_bus_speed prop_to_pci_speed(u32 prop)
-{
-	switch (prop) {
-	case 0x01:
-		return PCIE_SPEED_2_5GT;
-	case 0x02:
-		return PCIE_SPEED_5_0GT;
-	case 0x04:
-		return PCIE_SPEED_8_0GT;
-	case 0x08:
-		return PCIE_SPEED_16_0GT;
-	case 0x10:
-		return PCIE_SPEED_32_0GT;
-	default:
-		pr_debug("Unexpected PCI link speed property value\n");
-		return PCI_SPEED_UNKNOWN;
-	}
-}
-
 int pseries_root_bridge_prepare(struct pci_host_bridge *bridge)
 {
 	struct device_node *dn, *pdn;
@@ -340,7 +322,35 @@ int pseries_root_bridge_prepare(struct pci_host_bridge *bridge)
 		return 0;
 	}
 
-	bus->max_bus_speed = prop_to_pci_speed(pcie_link_speed_stats[0]);
-	bus->cur_bus_speed = prop_to_pci_speed(pcie_link_speed_stats[1]);
+	switch (pcie_link_speed_stats[0]) {
+	case 0x01:
+		bus->max_bus_speed = PCIE_SPEED_2_5GT;
+		break;
+	case 0x02:
+		bus->max_bus_speed = PCIE_SPEED_5_0GT;
+		break;
+	case 0x04:
+		bus->max_bus_speed = PCIE_SPEED_8_0GT;
+		break;
+	default:
+		bus->max_bus_speed = PCI_SPEED_UNKNOWN;
+		break;
+	}
+
+	switch (pcie_link_speed_stats[1]) {
+	case 0x01:
+		bus->cur_bus_speed = PCIE_SPEED_2_5GT;
+		break;
+	case 0x02:
+		bus->cur_bus_speed = PCIE_SPEED_5_0GT;
+		break;
+	case 0x04:
+		bus->cur_bus_speed = PCIE_SPEED_8_0GT;
+		break;
+	default:
+		bus->cur_bus_speed = PCI_SPEED_UNKNOWN;
+		break;
+	}
+
 	return 0;
 }

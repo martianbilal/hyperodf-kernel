@@ -19,13 +19,13 @@
 #include <linux/sched/signal.h>
 #include <linux/fs.h>
 #include <linux/memblock.h>
-#include <linux/pgtable.h>
 
 #include <asm/fpu.h>
 #include <asm/page.h>
 #include <asm/cacheflush.h>
 #include <asm/mmu_context.h>
 #include <asm/pgalloc.h>
+#include <asm/pgtable.h>
 
 #include <linux/kvm_host.h>
 
@@ -39,44 +39,40 @@
 #define VECTORSPACING 0x100	/* for EI/VI mode */
 #endif
 
+#define VCPU_STAT(x) offsetof(struct kvm_vcpu, stat.x)
 struct kvm_stats_debugfs_item debugfs_entries[] = {
-	VCPU_STAT("wait", wait_exits),
-	VCPU_STAT("cache", cache_exits),
-	VCPU_STAT("signal", signal_exits),
-	VCPU_STAT("interrupt", int_exits),
-	VCPU_STAT("cop_unusable", cop_unusable_exits),
-	VCPU_STAT("tlbmod", tlbmod_exits),
-	VCPU_STAT("tlbmiss_ld", tlbmiss_ld_exits),
-	VCPU_STAT("tlbmiss_st", tlbmiss_st_exits),
-	VCPU_STAT("addrerr_st", addrerr_st_exits),
-	VCPU_STAT("addrerr_ld", addrerr_ld_exits),
-	VCPU_STAT("syscall", syscall_exits),
-	VCPU_STAT("resvd_inst", resvd_inst_exits),
-	VCPU_STAT("break_inst", break_inst_exits),
-	VCPU_STAT("trap_inst", trap_inst_exits),
-	VCPU_STAT("msa_fpe", msa_fpe_exits),
-	VCPU_STAT("fpe", fpe_exits),
-	VCPU_STAT("msa_disabled", msa_disabled_exits),
-	VCPU_STAT("flush_dcache", flush_dcache_exits),
+	{ "wait",	  VCPU_STAT(wait_exits),	 KVM_STAT_VCPU },
+	{ "cache",	  VCPU_STAT(cache_exits),	 KVM_STAT_VCPU },
+	{ "signal",	  VCPU_STAT(signal_exits),	 KVM_STAT_VCPU },
+	{ "interrupt",	  VCPU_STAT(int_exits),		 KVM_STAT_VCPU },
+	{ "cop_unusable", VCPU_STAT(cop_unusable_exits), KVM_STAT_VCPU },
+	{ "tlbmod",	  VCPU_STAT(tlbmod_exits),	 KVM_STAT_VCPU },
+	{ "tlbmiss_ld",	  VCPU_STAT(tlbmiss_ld_exits),	 KVM_STAT_VCPU },
+	{ "tlbmiss_st",	  VCPU_STAT(tlbmiss_st_exits),	 KVM_STAT_VCPU },
+	{ "addrerr_st",	  VCPU_STAT(addrerr_st_exits),	 KVM_STAT_VCPU },
+	{ "addrerr_ld",	  VCPU_STAT(addrerr_ld_exits),	 KVM_STAT_VCPU },
+	{ "syscall",	  VCPU_STAT(syscall_exits),	 KVM_STAT_VCPU },
+	{ "resvd_inst",	  VCPU_STAT(resvd_inst_exits),	 KVM_STAT_VCPU },
+	{ "break_inst",	  VCPU_STAT(break_inst_exits),	 KVM_STAT_VCPU },
+	{ "trap_inst",	  VCPU_STAT(trap_inst_exits),	 KVM_STAT_VCPU },
+	{ "msa_fpe",	  VCPU_STAT(msa_fpe_exits),	 KVM_STAT_VCPU },
+	{ "fpe",	  VCPU_STAT(fpe_exits),		 KVM_STAT_VCPU },
+	{ "msa_disabled", VCPU_STAT(msa_disabled_exits), KVM_STAT_VCPU },
+	{ "flush_dcache", VCPU_STAT(flush_dcache_exits), KVM_STAT_VCPU },
 #ifdef CONFIG_KVM_MIPS_VZ
-	VCPU_STAT("vz_gpsi", vz_gpsi_exits),
-	VCPU_STAT("vz_gsfc", vz_gsfc_exits),
-	VCPU_STAT("vz_hc", vz_hc_exits),
-	VCPU_STAT("vz_grr", vz_grr_exits),
-	VCPU_STAT("vz_gva", vz_gva_exits),
-	VCPU_STAT("vz_ghfc", vz_ghfc_exits),
-	VCPU_STAT("vz_gpa", vz_gpa_exits),
-	VCPU_STAT("vz_resvd", vz_resvd_exits),
-#ifdef CONFIG_CPU_LOONGSON64
-	VCPU_STAT("vz_cpucfg", vz_cpucfg_exits),
+	{ "vz_gpsi",	  VCPU_STAT(vz_gpsi_exits),	 KVM_STAT_VCPU },
+	{ "vz_gsfc",	  VCPU_STAT(vz_gsfc_exits),	 KVM_STAT_VCPU },
+	{ "vz_hc",	  VCPU_STAT(vz_hc_exits),	 KVM_STAT_VCPU },
+	{ "vz_grr",	  VCPU_STAT(vz_grr_exits),	 KVM_STAT_VCPU },
+	{ "vz_gva",	  VCPU_STAT(vz_gva_exits),	 KVM_STAT_VCPU },
+	{ "vz_ghfc",	  VCPU_STAT(vz_ghfc_exits),	 KVM_STAT_VCPU },
+	{ "vz_gpa",	  VCPU_STAT(vz_gpa_exits),	 KVM_STAT_VCPU },
+	{ "vz_resvd",	  VCPU_STAT(vz_resvd_exits),	 KVM_STAT_VCPU },
 #endif
-#endif
-	VCPU_STAT("halt_successful_poll", halt_successful_poll),
-	VCPU_STAT("halt_attempted_poll", halt_attempted_poll),
-	VCPU_STAT("halt_poll_invalid", halt_poll_invalid),
-	VCPU_STAT("halt_wakeup", halt_wakeup),
-	VCPU_STAT("halt_poll_success_ns", halt_poll_success_ns),
-	VCPU_STAT("halt_poll_fail_ns", halt_poll_fail_ns),
+	{ "halt_successful_poll", VCPU_STAT(halt_successful_poll), KVM_STAT_VCPU },
+	{ "halt_attempted_poll", VCPU_STAT(halt_attempted_poll), KVM_STAT_VCPU },
+	{ "halt_poll_invalid", VCPU_STAT(halt_poll_invalid), KVM_STAT_VCPU },
+	{ "halt_wakeup",  VCPU_STAT(halt_wakeup),	 KVM_STAT_VCPU },
 	{NULL}
 };
 
@@ -84,13 +80,13 @@ bool kvm_trace_guest_mode_change;
 
 int kvm_guest_mode_change_trace_reg(void)
 {
-	kvm_trace_guest_mode_change = true;
+	kvm_trace_guest_mode_change = 1;
 	return 0;
 }
 
 void kvm_guest_mode_change_trace_unreg(void)
 {
-	kvm_trace_guest_mode_change = false;
+	kvm_trace_guest_mode_change = 0;
 }
 
 /*
@@ -122,23 +118,19 @@ void kvm_arch_hardware_disable(void)
 	kvm_mips_callbacks->hardware_disable();
 }
 
-int kvm_arch_hardware_setup(void *opaque)
+int kvm_arch_hardware_setup(void)
 {
 	return 0;
 }
 
-int kvm_arch_check_processor_compat(void *opaque)
+int kvm_arch_check_processor_compat(void)
 {
 	return 0;
 }
-
-extern void kvm_init_loongson_ipi(struct kvm *kvm);
 
 int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 {
 	switch (type) {
-	case KVM_VM_MIPS_AUTO:
-		break;
 #ifdef CONFIG_KVM_MIPS_VZ
 	case KVM_VM_MIPS_VZ:
 #else
@@ -148,16 +140,12 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 	default:
 		/* Unsupported KVM type */
 		return -EINVAL;
-	}
+	};
 
 	/* Allocate page table to map GPA -> RPA */
 	kvm->arch.gpa_mm.pgd = kvm_pgd_alloc();
 	if (!kvm->arch.gpa_mm.pgd)
 		return -ENOMEM;
-
-#ifdef CONFIG_CPU_LOONGSON64
-	kvm_init_loongson_ipi(kvm);
-#endif
 
 	return 0;
 }
@@ -200,6 +188,12 @@ long kvm_arch_dev_ioctl(struct file *filp, unsigned int ioctl,
 	return -ENOIOCTLCMD;
 }
 
+int kvm_arch_create_memslot(struct kvm *kvm, struct kvm_memory_slot *slot,
+			    unsigned long npages)
+{
+	return 0;
+}
+
 void kvm_arch_flush_shadow_all(struct kvm *kvm)
 {
 	/* Flush whole GPA */
@@ -236,7 +230,7 @@ int kvm_arch_prepare_memory_region(struct kvm *kvm,
 
 void kvm_arch_commit_memory_region(struct kvm *kvm,
 				   const struct kvm_userspace_memory_region *mem,
-				   struct kvm_memory_slot *old,
+				   const struct kvm_memory_slot *old,
 				   const struct kvm_memory_slot *new,
 				   enum kvm_mr_change change)
 {
@@ -296,7 +290,8 @@ static enum hrtimer_restart kvm_mips_comparecount_wakeup(struct hrtimer *timer)
 	kvm_mips_callbacks->queue_timer_int(vcpu);
 
 	vcpu->arch.wait = 0;
-	rcuwait_wake_up(&vcpu->wait);
+	if (swq_has_sleeper(&vcpu->wq))
+		swake_up_one(&vcpu->wq);
 
 	return kvm_mips_count_timeout(vcpu);
 }
@@ -450,7 +445,7 @@ int kvm_arch_vcpu_ioctl_set_guest_debug(struct kvm_vcpu *vcpu,
 	return -ENOIOCTLCMD;
 }
 
-int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
+int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu, struct kvm_run *run)
 {
 	int r = -EINTR;
 
@@ -460,11 +455,11 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 	if (vcpu->mmio_needed) {
 		if (!vcpu->mmio_is_write)
-			kvm_mips_complete_mmio_load(vcpu);
+			kvm_mips_complete_mmio_load(vcpu, run);
 		vcpu->mmio_needed = 0;
 	}
 
-	if (vcpu->run->immediate_exit)
+	if (run->immediate_exit)
 		goto out;
 
 	lose_fpu(1);
@@ -481,7 +476,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	 */
 	smp_store_mb(vcpu->mode, IN_GUEST_MODE);
 
-	r = kvm_mips_callbacks->vcpu_run(vcpu);
+	r = kvm_mips_callbacks->vcpu_run(run, vcpu);
 
 	trace_kvm_out(vcpu);
 	guest_exit_irqoff();
@@ -500,10 +495,7 @@ int kvm_vcpu_ioctl_interrupt(struct kvm_vcpu *vcpu,
 	int intr = (int)irq->irq;
 	struct kvm_vcpu *dvcpu = NULL;
 
-	if (intr == kvm_priority_to_irq[MIPS_EXC_INT_IPI_1] ||
-	    intr == kvm_priority_to_irq[MIPS_EXC_INT_IPI_2] ||
-	    intr == (-kvm_priority_to_irq[MIPS_EXC_INT_IPI_1]) ||
-	    intr == (-kvm_priority_to_irq[MIPS_EXC_INT_IPI_2]))
+	if (intr == 3 || intr == -3 || intr == 4 || intr == -4)
 		kvm_debug("%s: CPU: %d, INTR: %d\n", __func__, irq->cpu,
 			  (int)intr);
 
@@ -512,10 +504,10 @@ int kvm_vcpu_ioctl_interrupt(struct kvm_vcpu *vcpu,
 	else
 		dvcpu = vcpu->kvm->vcpus[irq->cpu];
 
-	if (intr == 2 || intr == 3 || intr == 4 || intr == 6) {
+	if (intr == 2 || intr == 3 || intr == 4) {
 		kvm_mips_callbacks->queue_io_int(dvcpu, irq);
 
-	} else if (intr == -2 || intr == -3 || intr == -4 || intr == -6) {
+	} else if (intr == -2 || intr == -3 || intr == -4) {
 		kvm_mips_callbacks->dequeue_io_int(dvcpu, irq);
 	} else {
 		kvm_err("%s: invalid interrupt ioctl (%d:%d)\n", __func__,
@@ -525,7 +517,8 @@ int kvm_vcpu_ioctl_interrupt(struct kvm_vcpu *vcpu,
 
 	dvcpu->arch.wait = 0;
 
-	rcuwait_wake_up(&dvcpu->wait);
+	if (swq_has_sleeper(&dvcpu->wq))
+		swake_up_one(&dvcpu->wq);
 
 	return 0;
 }
@@ -991,16 +984,69 @@ long kvm_arch_vcpu_ioctl(struct file *filp, unsigned int ioctl,
 	return r;
 }
 
-void kvm_arch_sync_dirty_log(struct kvm *kvm, struct kvm_memory_slot *memslot)
+/**
+ * kvm_vm_ioctl_get_dirty_log - get and clear the log of dirty pages in a slot
+ * @kvm: kvm instance
+ * @log: slot id and address to which we copy the log
+ *
+ * Steps 1-4 below provide general overview of dirty page logging. See
+ * kvm_get_dirty_log_protect() function description for additional details.
+ *
+ * We call kvm_get_dirty_log_protect() to handle steps 1-3, upon return we
+ * always flush the TLB (step 4) even if previous step failed  and the dirty
+ * bitmap may be corrupt. Regardless of previous outcome the KVM logging API
+ * does not preclude user space subsequent dirty log read. Flushing TLB ensures
+ * writes will be marked dirty for next log read.
+ *
+ *   1. Take a snapshot of the bit and clear it if needed.
+ *   2. Write protect the corresponding page.
+ *   3. Copy the snapshot to the userspace.
+ *   4. Flush TLB's if needed.
+ */
+int kvm_vm_ioctl_get_dirty_log(struct kvm *kvm, struct kvm_dirty_log *log)
 {
+	struct kvm_memslots *slots;
+	struct kvm_memory_slot *memslot;
+	bool flush = false;
+	int r;
 
+	mutex_lock(&kvm->slots_lock);
+
+	r = kvm_get_dirty_log_protect(kvm, log, &flush);
+
+	if (flush) {
+		slots = kvm_memslots(kvm);
+		memslot = id_to_memslot(slots, log->slot);
+
+		/* Let implementation handle TLB/GVA invalidation */
+		kvm_mips_callbacks->flush_shadow_memslot(kvm, memslot);
+	}
+
+	mutex_unlock(&kvm->slots_lock);
+	return r;
 }
 
-void kvm_arch_flush_remote_tlbs_memslot(struct kvm *kvm,
-					struct kvm_memory_slot *memslot)
+int kvm_vm_ioctl_clear_dirty_log(struct kvm *kvm, struct kvm_clear_dirty_log *log)
 {
-	/* Let implementation handle TLB/GVA invalidation */
-	kvm_mips_callbacks->flush_shadow_memslot(kvm, memslot);
+	struct kvm_memslots *slots;
+	struct kvm_memory_slot *memslot;
+	bool flush = false;
+	int r;
+
+	mutex_lock(&kvm->slots_lock);
+
+	r = kvm_clear_dirty_log_protect(kvm, log, &flush);
+
+	if (flush) {
+		slots = kvm_memslots(kvm);
+		memslot = id_to_memslot(slots, log->slot);
+
+		/* Let implementation handle TLB/GVA invalidation */
+		kvm_mips_callbacks->flush_shadow_memslot(kvm, memslot);
+	}
+
+	mutex_unlock(&kvm->slots_lock);
+	return r;
 }
 
 long kvm_arch_vm_ioctl(struct file *filp, unsigned int ioctl, unsigned long arg)
@@ -1199,9 +1245,8 @@ static void kvm_mips_set_c0_status(void)
 /*
  * Return value is in the form (errcode<<2 | RESUME_FLAG_HOST | RESUME_FLAG_NV)
  */
-int kvm_mips_handle_exit(struct kvm_vcpu *vcpu)
+int kvm_mips_handle_exit(struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
-	struct kvm_run *run = vcpu->run;
 	u32 cause = vcpu->arch.host_cp0_cause;
 	u32 exccode = (cause >> CAUSEB_EXCCODE) & 0x1f;
 	u32 __user *opc = (u32 __user *) vcpu->arch.pc;
@@ -1238,7 +1283,7 @@ int kvm_mips_handle_exit(struct kvm_vcpu *vcpu)
 		 * end up causing an exception to be delivered to the Guest
 		 * Kernel
 		 */
-		er = kvm_mips_check_privilege(cause, opc, vcpu);
+		er = kvm_mips_check_privilege(cause, opc, run, vcpu);
 		if (er == EMULATE_PRIV_FAIL) {
 			goto skip_emul;
 		} else if (er == EMULATE_FAIL) {
@@ -1387,7 +1432,7 @@ skip_emul:
 		 */
 		smp_store_mb(vcpu->mode, IN_GUEST_MODE);
 
-		kvm_mips_callbacks->vcpu_reenter(vcpu);
+		kvm_mips_callbacks->vcpu_reenter(run, vcpu);
 
 		/*
 		 * If FPU / MSA are enabled (i.e. the guest's FPU / MSA context
@@ -1634,34 +1679,6 @@ static struct notifier_block kvm_mips_csr_die_notifier = {
 	.notifier_call = kvm_mips_csr_die_notify,
 };
 
-static u32 kvm_default_priority_to_irq[MIPS_EXC_MAX] = {
-	[MIPS_EXC_INT_TIMER] = C_IRQ5,
-	[MIPS_EXC_INT_IO_1]  = C_IRQ0,
-	[MIPS_EXC_INT_IPI_1] = C_IRQ1,
-	[MIPS_EXC_INT_IPI_2] = C_IRQ2,
-};
-
-static u32 kvm_loongson3_priority_to_irq[MIPS_EXC_MAX] = {
-	[MIPS_EXC_INT_TIMER] = C_IRQ5,
-	[MIPS_EXC_INT_IO_1]  = C_IRQ0,
-	[MIPS_EXC_INT_IO_2]  = C_IRQ1,
-	[MIPS_EXC_INT_IPI_1] = C_IRQ4,
-};
-
-u32 *kvm_priority_to_irq = kvm_default_priority_to_irq;
-
-u32 kvm_irq_to_priority(u32 irq)
-{
-	int i;
-
-	for (i = MIPS_EXC_INT_TIMER; i < MIPS_EXC_MAX; i++) {
-		if (kvm_priority_to_irq[i] == (1 << (irq + 8)))
-			return i;
-	}
-
-	return MIPS_EXC_MAX;
-}
-
 static int __init kvm_mips_init(void)
 {
 	int ret;
@@ -1679,9 +1696,6 @@ static int __init kvm_mips_init(void)
 
 	if (ret)
 		return ret;
-
-	if (boot_cpu_type() == CPU_LOONGSON64)
-		kvm_priority_to_irq = kvm_loongson3_priority_to_irq;
 
 	register_die_notifier(&kvm_mips_csr_die_notifier);
 

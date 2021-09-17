@@ -72,8 +72,8 @@ nilfs_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
  * If the create succeeds, we fill in the inode information
  * with d_instantiate().
  */
-static int nilfs_create(struct user_namespace *mnt_userns, struct inode *dir,
-			struct dentry *dentry, umode_t mode, bool excl)
+static int nilfs_create(struct inode *dir, struct dentry *dentry, umode_t mode,
+			bool excl)
 {
 	struct inode *inode;
 	struct nilfs_transaction_info ti;
@@ -100,8 +100,7 @@ static int nilfs_create(struct user_namespace *mnt_userns, struct inode *dir,
 }
 
 static int
-nilfs_mknod(struct user_namespace *mnt_userns, struct inode *dir,
-	    struct dentry *dentry, umode_t mode, dev_t rdev)
+nilfs_mknod(struct inode *dir, struct dentry *dentry, umode_t mode, dev_t rdev)
 {
 	struct inode *inode;
 	struct nilfs_transaction_info ti;
@@ -125,8 +124,8 @@ nilfs_mknod(struct user_namespace *mnt_userns, struct inode *dir,
 	return err;
 }
 
-static int nilfs_symlink(struct user_namespace *mnt_userns, struct inode *dir,
-			 struct dentry *dentry, const char *symname)
+static int nilfs_symlink(struct inode *dir, struct dentry *dentry,
+			 const char *symname)
 {
 	struct nilfs_transaction_info ti;
 	struct super_block *sb = dir->i_sb;
@@ -202,8 +201,7 @@ static int nilfs_link(struct dentry *old_dentry, struct inode *dir,
 	return err;
 }
 
-static int nilfs_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
-		       struct dentry *dentry, umode_t mode)
+static int nilfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 {
 	struct inode *inode;
 	struct nilfs_transaction_info ti;
@@ -274,9 +272,9 @@ static int nilfs_do_unlink(struct inode *dir, struct dentry *dentry)
 		goto out;
 
 	if (!inode->i_nlink) {
-		nilfs_warn(inode->i_sb,
-			   "deleting nonexistent file (ino=%lu), %d",
-			   inode->i_ino, inode->i_nlink);
+		nilfs_msg(inode->i_sb, KERN_WARNING,
+			  "deleting nonexistent file (ino=%lu), %d",
+			  inode->i_ino, inode->i_nlink);
 		set_nlink(inode, 1);
 	}
 	err = nilfs_delete_entry(de, page);
@@ -340,9 +338,8 @@ static int nilfs_rmdir(struct inode *dir, struct dentry *dentry)
 	return err;
 }
 
-static int nilfs_rename(struct user_namespace *mnt_userns,
-			struct inode *old_dir, struct dentry *old_dentry,
-			struct inode *new_dir, struct dentry *new_dentry,
+static int nilfs_rename(struct inode *old_dir, struct dentry *old_dentry,
+			struct inode *new_dir,	struct dentry *new_dentry,
 			unsigned int flags)
 {
 	struct inode *old_inode = d_inode(old_dentry);

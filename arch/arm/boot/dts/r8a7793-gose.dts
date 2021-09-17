@@ -49,9 +49,6 @@
 		i2c10 = &gpioi2c4;
 		i2c11 = &i2chdmi;
 		i2c12 = &i2cexio4;
-		mmc0 = &sdhi0;
-		mmc1 = &sdhi1;
-		mmc2 = &sdhi2;
 	};
 
 	chosen {
@@ -337,8 +334,9 @@
 		composite-in@20 {
 			compatible = "adi,adv7180cp";
 			reg = <0x20>;
+			remote = <&vin1>;
 
-			ports {
+			port {
 				#address-cells = <1>;
 				#size-cells = <0>;
 
@@ -368,6 +366,8 @@
 			adi,input-depth = <8>;
 			adi,input-colorspace = "rgb";
 			adi,input-clock = "1x";
+			adi,input-style = <1>;
+			adi,input-justification = "evenly";
 
 			ports {
 				#address-cells = <1>;
@@ -396,7 +396,7 @@
 			interrupts = <2 IRQ_TYPE_LEVEL_LOW>;
 			default-input = <0>;
 
-			ports {
+			port {
 				#address-cells = <1>;
 				#size-cells = <0>;
 
@@ -591,7 +591,6 @@
 		interrupt-parent = <&irqc0>;
 		interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
 		micrel,led-mode = <1>;
-		reset-gpios = <&gpio5 22 GPIO_ACTIVE_LOW>;
 	};
 };
 

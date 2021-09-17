@@ -246,8 +246,10 @@ struct gpio_desc *__must_check devm_gpiod_get_index_optional(struct device *dev,
 	struct gpio_desc *desc;
 
 	desc = devm_gpiod_get_index(dev, con_id, index, flags);
-	if (gpiod_not_found(desc))
-		return NULL;
+	if (IS_ERR(desc)) {
+		if (PTR_ERR(desc) == -ENOENT)
+			return NULL;
+	}
 
 	return desc;
 }
@@ -306,7 +308,7 @@ devm_gpiod_get_array_optional(struct device *dev, const char *con_id,
 	struct gpio_descs *descs;
 
 	descs = devm_gpiod_get_array(dev, con_id, flags);
-	if (gpiod_not_found(descs))
+	if (PTR_ERR(descs) == -ENOENT)
 		return NULL;
 
 	return descs;
@@ -476,41 +478,3 @@ void devm_gpio_free(struct device *dev, unsigned int gpio)
 		&gpio));
 }
 EXPORT_SYMBOL_GPL(devm_gpio_free);
-
-static void devm_gpio_chip_release(void *data)
-{
-	struct gpio_chip *gc = data;
-
-	gpiochip_remove(gc);
-}
-
-/**
- * devm_gpiochip_add_data_with_key() - Resource managed gpiochip_add_data_with_key()
- * @dev: pointer to the device that gpio_chip belongs to.
- * @gc: the GPIO chip to register
- * @data: driver-private data associated with this chip
- * @lock_key: lockdep class for IRQ lock
- * @request_key: lockdep class for IRQ request
- *
- * Context: potentially before irqs will work
- *
- * The gpio chip automatically be released when the device is unbound.
- *
- * Returns:
- * A negative errno if the chip can't be registered, such as because the
- * gc->base is invalid or already associated with a different chip.
- * Otherwise it returns zero as a success code.
- */
-int devm_gpiochip_add_data_with_key(struct device *dev, struct gpio_chip *gc, void *data,
-				    struct lock_class_key *lock_key,
-				    struct lock_class_key *request_key)
-{
-	int ret;
-
-	ret = gpiochip_add_data_with_key(gc, data, lock_key, request_key);
-	if (ret < 0)
-		return ret;
-
-	return devm_add_action_or_reset(dev, devm_gpio_chip_release, gc);
-}
-EXPORT_SYMBOL_GPL(devm_gpiochip_add_data_with_key);

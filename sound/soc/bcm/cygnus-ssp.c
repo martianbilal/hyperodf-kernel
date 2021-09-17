@@ -1056,7 +1056,7 @@ static int __cygnus_ssp_suspend(struct snd_soc_dai *cpu_dai)
 {
 	struct cygnus_aio_port *aio = cygnus_dai_get_portinfo(cpu_dai);
 
-	if (!snd_soc_dai_active(cpu_dai))
+	if (!cpu_dai->active)
 		return 0;
 
 	if (!aio->is_slave) {
@@ -1097,7 +1097,7 @@ static int __cygnus_ssp_resume(struct snd_soc_dai *cpu_dai)
 	struct cygnus_aio_port *aio = cygnus_dai_get_portinfo(cpu_dai);
 	int error;
 
-	if (!snd_soc_dai_active(cpu_dai))
+	if (!cpu_dai->active)
 		return 0;
 
 	if (!aio->is_slave) {
@@ -1348,10 +1348,8 @@ static int cygnus_ssp_probe(struct platform_device *pdev)
 					&cygnus_ssp_dai[active_port_count]);
 
 		/* negative is err, 0 is active and good, 1 is disabled */
-		if (err < 0) {
-			of_node_put(child_node);
+		if (err < 0)
 			return err;
-		}
 		else if (!err) {
 			dev_dbg(dev, "Activating DAI: %s\n",
 				cygnus_ssp_dai[active_port_count].name);

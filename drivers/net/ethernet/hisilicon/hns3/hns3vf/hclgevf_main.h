@@ -42,6 +42,8 @@
 #define HCLGEVF_CMDQ_RX_DEPTH_REG		0x27020
 #define HCLGEVF_CMDQ_RX_TAIL_REG		0x27024
 #define HCLGEVF_CMDQ_RX_HEAD_REG		0x27028
+#define HCLGEVF_CMDQ_INTR_SRC_REG		0x27100
+#define HCLGEVF_CMDQ_INTR_STS_REG		0x27104
 #define HCLGEVF_CMDQ_INTR_EN_REG		0x27108
 #define HCLGEVF_CMDQ_INTR_GEN_REG		0x2710C
 
@@ -86,7 +88,7 @@
 /* Vector0 interrupt CMDQ event source register(RW) */
 #define HCLGEVF_VECTOR0_CMDQ_SRC_REG	0x27100
 /* Vector0 interrupt CMDQ event status register(RO) */
-#define HCLGEVF_VECTOR0_CMDQ_STATE_REG	0x27104
+#define HCLGEVF_VECTOR0_CMDQ_STAT_REG	0x27104
 /* CMDQ register bits for RX event(=MBX event) */
 #define HCLGEVF_VECTOR0_RX_CMDQ_INT_B	1
 /* RST register bits for RESET event */
@@ -113,7 +115,8 @@
 #define HCLGEVF_RSS_HASH_ALGO_SIMPLE	1
 #define HCLGEVF_RSS_HASH_ALGO_SYMMETRIC	2
 #define HCLGEVF_RSS_HASH_ALGO_MASK	0xf
-
+#define HCLGEVF_RSS_CFG_TBL_NUM \
+	(HCLGEVF_RSS_IND_TBL_SIZE / HCLGEVF_RSS_CFG_TBL_SIZE)
 #define HCLGEVF_RSS_INPUT_TUPLE_OTHER	GENMASK(3, 0)
 #define HCLGEVF_RSS_INPUT_TUPLE_SCTP	GENMASK(4, 0)
 #define HCLGEVF_D_PORT_BIT		BIT(0)
@@ -121,10 +124,6 @@
 #define HCLGEVF_D_IP_BIT		BIT(2)
 #define HCLGEVF_S_IP_BIT		BIT(3)
 #define HCLGEVF_V_TAG_BIT		BIT(4)
-#define HCLGEVF_RSS_INPUT_TUPLE_SCTP_NO_PORT	\
-	(HCLGEVF_D_IP_BIT | HCLGEVF_S_IP_BIT | HCLGEVF_V_TAG_BIT)
-
-#define HCLGEVF_MAC_MAX_FRAME		9728
 
 #define HCLGEVF_STATS_TIMER_INTERVAL	36U
 
@@ -142,7 +141,6 @@ enum hclgevf_states {
 	HCLGEVF_STATE_IRQ_INITED,
 	HCLGEVF_STATE_REMOVING,
 	HCLGEVF_STATE_NIC_REGISTERED,
-	HCLGEVF_STATE_ROCE_REGISTERED,
 	/* task states */
 	HCLGEVF_STATE_RST_SERVICE_SCHED,
 	HCLGEVF_STATE_RST_HANDLING,
@@ -150,7 +148,6 @@ enum hclgevf_states {
 	HCLGEVF_STATE_MBX_HANDLING,
 	HCLGEVF_STATE_CMD_DISABLE,
 	HCLGEVF_STATE_LINK_UPDATING,
-	HCLGEVF_STATE_PROMISC_CHANGED,
 	HCLGEVF_STATE_RST_FAIL,
 };
 
@@ -167,7 +164,6 @@ struct hclgevf_mac {
 
 struct hclgevf_hw {
 	void __iomem *io_base;
-	void __iomem *mem_base;
 	int num_vec;
 	struct hclgevf_cmq cmq;
 	struct hclgevf_mac mac;
@@ -218,8 +214,7 @@ struct hclgevf_rss_cfg {
 	u32 hash_algo;
 	u32 rss_size;
 	u8 hw_tc_map;
-	/* shadow table */
-	u8 *rss_indirection_tbl;
+	u8  rss_indirection_tbl[HCLGEVF_RSS_IND_TBL_SIZE]; /* shadow table */
 	struct hclgevf_rss_tuple_cfg rss_tuple_sets;
 };
 
@@ -237,29 +232,6 @@ struct hclgevf_rst_stats {
 	u32 rst_done_cnt;		/* the number of reset completed */
 	u32 hw_rst_done_cnt;		/* the number of HW reset completed */
 	u32 rst_fail_cnt;		/* the number of VF reset fail */
-};
-
-enum HCLGEVF_MAC_ADDR_TYPE {
-	HCLGEVF_MAC_ADDR_UC,
-	HCLGEVF_MAC_ADDR_MC
-};
-
-enum HCLGEVF_MAC_NODE_STATE {
-	HCLGEVF_MAC_TO_ADD,
-	HCLGEVF_MAC_TO_DEL,
-	HCLGEVF_MAC_ACTIVE
-};
-
-struct hclgevf_mac_addr_node {
-	struct list_head node;
-	enum HCLGEVF_MAC_NODE_STATE state;
-	u8 mac_addr[ETH_ALEN];
-};
-
-struct hclgevf_mac_table_cfg {
-	spinlock_t mac_list_lock; /* protect mac address need to add/detele */
-	struct list_head uc_mac_list;
-	struct list_head mc_mac_list;
 };
 
 struct hclgevf_dev {
@@ -284,7 +256,7 @@ struct hclgevf_dev {
 	struct semaphore reset_sem;	/* protect reset process */
 
 	u32 fw_version;
-	u16 num_tqps;		/* num task queue pairs of this VF */
+	u16 num_tqps;		/* num task queue pairs of this PF */
 
 	u16 alloc_rss_size;	/* allocated RSS task queue */
 	u16 rss_size_max;	/* HW defined max RSS task queue */
@@ -310,8 +282,6 @@ struct hclgevf_dev {
 
 	unsigned long vlan_del_fail_bmap[BITS_TO_LONGS(VLAN_N_VID)];
 
-	struct hclgevf_mac_table_cfg mac_table;
-
 	bool mbx_event_pending;
 	struct hclgevf_mbx_resp_status mbx_resp; /* mailbox response */
 	struct hclgevf_mbx_arq_ring arq; /* mailbox async rx queue */
@@ -335,8 +305,8 @@ static inline bool hclgevf_is_reset_pending(struct hclgevf_dev *hdev)
 	return !!hdev->reset_pending;
 }
 
-int hclgevf_send_mbx_msg(struct hclgevf_dev *hdev,
-			 struct hclge_vf_to_pf_msg *send_msg, bool need_resp,
+int hclgevf_send_mbx_msg(struct hclgevf_dev *hdev, u16 code, u16 subcode,
+			 const u8 *msg_data, u8 msg_len, bool need_resp,
 			 u8 *resp_data, u16 resp_len);
 void hclgevf_mbx_handler(struct hclgevf_dev *hdev);
 void hclgevf_mbx_async_handler(struct hclgevf_dev *hdev);

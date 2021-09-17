@@ -108,17 +108,15 @@ static int spi_check_buswidth_req(struct spi_mem *mem, u8 buswidth, bool tx)
 		return 0;
 
 	case 2:
-		if ((tx &&
-		     (mode & (SPI_TX_DUAL | SPI_TX_QUAD | SPI_TX_OCTAL))) ||
-		    (!tx &&
-		     (mode & (SPI_RX_DUAL | SPI_RX_QUAD | SPI_RX_OCTAL))))
+		if ((tx && (mode & (SPI_TX_DUAL | SPI_TX_QUAD))) ||
+		    (!tx && (mode & (SPI_RX_DUAL | SPI_RX_QUAD))))
 			return 0;
 
 		break;
 
 	case 4:
-		if ((tx && (mode & (SPI_TX_QUAD | SPI_TX_OCTAL))) ||
-		    (!tx && (mode & (SPI_RX_QUAD | SPI_RX_OCTAL))))
+		if ((tx && (mode & SPI_TX_QUAD)) ||
+		    (!tx && (mode & SPI_RX_QUAD)))
 			return 0;
 
 		break;
@@ -137,8 +135,8 @@ static int spi_check_buswidth_req(struct spi_mem *mem, u8 buswidth, bool tx)
 	return -ENOTSUPP;
 }
 
-static bool spi_mem_check_buswidth(struct spi_mem *mem,
-				   const struct spi_mem_op *op)
+bool spi_mem_default_supports_op(struct spi_mem *mem,
+				 const struct spi_mem_op *op)
 {
 	if (spi_check_buswidth_req(mem, op->cmd.buswidth, true))
 		return false;
@@ -158,28 +156,6 @@ static bool spi_mem_check_buswidth(struct spi_mem *mem,
 
 	return true;
 }
-
-bool spi_mem_dtr_supports_op(struct spi_mem *mem,
-			     const struct spi_mem_op *op)
-{
-	if (op->cmd.nbytes != 2)
-		return false;
-
-	return spi_mem_check_buswidth(mem, op);
-}
-EXPORT_SYMBOL_GPL(spi_mem_dtr_supports_op);
-
-bool spi_mem_default_supports_op(struct spi_mem *mem,
-				 const struct spi_mem_op *op)
-{
-	if (op->cmd.dtr || op->addr.dtr || op->dummy.dtr || op->data.dtr)
-		return false;
-
-	if (op->cmd.nbytes != 1)
-		return false;
-
-	return spi_mem_check_buswidth(mem, op);
-}
 EXPORT_SYMBOL_GPL(spi_mem_default_supports_op);
 
 static bool spi_mem_buswidth_is_valid(u8 buswidth)
@@ -192,7 +168,7 @@ static bool spi_mem_buswidth_is_valid(u8 buswidth)
 
 static int spi_mem_check_op(const struct spi_mem_op *op)
 {
-	if (!op->cmd.buswidth || !op->cmd.nbytes)
+	if (!op->cmd.buswidth)
 		return -EINVAL;
 
 	if ((op->addr.nbytes && !op->addr.buswidth) ||
@@ -259,7 +235,6 @@ static int spi_mem_access_start(struct spi_mem *mem)
 
 		ret = pm_runtime_get_sync(ctlr->dev.parent);
 		if (ret < 0) {
-			pm_runtime_put_noidle(ctlr->dev.parent);
 			dev_err(&ctlr->dev, "Failed to power device: %d\n",
 				ret);
 			return ret;
@@ -329,7 +304,8 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 			return ret;
 	}
 
-	tmpbufsize = op->cmd.nbytes + op->addr.nbytes + op->dummy.nbytes;
+	tmpbufsize = sizeof(op->cmd.opcode) + op->addr.nbytes +
+		     op->dummy.nbytes;
 
 	/*
 	 * Allocate a buffer to transmit the CMD, ADDR cycles with kmalloc() so
@@ -344,7 +320,7 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 
 	tmpbuf[0] = op->cmd.opcode;
 	xfers[xferpos].tx_buf = tmpbuf;
-	xfers[xferpos].len = op->cmd.nbytes;
+	xfers[xferpos].len = sizeof(op->cmd.opcode);
 	xfers[xferpos].tx_nbits = op->cmd.buswidth;
 	spi_message_add_tail(&xfers[xferpos], &msg);
 	xferpos++;
@@ -370,7 +346,6 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 		xfers[xferpos].tx_buf = tmpbuf + op->addr.nbytes + 1;
 		xfers[xferpos].len = op->dummy.nbytes;
 		xfers[xferpos].tx_nbits = op->dummy.buswidth;
-		xfers[xferpos].dummy_data = 1;
 		spi_message_add_tail(&xfers[xferpos], &msg);
 		xferpos++;
 		totalxferlen += op->dummy.nbytes;
@@ -443,12 +418,12 @@ int spi_mem_adjust_op_size(struct spi_mem *mem, struct spi_mem_op *op)
 	struct spi_controller *ctlr = mem->spi->controller;
 	size_t len;
 
+	len = sizeof(op->cmd.opcode) + op->addr.nbytes + op->dummy.nbytes;
+
 	if (ctlr->mem_ops && ctlr->mem_ops->adjust_op_size)
 		return ctlr->mem_ops->adjust_op_size(mem, op);
 
 	if (!ctlr->mem_ops || !ctlr->mem_ops->exec_op) {
-		len = op->cmd.nbytes + op->addr.nbytes + op->dummy.nbytes;
-
 		if (len > spi_max_transfer_size(mem->spi))
 			return -EINVAL;
 
@@ -512,7 +487,7 @@ static ssize_t spi_mem_no_dirmap_write(struct spi_mem_dirmap_desc *desc,
  * This function is creating a direct mapping descriptor which can then be used
  * to access the memory using spi_mem_dirmap_read() or spi_mem_dirmap_write().
  * If the SPI controller driver does not support direct mapping, this function
- * falls back to an implementation using spi_mem_exec_op(), so that the caller
+ * fallback to an implementation using spi_mem_exec_op(), so that the caller
  * doesn't have to bother implementing a fallback on his own.
  *
  * Return: a valid pointer in case of success, and ERR_PTR() otherwise.
@@ -761,7 +736,7 @@ static int spi_mem_probe(struct spi_device *spi)
 		mem->name = dev_name(&spi->dev);
 
 	if (IS_ERR_OR_NULL(mem->name))
-		return PTR_ERR_OR_ZERO(mem->name);
+		return PTR_ERR(mem->name);
 
 	spi_set_drvdata(spi, mem);
 

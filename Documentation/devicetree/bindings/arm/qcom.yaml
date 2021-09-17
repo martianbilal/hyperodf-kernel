@@ -28,7 +28,6 @@ description: |
         apq8074
         apq8084
         apq8096
-        ipq6018
         ipq8074
         mdm9615
         msm8916
@@ -37,21 +36,13 @@ description: |
         msm8994
         msm8996
         sc7180
-        sdm630
-        sdm660
         sdm845
-        sdx55
-        sm8250
-        sm8350
 
   The 'board' element must be one of the following strings:
 
         cdp
-        cp01-c1
         dragonboard
         hk01
-        hk10-c1
-        hk10-c2
         idp
         liquid
         mtp
@@ -78,8 +69,6 @@ description: |
   foundry 2.
 
 properties:
-  $nodename:
-    const: "/"
   compatible:
     oneOf:
       - items:
@@ -155,41 +144,10 @@ properties:
       - items:
           - enum:
               - qcom,ipq8074-hk01
-              - qcom,ipq8074-hk10-c1
-              - qcom,ipq8074-hk10-c2
           - const: qcom,ipq8074
 
       - items:
           - enum:
               - qcom,sc7180-idp
           - const: qcom,sc7180
-
-      - items:
-          - enum:
-              - xiaomi,lavender
-          - const: qcom,sdm660
-
-      - items:
-          - enum:
-              - qcom,sdx55-mtp
-          - const: qcom,sdx55
-
-      - items:
-          - enum:
-              - qcom,ipq6018-cp01-c1
-          - const: qcom,ipq6018
-
-      - items:
-          - enum:
-              - qcom,qrb5165-rb5
-              - qcom,sm8250-mtp
-          - const: qcom,sm8250
-
-      - items:
-          - enum:
-              - qcom,sm8350-mtp
-          - const: qcom,sm8350
-
-additionalProperties: true
-
 ...

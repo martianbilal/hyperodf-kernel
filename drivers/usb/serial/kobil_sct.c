@@ -48,7 +48,7 @@
 
 /* Function prototypes */
 static int kobil_port_probe(struct usb_serial_port *probe);
-static void kobil_port_remove(struct usb_serial_port *probe);
+static int kobil_port_remove(struct usb_serial_port *probe);
 static int  kobil_open(struct tty_struct *tty, struct usb_serial_port *port);
 static void kobil_close(struct usb_serial_port *port);
 static int  kobil_write(struct tty_struct *tty, struct usb_serial_port *port,
@@ -143,12 +143,14 @@ static int kobil_port_probe(struct usb_serial_port *port)
 }
 
 
-static void kobil_port_remove(struct usb_serial_port *port)
+static int kobil_port_remove(struct usb_serial_port *port)
 {
 	struct kobil_private *priv;
 
 	priv = usb_get_serial_port_data(port);
 	kfree(priv);
+
+	return 0;
 }
 
 static void kobil_init_termios(struct tty_struct *tty)
@@ -497,7 +499,7 @@ static void kobil_set_termios(struct tty_struct *tty,
 		break;
 	default:
 		speed = 9600;
-		fallthrough;
+		/* fall through */
 	case 9600:
 		urb_val = SUSBCR_SBR_9600;
 		break;
@@ -524,10 +526,6 @@ static void kobil_set_termios(struct tty_struct *tty,
 		  0,
 		  KOBIL_TIMEOUT
 		);
-	if (result) {
-		dev_err(&port->dev, "failed to update line settings: %d\n",
-				result);
-	}
 }
 
 static int kobil_ioctl(struct tty_struct *tty,

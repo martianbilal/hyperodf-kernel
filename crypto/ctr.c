@@ -7,7 +7,6 @@
 
 #include <crypto/algapi.h>
 #include <crypto/ctr.h>
-#include <crypto/internal/cipher.h>
 #include <crypto/internal/skcipher.h>
 #include <linux/err.h>
 #include <linux/init.h>
@@ -257,24 +256,38 @@ static void crypto_rfc3686_free(struct skcipher_instance *inst)
 static int crypto_rfc3686_create(struct crypto_template *tmpl,
 				 struct rtattr **tb)
 {
+	struct crypto_attr_type *algt;
 	struct skcipher_instance *inst;
 	struct skcipher_alg *alg;
 	struct crypto_skcipher_spawn *spawn;
+	const char *cipher_name;
 	u32 mask;
+
 	int err;
 
-	err = crypto_check_attr_type(tb, CRYPTO_ALG_TYPE_SKCIPHER, &mask);
-	if (err)
-		return err;
+	algt = crypto_get_attr_type(tb);
+	if (IS_ERR(algt))
+		return PTR_ERR(algt);
+
+	if ((algt->type ^ CRYPTO_ALG_TYPE_SKCIPHER) & algt->mask)
+		return -EINVAL;
+
+	cipher_name = crypto_attr_alg_name(tb[1]);
+	if (IS_ERR(cipher_name))
+		return PTR_ERR(cipher_name);
 
 	inst = kzalloc(sizeof(*inst) + sizeof(*spawn), GFP_KERNEL);
 	if (!inst)
 		return -ENOMEM;
 
+	mask = crypto_requires_sync(algt->type, algt->mask) |
+		crypto_requires_off(algt->type, algt->mask,
+				    CRYPTO_ALG_NEED_FALLBACK);
+
 	spawn = skcipher_instance_ctx(inst);
 
 	err = crypto_grab_skcipher(spawn, skcipher_crypto_instance(inst),
-				   crypto_attr_alg_name(tb[1]), 0, mask);
+				   cipher_name, 0, mask);
 	if (err)
 		goto err_free_inst;
 
@@ -283,24 +296,26 @@ static int crypto_rfc3686_create(struct crypto_template *tmpl,
 	/* We only support 16-byte blocks. */
 	err = -EINVAL;
 	if (crypto_skcipher_alg_ivsize(alg) != CTR_RFC3686_BLOCK_SIZE)
-		goto err_free_inst;
+		goto err_drop_spawn;
 
 	/* Not a stream cipher? */
 	if (alg->base.cra_blocksize != 1)
-		goto err_free_inst;
+		goto err_drop_spawn;
 
 	err = -ENAMETOOLONG;
 	if (snprintf(inst->alg.base.cra_name, CRYPTO_MAX_ALG_NAME,
 		     "rfc3686(%s)", alg->base.cra_name) >= CRYPTO_MAX_ALG_NAME)
-		goto err_free_inst;
+		goto err_drop_spawn;
 	if (snprintf(inst->alg.base.cra_driver_name, CRYPTO_MAX_ALG_NAME,
 		     "rfc3686(%s)", alg->base.cra_driver_name) >=
 	    CRYPTO_MAX_ALG_NAME)
-		goto err_free_inst;
+		goto err_drop_spawn;
 
 	inst->alg.base.cra_priority = alg->base.cra_priority;
 	inst->alg.base.cra_blocksize = 1;
 	inst->alg.base.cra_alignmask = alg->base.cra_alignmask;
+
+	inst->alg.base.cra_flags = alg->base.cra_flags & CRYPTO_ALG_ASYNC;
 
 	inst->alg.ivsize = CTR_RFC3686_IV_SIZE;
 	inst->alg.chunksize = crypto_skcipher_alg_chunksize(alg);
@@ -321,11 +336,17 @@ static int crypto_rfc3686_create(struct crypto_template *tmpl,
 	inst->free = crypto_rfc3686_free;
 
 	err = skcipher_register_instance(tmpl, inst);
-	if (err) {
-err_free_inst:
-		crypto_rfc3686_free(inst);
-	}
+	if (err)
+		goto err_drop_spawn;
+
+out:
 	return err;
+
+err_drop_spawn:
+	crypto_drop_skcipher(spawn);
+err_free_inst:
+	kfree(inst);
+	goto out;
 }
 
 static struct crypto_template crypto_ctr_tmpls[] = {
@@ -359,4 +380,3 @@ MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("CTR block cipher mode of operation");
 MODULE_ALIAS_CRYPTO("rfc3686");
 MODULE_ALIAS_CRYPTO("ctr");
-MODULE_IMPORT_NS(CRYPTO_INTERNAL);

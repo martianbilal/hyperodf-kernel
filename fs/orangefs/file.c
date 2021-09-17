@@ -346,7 +346,22 @@ static ssize_t orangefs_file_read_iter(struct kiocb *iocb,
     struct iov_iter *iter)
 {
 	int ret;
+	struct orangefs_read_options *ro;
+
 	orangefs_stats.reads++;
+
+	/*
+	 * Remember how they set "count" in read(2) or pread(2) or whatever -
+	 * users can use count as a knob to control orangefs io size and later
+	 * we can try to help them fill as many pages as possible in readpage.
+	 */
+	if (!iocb->ki_filp->private_data) {
+		iocb->ki_filp->private_data = kmalloc(sizeof *ro, GFP_KERNEL);
+		if (!iocb->ki_filp->private_data)
+			return(ENOMEM);
+		ro = iocb->ki_filp->private_data;
+		ro->blksiz = iter->count;
+	}
 
 	down_read(&file_inode(iocb->ki_filp)->i_rwsem);
 	ret = orangefs_revalidate_mapping(file_inode(iocb->ki_filp));
@@ -487,7 +502,10 @@ static int orangefs_file_mmap(struct file *file, struct vm_area_struct *vma)
 		return ret;
 
 	gossip_debug(GOSSIP_FILE_DEBUG,
-		     "orangefs_file_mmap: called on %pD\n", file);
+		     "orangefs_file_mmap: called on %s\n",
+		     (file ?
+			(char *)file->f_path.dentry->d_name.name :
+			(char *)"Unknown"));
 
 	/* set the sequential readahead hint */
 	vma->vm_flags |= VM_SEQ_READ;
@@ -632,6 +650,12 @@ static int orangefs_lock(struct file *filp, int cmd, struct file_lock *fl)
 	return rc;
 }
 
+static int orangefs_file_open(struct inode * inode, struct file *file)
+{
+	file->private_data = NULL;
+	return generic_file_open(inode, file);
+}
+
 static int orangefs_flush(struct file *file, fl_owner_t id)
 {
 	/*
@@ -642,7 +666,18 @@ static int orangefs_flush(struct file *file, fl_owner_t id)
 	 * on an explicit fsync call.  This duplicates historical OrangeFS
 	 * behavior.
 	 */
+	struct inode *inode = file->f_mapping->host;
 	int r;
+
+	kfree(file->private_data);
+	file->private_data = NULL;
+
+	if (inode->i_state & I_DIRTY_TIME) {
+		spin_lock(&inode->i_lock);
+		inode->i_state &= ~I_DIRTY_TIME;
+		spin_unlock(&inode->i_lock);
+		mark_inode_dirty_sync(inode);
+	}
 
 	r = filemap_write_and_wait_range(file->f_mapping, 0, LLONG_MAX);
 	if (r > 0)
@@ -659,9 +694,7 @@ const struct file_operations orangefs_file_operations = {
 	.lock		= orangefs_lock,
 	.unlocked_ioctl	= orangefs_ioctl,
 	.mmap		= orangefs_file_mmap,
-	.open		= generic_file_open,
-	.splice_read    = generic_file_splice_read,
-	.splice_write   = iter_file_splice_write,
+	.open		= orangefs_file_open,
 	.flush		= orangefs_flush,
 	.release	= orangefs_file_release,
 	.fsync		= orangefs_fsync,

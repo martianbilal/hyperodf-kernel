@@ -27,9 +27,9 @@
  */
 
 #include <drm/drm_fourcc.h>
+#include <drm/i915_drm.h>
 
 #include "gem/i915_gem_pm.h"
-#include "gt/intel_gpu_commands.h"
 #include "gt/intel_ring.h"
 
 #include "i915_drv.h"
@@ -101,15 +101,12 @@
 #define CLK_RGB24_MASK		0x0
 #define CLK_RGB16_MASK		0x070307
 #define CLK_RGB15_MASK		0x070707
+#define CLK_RGB8I_MASK		0xffffff
 
-#define RGB30_TO_COLORKEY(c) \
-	((((c) & 0x3fc00000) >> 6) | (((c) & 0x000ff000) >> 4) | (((c) & 0x000003fc) >> 2))
 #define RGB16_TO_COLORKEY(c) \
-	((((c) & 0xf800) << 8) | (((c) & 0x07e0) << 5) | (((c) & 0x001f) << 3))
+	(((c & 0xF800) << 8) | ((c & 0x07E0) << 5) | ((c & 0x001F) << 3))
 #define RGB15_TO_COLORKEY(c) \
-	((((c) & 0x7c00) << 9) | (((c) & 0x03e0) << 6) | (((c) & 0x001f) << 3))
-#define RGB8I_TO_COLORKEY(c) \
-	((((c) & 0xff) << 16) | (((c) & 0xff) << 8) | (((c) & 0xff) << 0))
+	(((c & 0x7c00) << 9) | ((c & 0x03E0) << 6) | ((c & 0x001F) << 3))
 
 /* overlay flip addr flag */
 #define OFC_UPDATE		0x1
@@ -183,7 +180,6 @@ struct intel_overlay {
 	struct intel_crtc *crtc;
 	struct i915_vma *vma;
 	struct i915_vma *old_vma;
-	struct intel_frontbuffer *frontbuffer;
 	bool active;
 	bool pfit_active;
 	u32 pfit_vscale_ratio; /* shifted-point number, (1<<12) == 1.0 */
@@ -208,10 +204,9 @@ static void i830_overlay_clock_gating(struct drm_i915_private *dev_priv,
 
 	/* WA_OVERLAY_CLKGATE:alm */
 	if (enable)
-		intel_de_write(dev_priv, DSPCLK_GATE_D, 0);
+		I915_WRITE(DSPCLK_GATE_D, 0);
 	else
-		intel_de_write(dev_priv, DSPCLK_GATE_D,
-			       OVRUNIT_CLOCK_GATE_DISABLE);
+		I915_WRITE(DSPCLK_GATE_D, OVRUNIT_CLOCK_GATE_DISABLE);
 
 	/* WA_DISABLE_L2CACHE_CLOCK_GATING:alm */
 	pci_bus_read_config_byte(pdev->bus,
@@ -252,7 +247,7 @@ static int intel_overlay_on(struct intel_overlay *overlay)
 	struct i915_request *rq;
 	u32 *cs;
 
-	drm_WARN_ON(&dev_priv->drm, overlay->active);
+	WARN_ON(overlay->active);
 
 	rq = alloc_request(overlay, NULL);
 	if (IS_ERR(rq))
@@ -284,19 +279,21 @@ static void intel_overlay_flip_prepare(struct intel_overlay *overlay,
 				       struct i915_vma *vma)
 {
 	enum pipe pipe = overlay->crtc->pipe;
-	struct intel_frontbuffer *frontbuffer = NULL;
+	struct intel_frontbuffer *from = NULL, *to = NULL;
 
-	drm_WARN_ON(&overlay->i915->drm, overlay->old_vma);
+	WARN_ON(overlay->old_vma);
 
+	if (overlay->vma)
+		from = intel_frontbuffer_get(overlay->vma->obj);
 	if (vma)
-		frontbuffer = intel_frontbuffer_get(vma->obj);
+		to = intel_frontbuffer_get(vma->obj);
 
-	intel_frontbuffer_track(overlay->frontbuffer, frontbuffer,
-				INTEL_FRONTBUFFER_OVERLAY(pipe));
+	intel_frontbuffer_track(from, to, INTEL_FRONTBUFFER_OVERLAY(pipe));
 
-	if (overlay->frontbuffer)
-		intel_frontbuffer_put(overlay->frontbuffer);
-	overlay->frontbuffer = frontbuffer;
+	if (to)
+		intel_frontbuffer_put(to);
+	if (from)
+		intel_frontbuffer_put(from);
 
 	intel_frontbuffer_flip_prepare(overlay->i915,
 				       INTEL_FRONTBUFFER_OVERLAY(pipe));
@@ -318,15 +315,15 @@ static int intel_overlay_continue(struct intel_overlay *overlay,
 	u32 flip_addr = overlay->flip_addr;
 	u32 tmp, *cs;
 
-	drm_WARN_ON(&dev_priv->drm, !overlay->active);
+	WARN_ON(!overlay->active);
 
 	if (load_polyphase_filter)
 		flip_addr |= OFC_UPDATE;
 
 	/* check for underruns */
-	tmp = intel_de_read(dev_priv, DOVSTA);
+	tmp = I915_READ(DOVSTA);
 	if (tmp & (1 << 17))
-		drm_dbg(&dev_priv->drm, "overlay underrun, DOVSTA: %x\n", tmp);
+		DRM_DEBUG("overlay underrun, DOVSTA: %x\n", tmp);
 
 	rq = alloc_request(overlay, NULL);
 	if (IS_ERR(rq))
@@ -353,13 +350,13 @@ static void intel_overlay_release_old_vma(struct intel_overlay *overlay)
 	struct i915_vma *vma;
 
 	vma = fetch_and_zero(&overlay->old_vma);
-	if (drm_WARN_ON(&overlay->i915->drm, !vma))
+	if (WARN_ON(!vma))
 		return;
 
 	intel_frontbuffer_flip_complete(overlay->i915,
 					INTEL_FRONTBUFFER_OVERLAY(overlay->crtc->pipe));
 
-	i915_vma_unpin(vma);
+	i915_gem_object_unpin_from_display_plane(vma);
 	i915_vma_put(vma);
 }
 
@@ -383,7 +380,7 @@ static void intel_overlay_off_tail(struct intel_overlay *overlay)
 		i830_overlay_clock_gating(dev_priv, true);
 }
 
-__i915_active_call static void
+static void
 intel_overlay_last_flip_retire(struct i915_active *active)
 {
 	struct intel_overlay *overlay =
@@ -399,7 +396,7 @@ static int intel_overlay_off(struct intel_overlay *overlay)
 	struct i915_request *rq;
 	u32 *cs, flip_addr = overlay->flip_addr;
 
-	drm_WARN_ON(&overlay->i915->drm, !overlay->active);
+	WARN_ON(!overlay->active);
 
 	/* According to intel docs the overlay hw may hang (when switching
 	 * off) without loading the filter coeffs. It is however unclear whether
@@ -459,7 +456,7 @@ static int intel_overlay_release_old_vid(struct intel_overlay *overlay)
 	if (!overlay->old_vma)
 		return 0;
 
-	if (!(intel_de_read(dev_priv, GEN2_ISR) & I915_OVERLAY_PLANE_FLIP_PENDING_INTERRUPT)) {
+	if (!(I915_READ(GEN2_ISR) & I915_OVERLAY_PLANE_FLIP_PENDING_INTERRUPT)) {
 		intel_overlay_release_old_vid_tail(overlay);
 		return 0;
 	}
@@ -685,8 +682,8 @@ static void update_colorkey(struct intel_overlay *overlay,
 
 	switch (format) {
 	case DRM_FORMAT_C8:
-		key = RGB8I_TO_COLORKEY(key);
-		flags |= CLK_RGB24_MASK;
+		key = 0;
+		flags |= CLK_RGB8I_MASK;
 		break;
 	case DRM_FORMAT_XRGB1555:
 		key = RGB15_TO_COLORKEY(key);
@@ -695,11 +692,6 @@ static void update_colorkey(struct intel_overlay *overlay,
 	case DRM_FORMAT_RGB565:
 		key = RGB16_TO_COLORKEY(key);
 		flags |= CLK_RGB16_MASK;
-		break;
-	case DRM_FORMAT_XRGB2101010:
-	case DRM_FORMAT_XBGR2101010:
-		key = RGB30_TO_COLORKEY(key);
-		flags |= CLK_RGB24_MASK;
 		break;
 	default:
 		flags |= CLK_RGB24_MASK;
@@ -767,8 +759,7 @@ static int intel_overlay_do_put_image(struct intel_overlay *overlay,
 	struct i915_vma *vma;
 	int ret, tmp_width;
 
-	drm_WARN_ON(&dev_priv->drm,
-		    !drm_modeset_is_locked(&dev_priv->drm.mode_config.connection_mutex));
+	WARN_ON(!drm_modeset_is_locked(&dev_priv->drm.mode_config.connection_mutex));
 
 	ret = intel_overlay_release_old_vid(overlay);
 	if (ret != 0)
@@ -785,15 +776,9 @@ static int intel_overlay_do_put_image(struct intel_overlay *overlay,
 	i915_gem_object_flush_frontbuffer(new_bo, ORIGIN_DIRTYFB);
 
 	if (!overlay->active) {
-		const struct intel_crtc_state *crtc_state =
-			overlay->crtc->config;
-		u32 oconfig = 0;
+		u32 oconfig;
 
-		if (crtc_state->gamma_enable &&
-		    crtc_state->gamma_mode == GAMMA_MODE_MODE_8BIT)
-			oconfig |= OCONF_CC_OUT_8BIT;
-		if (crtc_state->gamma_enable)
-			oconfig |= OCONF_GAMMA2_ENABLE;
+		oconfig = OCONF_CC_OUT_8BIT;
 		if (IS_GEN(dev_priv, 4))
 			oconfig |= OCONF_CSC_MODE_BT709;
 		oconfig |= pipe == 0 ?
@@ -860,7 +845,7 @@ static int intel_overlay_do_put_image(struct intel_overlay *overlay,
 	return 0;
 
 out_unpin:
-	i915_vma_unpin(vma);
+	i915_gem_object_unpin_from_display_plane(vma);
 out_pin_section:
 	atomic_dec(&dev_priv->gpu_error.pending_fb_pin);
 
@@ -872,8 +857,7 @@ int intel_overlay_switch_off(struct intel_overlay *overlay)
 	struct drm_i915_private *dev_priv = overlay->i915;
 	int ret;
 
-	drm_WARN_ON(&dev_priv->drm,
-		    !drm_modeset_is_locked(&dev_priv->drm.mode_config.connection_mutex));
+	WARN_ON(!drm_modeset_is_locked(&dev_priv->drm.mode_config.connection_mutex));
 
 	ret = intel_overlay_recover_from_interrupt(overlay);
 	if (ret != 0)
@@ -907,7 +891,7 @@ static int check_overlay_possible_on_crtc(struct intel_overlay *overlay,
 static void update_pfit_vscale_ratio(struct intel_overlay *overlay)
 {
 	struct drm_i915_private *dev_priv = overlay->i915;
-	u32 pfit_control = intel_de_read(dev_priv, PFIT_CONTROL);
+	u32 pfit_control = I915_READ(PFIT_CONTROL);
 	u32 ratio;
 
 	/* XXX: This is not the same logic as in the xorg driver, but more in
@@ -915,12 +899,12 @@ static void update_pfit_vscale_ratio(struct intel_overlay *overlay)
 	 */
 	if (INTEL_GEN(dev_priv) >= 4) {
 		/* on i965 use the PGM reg to read out the autoscaler values */
-		ratio = intel_de_read(dev_priv, PFIT_PGM_RATIOS) >> PFIT_VERT_SCALE_SHIFT_965;
+		ratio = I915_READ(PFIT_PGM_RATIOS) >> PFIT_VERT_SCALE_SHIFT_965;
 	} else {
 		if (pfit_control & VERT_AUTO_SCALE)
-			ratio = intel_de_read(dev_priv, PFIT_AUTO_RATIOS);
+			ratio = I915_READ(PFIT_AUTO_RATIOS);
 		else
-			ratio = intel_de_read(dev_priv, PFIT_PGM_RATIOS);
+			ratio = I915_READ(PFIT_PGM_RATIOS);
 		ratio >>= PFIT_VERT_SCALE_SHIFT;
 	}
 
@@ -1082,7 +1066,7 @@ int intel_overlay_put_image_ioctl(struct drm_device *dev, void *data,
 
 	overlay = dev_priv->overlay;
 	if (!overlay) {
-		drm_dbg(&dev_priv->drm, "userspace bug: no overlay\n");
+		DRM_DEBUG("userspace bug: no overlay\n");
 		return -ENODEV;
 	}
 
@@ -1106,8 +1090,7 @@ int intel_overlay_put_image_ioctl(struct drm_device *dev, void *data,
 	drm_modeset_lock_all(dev);
 
 	if (i915_gem_object_is_tiled(new_bo)) {
-		drm_dbg_kms(&dev_priv->drm,
-			    "buffer used for overlay image can not be tiled\n");
+		DRM_DEBUG_KMS("buffer used for overlay image can not be tiled\n");
 		ret = -EINVAL;
 		goto out_unlock;
 	}
@@ -1242,7 +1225,7 @@ int intel_overlay_attrs_ioctl(struct drm_device *dev, void *data,
 
 	overlay = dev_priv->overlay;
 	if (!overlay) {
-		drm_dbg(&dev_priv->drm, "userspace bug: no overlay\n");
+		DRM_DEBUG("userspace bug: no overlay\n");
 		return -ENODEV;
 	}
 
@@ -1256,12 +1239,12 @@ int intel_overlay_attrs_ioctl(struct drm_device *dev, void *data,
 		attrs->saturation = overlay->saturation;
 
 		if (!IS_GEN(dev_priv, 2)) {
-			attrs->gamma0 = intel_de_read(dev_priv, OGAMC0);
-			attrs->gamma1 = intel_de_read(dev_priv, OGAMC1);
-			attrs->gamma2 = intel_de_read(dev_priv, OGAMC2);
-			attrs->gamma3 = intel_de_read(dev_priv, OGAMC3);
-			attrs->gamma4 = intel_de_read(dev_priv, OGAMC4);
-			attrs->gamma5 = intel_de_read(dev_priv, OGAMC5);
+			attrs->gamma0 = I915_READ(OGAMC0);
+			attrs->gamma1 = I915_READ(OGAMC1);
+			attrs->gamma2 = I915_READ(OGAMC2);
+			attrs->gamma3 = I915_READ(OGAMC3);
+			attrs->gamma4 = I915_READ(OGAMC4);
+			attrs->gamma5 = I915_READ(OGAMC5);
 		}
 	} else {
 		if (attrs->brightness < -128 || attrs->brightness > 127)
@@ -1291,12 +1274,12 @@ int intel_overlay_attrs_ioctl(struct drm_device *dev, void *data,
 			if (ret)
 				goto out_unlock;
 
-			intel_de_write(dev_priv, OGAMC0, attrs->gamma0);
-			intel_de_write(dev_priv, OGAMC1, attrs->gamma1);
-			intel_de_write(dev_priv, OGAMC2, attrs->gamma2);
-			intel_de_write(dev_priv, OGAMC3, attrs->gamma3);
-			intel_de_write(dev_priv, OGAMC4, attrs->gamma4);
-			intel_de_write(dev_priv, OGAMC5, attrs->gamma5);
+			I915_WRITE(OGAMC0, attrs->gamma0);
+			I915_WRITE(OGAMC1, attrs->gamma1);
+			I915_WRITE(OGAMC2, attrs->gamma2);
+			I915_WRITE(OGAMC3, attrs->gamma3);
+			I915_WRITE(OGAMC4, attrs->gamma4);
+			I915_WRITE(OGAMC5, attrs->gamma5);
 		}
 	}
 	overlay->color_key_enabled = (attrs->flags & I915_OVERLAY_DISABLE_DEST_COLORKEY) == 0;
@@ -1356,7 +1339,7 @@ void intel_overlay_setup(struct drm_i915_private *dev_priv)
 	if (!HAS_OVERLAY(dev_priv))
 		return;
 
-	engine = dev_priv->gt.engine[RCS0];
+	engine = dev_priv->engine[RCS0];
 	if (!engine || !engine->kernel_context)
 		return;
 
@@ -1386,7 +1369,7 @@ void intel_overlay_setup(struct drm_i915_private *dev_priv)
 	update_reg_attrs(overlay, overlay->regs);
 
 	dev_priv->overlay = overlay;
-	drm_info(&dev_priv->drm, "Initialized overlay support.\n");
+	DRM_INFO("Initialized overlay support.\n");
 	return;
 
 out_free:
@@ -1406,7 +1389,7 @@ void intel_overlay_cleanup(struct drm_i915_private *dev_priv)
 	 * Furthermore modesetting teardown happens beforehand so the
 	 * hardware should be off already.
 	 */
-	drm_WARN_ON(&dev_priv->drm, overlay->active);
+	WARN_ON(overlay->active);
 
 	i915_gem_object_put(overlay->reg_bo);
 	i915_active_fini(&overlay->last_flip);
@@ -1436,8 +1419,8 @@ intel_overlay_capture_error_state(struct drm_i915_private *dev_priv)
 	if (error == NULL)
 		return NULL;
 
-	error->dovsta = intel_de_read(dev_priv, DOVSTA);
-	error->isr = intel_de_read(dev_priv, GEN2_ISR);
+	error->dovsta = I915_READ(DOVSTA);
+	error->isr = I915_READ(GEN2_ISR);
 	error->base = overlay->flip_addr;
 
 	memcpy_fromio(&error->regs, overlay->regs, sizeof(error->regs));

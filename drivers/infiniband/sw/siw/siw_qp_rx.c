@@ -139,8 +139,7 @@ static int siw_rx_pbl(struct siw_rx_stream *srx, int *pbl_idx,
 			break;
 
 		bytes = min(bytes, len);
-		if (siw_rx_kva(srx, (void *)(uintptr_t)buf_addr, bytes) ==
-		    bytes) {
+		if (siw_rx_kva(srx, (void *)buf_addr, bytes) == bytes) {
 			copied += bytes;
 			offset += bytes;
 			len -= bytes;
@@ -680,10 +679,6 @@ static int siw_init_rresp(struct siw_qp *qp, struct siw_rx_stream *srx)
 	}
 	spin_lock_irqsave(&qp->sq_lock, flags);
 
-	if (unlikely(!qp->attrs.irq_size)) {
-		run_sq = 0;
-		goto error_irq;
-	}
 	if (tx_work->wr_status == SIW_WR_IDLE) {
 		/*
 		 * immediately schedule READ response w/o
@@ -716,9 +711,8 @@ static int siw_init_rresp(struct siw_qp *qp, struct siw_rx_stream *srx)
 		/* RRESP now valid as current TX wqe or placed into IRQ */
 		smp_store_mb(resp->flags, SIW_WQE_VALID);
 	} else {
-error_irq:
-		pr_warn("siw: [QP %u]: IRQ exceeded or null, size %d\n",
-			qp_id(qp), qp->attrs.irq_size);
+		pr_warn("siw: [QP %u]: irq %d exceeded %d\n", qp_id(qp),
+			qp->irq_put % qp->attrs.irq_size, qp->attrs.irq_size);
 
 		siw_init_terminate(qp, TERM_ERROR_LAYER_RDMAP,
 				   RDMAP_ETYPE_REMOTE_OPERATION,
@@ -744,9 +738,6 @@ static int siw_orqe_start_rx(struct siw_qp *qp)
 {
 	struct siw_sqe *orqe;
 	struct siw_wqe *wqe = NULL;
-
-	if (unlikely(!qp->attrs.orq_size))
-		return -EPROTO;
 
 	/* make sure ORQ indices are current */
 	smp_mb();
@@ -804,8 +795,8 @@ int siw_proc_rresp(struct siw_qp *qp)
 		 */
 		rv = siw_orqe_start_rx(qp);
 		if (rv) {
-			pr_warn("siw: [QP %u]: ORQ empty, size %d\n",
-				qp_id(qp), qp->attrs.orq_size);
+			pr_warn("siw: [QP %u]: ORQ empty at idx %d\n",
+				qp_id(qp), qp->orq_get % qp->attrs.orq_size);
 			goto error_term;
 		}
 		rv = siw_rresp_check_ntoh(srx, frx);
@@ -1223,7 +1214,7 @@ static int siw_rdmap_complete(struct siw_qp *qp, int error)
 	case RDMAP_SEND_SE:
 	case RDMAP_SEND_SE_INVAL:
 		wqe->rqe.flags |= SIW_WQE_SOLICITED;
-		fallthrough;
+		/* Fall through */
 
 	case RDMAP_SEND:
 	case RDMAP_SEND_INVAL:
@@ -1298,13 +1289,11 @@ static int siw_rdmap_complete(struct siw_qp *qp, int error)
 					      wc_status);
 		siw_wqe_put_mem(wqe, SIW_OP_READ);
 
-		if (!error) {
+		if (!error)
 			rv = siw_check_tx_fence(qp);
-		} else {
-			/* Disable current ORQ element */
-			if (qp->attrs.orq_size)
-				WRITE_ONCE(orq_get_current(qp)->flags, 0);
-		}
+		else
+			/* Disable current ORQ eleement */
+			WRITE_ONCE(orq_get_current(qp)->flags, 0);
 		break;
 
 	case RDMAP_RDMA_READ_REQ:
@@ -1396,7 +1385,7 @@ int siw_tcp_rx_data(read_descriptor_t *rd_desc, struct sk_buff *skb,
 			 * DDP segment.
 			 */
 			qp->rx_fpdu->first_ddp_seg = 0;
-			fallthrough;
+			/* Fall through */
 
 		case SIW_GET_DATA_START:
 			/*

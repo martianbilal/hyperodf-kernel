@@ -115,18 +115,17 @@ static bool pde_subdir_insert(struct proc_dir_entry *dir,
 	return true;
 }
 
-static int proc_notify_change(struct user_namespace *mnt_userns,
-			      struct dentry *dentry, struct iattr *iattr)
+static int proc_notify_change(struct dentry *dentry, struct iattr *iattr)
 {
 	struct inode *inode = d_inode(dentry);
 	struct proc_dir_entry *de = PDE(inode);
 	int error;
 
-	error = setattr_prepare(&init_user_ns, dentry, iattr);
+	error = setattr_prepare(dentry, iattr);
 	if (error)
 		return error;
 
-	setattr_copy(&init_user_ns, inode, iattr);
+	setattr_copy(inode, iattr);
 	mark_inode_dirty(inode);
 
 	proc_set_user(de, inode->i_uid, inode->i_gid);
@@ -134,8 +133,7 @@ static int proc_notify_change(struct user_namespace *mnt_userns,
 	return 0;
 }
 
-static int proc_getattr(struct user_namespace *mnt_userns,
-			const struct path *path, struct kstat *stat,
+static int proc_getattr(const struct path *path, struct kstat *stat,
 			u32 request_mask, unsigned int query_flags)
 {
 	struct inode *inode = d_inode(path->dentry);
@@ -147,7 +145,7 @@ static int proc_getattr(struct user_namespace *mnt_userns,
 		}
 	}
 
-	generic_fillattr(&init_user_ns, inode, stat);
+	generic_fillattr(inode, stat);
 	return 0;
 }
 
@@ -271,11 +269,6 @@ struct dentry *proc_lookup_de(struct inode *dir, struct dentry *dentry,
 struct dentry *proc_lookup(struct inode *dir, struct dentry *dentry,
 		unsigned int flags)
 {
-	struct proc_fs_info *fs_info = proc_sb_info(dir->i_sb);
-
-	if (fs_info->pidonly == PROC_PIDONLY_ON)
-		return ERR_PTR(-ENOENT);
-
 	return proc_lookup_de(dir, dentry, PDE(dir));
 }
 
@@ -332,10 +325,6 @@ int proc_readdir_de(struct file *file, struct dir_context *ctx,
 int proc_readdir(struct file *file, struct dir_context *ctx)
 {
 	struct inode *inode = file_inode(file);
-	struct proc_fs_info *fs_info = proc_sb_info(inode->i_sb);
-
-	if (fs_info->pidonly == PROC_PIDONLY_ON)
-		return 1;
 
 	return proc_readdir_de(file, ctx, PDE(inode));
 }
@@ -349,16 +338,6 @@ static const struct file_operations proc_dir_operations = {
 	.llseek			= generic_file_llseek,
 	.read			= generic_read_dir,
 	.iterate_shared		= proc_readdir,
-};
-
-static int proc_net_d_revalidate(struct dentry *dentry, unsigned int flags)
-{
-	return 0;
-}
-
-const struct dentry_operations proc_net_dentry_ops = {
-	.d_revalidate	= proc_net_d_revalidate,
-	.d_delete	= always_delete_dentry,
 };
 
 /*
@@ -483,8 +462,8 @@ struct proc_dir_entry *proc_symlink(const char *name,
 }
 EXPORT_SYMBOL(proc_symlink);
 
-struct proc_dir_entry *_proc_mkdir(const char *name, umode_t mode,
-		struct proc_dir_entry *parent, void *data, bool force_lookup)
+struct proc_dir_entry *proc_mkdir_data(const char *name, umode_t mode,
+		struct proc_dir_entry *parent, void *data)
 {
 	struct proc_dir_entry *ent;
 
@@ -496,19 +475,9 @@ struct proc_dir_entry *_proc_mkdir(const char *name, umode_t mode,
 		ent->data = data;
 		ent->proc_dir_ops = &proc_dir_operations;
 		ent->proc_iops = &proc_dir_inode_operations;
-		if (force_lookup) {
-			pde_force_lookup(ent);
-		}
 		ent = proc_register(parent, ent);
 	}
 	return ent;
-}
-EXPORT_SYMBOL_GPL(_proc_mkdir);
-
-struct proc_dir_entry *proc_mkdir_data(const char *name, umode_t mode,
-		struct proc_dir_entry *parent, void *data)
-{
-	return _proc_mkdir(name, mode, parent, data, false);
 }
 EXPORT_SYMBOL_GPL(proc_mkdir_data);
 
@@ -562,12 +531,6 @@ struct proc_dir_entry *proc_create_reg(const char *name, umode_t mode,
 	return p;
 }
 
-static inline void pde_set_flags(struct proc_dir_entry *pde)
-{
-	if (pde->proc_ops->proc_flags & PROC_ENTRY_PERMANENT)
-		pde->flags |= PROC_ENTRY_PERMANENT;
-}
-
 struct proc_dir_entry *proc_create_data(const char *name, umode_t mode,
 		struct proc_dir_entry *parent,
 		const struct proc_ops *proc_ops, void *data)
@@ -578,7 +541,6 @@ struct proc_dir_entry *proc_create_data(const char *name, umode_t mode,
 	if (!p)
 		return NULL;
 	p->proc_ops = proc_ops;
-	pde_set_flags(p);
 	return proc_register(parent, p);
 }
 EXPORT_SYMBOL(proc_create_data);
@@ -610,9 +572,8 @@ static int proc_seq_release(struct inode *inode, struct file *file)
 }
 
 static const struct proc_ops proc_seq_ops = {
-	/* not permanent -- can call into arbitrary seq_operations */
 	.proc_open	= proc_seq_open,
-	.proc_read_iter	= seq_read_iter,
+	.proc_read	= seq_read,
 	.proc_lseek	= seq_lseek,
 	.proc_release	= proc_seq_release,
 };
@@ -641,9 +602,8 @@ static int proc_single_open(struct inode *inode, struct file *file)
 }
 
 static const struct proc_ops proc_single_ops = {
-	/* not permanent -- can call into arbitrary ->single_show */
 	.proc_open	= proc_single_open,
-	.proc_read_iter = seq_read_iter,
+	.proc_read	= seq_read,
 	.proc_lseek	= seq_lseek,
 	.proc_release	= single_release,
 };
@@ -702,13 +662,9 @@ void remove_proc_entry(const char *name, struct proc_dir_entry *parent)
 
 	de = pde_subdir_find(parent, fn, len);
 	if (de) {
-		if (unlikely(pde_is_permanent(de))) {
-			WARN(1, "removing permanent /proc entry '%s'", de->name);
-			de = NULL;
-		} else {
-			rb_erase(&de->subdir_node, &parent->subdir);
-			if (S_ISDIR(de->mode))
-				parent->nlink--;
+		rb_erase(&de->subdir_node, &parent->subdir);
+		if (S_ISDIR(de->mode)) {
+			parent->nlink--;
 		}
 	}
 	write_unlock(&proc_subdir_lock);
@@ -744,24 +700,12 @@ int remove_proc_subtree(const char *name, struct proc_dir_entry *parent)
 		write_unlock(&proc_subdir_lock);
 		return -ENOENT;
 	}
-	if (unlikely(pde_is_permanent(root))) {
-		write_unlock(&proc_subdir_lock);
-		WARN(1, "removing permanent /proc entry '%s/%s'",
-			root->parent->name, root->name);
-		return -EINVAL;
-	}
 	rb_erase(&root->subdir_node, &parent->subdir);
 
 	de = root;
 	while (1) {
 		next = pde_subdir_first(de);
 		if (next) {
-			if (unlikely(pde_is_permanent(next))) {
-				write_unlock(&proc_subdir_lock);
-				WARN(1, "removing permanent /proc entry '%s/%s'",
-					next->parent->name, next->name);
-				return -EINVAL;
-			}
 			rb_erase(&next->subdir_node, &de->subdir);
 			de = next;
 			continue;

@@ -8,6 +8,8 @@
 
 #include <linux/types.h>
 
+#include <drm/i915_drm.h>
+
 #include "i915_reg.h"
 
 struct drm_i915_private;

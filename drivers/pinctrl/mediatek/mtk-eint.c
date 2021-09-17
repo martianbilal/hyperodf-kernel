@@ -15,7 +15,6 @@
 #include <linux/io.h>
 #include <linux/irqchip/chained_irq.h>
 #include <linux/irqdomain.h>
-#include <linux/module.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
 
@@ -157,7 +156,6 @@ static void mtk_eint_ack(struct irq_data *d)
 static int mtk_eint_set_type(struct irq_data *d, unsigned int type)
 {
 	struct mtk_eint *eint = irq_data_get_irq_chip_data(d);
-	bool masked;
 	u32 mask = BIT(d->hwirq & 0x1f);
 	void __iomem *reg;
 
@@ -173,13 +171,6 @@ static int mtk_eint_set_type(struct irq_data *d, unsigned int type)
 		eint->dual_edge[d->hwirq] = 1;
 	else
 		eint->dual_edge[d->hwirq] = 0;
-
-	if (!mtk_eint_get_mask(eint, d->hwirq)) {
-		mtk_eint_mask(d);
-		masked = false;
-	} else {
-		masked = true;
-	}
 
 	if (type & (IRQ_TYPE_LEVEL_LOW | IRQ_TYPE_EDGE_FALLING)) {
 		reg = mtk_eint_get_offset(eint, d->hwirq, eint->regs->pol_clr);
@@ -197,9 +188,8 @@ static int mtk_eint_set_type(struct irq_data *d, unsigned int type)
 		writel(mask, reg);
 	}
 
-	mtk_eint_ack(d);
-	if (!masked)
-		mtk_eint_unmask(d);
+	if (eint->dual_edge[d->hwirq])
+		mtk_eint_flip_edge(eint, d->hwirq);
 
 	return 0;
 }
@@ -389,7 +379,6 @@ int mtk_eint_do_suspend(struct mtk_eint *eint)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(mtk_eint_do_suspend);
 
 int mtk_eint_do_resume(struct mtk_eint *eint)
 {
@@ -397,7 +386,6 @@ int mtk_eint_do_resume(struct mtk_eint *eint)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(mtk_eint_do_resume);
 
 int mtk_eint_set_debounce(struct mtk_eint *eint, unsigned long eint_num,
 			  unsigned int debounce)
@@ -452,7 +440,6 @@ int mtk_eint_set_debounce(struct mtk_eint *eint, unsigned long eint_num,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(mtk_eint_set_debounce);
 
 int mtk_eint_find_irq(struct mtk_eint *eint, unsigned long eint_n)
 {
@@ -464,7 +451,6 @@ int mtk_eint_find_irq(struct mtk_eint *eint, unsigned long eint_n)
 
 	return irq;
 }
-EXPORT_SYMBOL_GPL(mtk_eint_find_irq);
 
 int mtk_eint_do_init(struct mtk_eint *eint)
 {
@@ -509,7 +495,3 @@ int mtk_eint_do_init(struct mtk_eint *eint)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(mtk_eint_do_init);
-
-MODULE_LICENSE("GPL v2");
-MODULE_DESCRIPTION("MediaTek EINT Driver");

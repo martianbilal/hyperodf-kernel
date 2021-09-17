@@ -253,7 +253,7 @@ static int mmu_map_sg(struct panfrost_device *pfdev, struct panfrost_mmu *mmu,
 	struct io_pgtable_ops *ops = mmu->pgtbl_ops;
 	u64 start_iova = iova;
 
-	for_each_sgtable_dma_sg(sgt, sgl, count) {
+	for_each_sg(sgt->sgl, sgl, sgt->nents, count) {
 		unsigned long paddr = sg_dma_address(sgl);
 		size_t len = sg_dma_len(sgl);
 
@@ -262,7 +262,7 @@ static int mmu_map_sg(struct panfrost_device *pfdev, struct panfrost_mmu *mmu,
 		while (len) {
 			size_t pgsize = get_pgsize(iova | paddr, len);
 
-			ops->map(ops, iova, paddr, pgsize, prot, GFP_KERNEL);
+			ops->map(ops, iova, paddr, pgsize, prot);
 			iova += pgsize;
 			paddr += pgsize;
 			len -= pgsize;
@@ -347,9 +347,16 @@ static void mmu_tlb_flush_walk(unsigned long iova, size_t size, size_t granule,
 	mmu_tlb_sync_context(cookie);
 }
 
+static void mmu_tlb_flush_leaf(unsigned long iova, size_t size, size_t granule,
+			       void *cookie)
+{
+	mmu_tlb_sync_context(cookie);
+}
+
 static const struct iommu_flush_ops mmu_tlb_ops = {
 	.tlb_flush_all	= mmu_tlb_inv_context_s1,
 	.tlb_flush_walk = mmu_tlb_flush_walk,
+	.tlb_flush_leaf = mmu_tlb_flush_leaf,
 };
 
 int panfrost_mmu_pgtable_alloc(struct panfrost_file_priv *priv)
@@ -364,7 +371,6 @@ int panfrost_mmu_pgtable_alloc(struct panfrost_file_priv *priv)
 		.pgsize_bitmap	= SZ_4K | SZ_2M,
 		.ias		= FIELD_GET(0xff, pfdev->features.mmu_features),
 		.oas		= FIELD_GET(0xff00, pfdev->features.mmu_features),
-		.coherent_walk	= pfdev->coherent,
 		.tlb		= &mmu_tlb_ops,
 		.iommu_dev	= pfdev->dev,
 	};
@@ -480,7 +486,7 @@ static int panfrost_mmu_map_fault_addr(struct panfrost_device *pfdev, int as,
 		pages = kvmalloc_array(bo->base.base.size >> PAGE_SHIFT,
 				       sizeof(struct page *), GFP_KERNEL | __GFP_ZERO);
 		if (!pages) {
-			kvfree(bo->sgts);
+			kfree(bo->sgts);
 			bo->sgts = NULL;
 			mutex_unlock(&bo->base.pages_lock);
 			ret = -ENOMEM;
@@ -488,14 +494,8 @@ static int panfrost_mmu_map_fault_addr(struct panfrost_device *pfdev, int as,
 		}
 		bo->base.pages = pages;
 		bo->base.pages_use_count = 1;
-	} else {
+	} else
 		pages = bo->base.pages;
-		if (pages[page_offset]) {
-			/* Pages are already mapped, bail out. */
-			mutex_unlock(&bo->base.pages_lock);
-			goto out;
-		}
-	}
 
 	mapping = bo->base.base.filp->f_mapping;
 	mapping_set_unevictable(mapping);
@@ -517,9 +517,10 @@ static int panfrost_mmu_map_fault_addr(struct panfrost_device *pfdev, int as,
 	if (ret)
 		goto err_pages;
 
-	ret = dma_map_sgtable(pfdev->dev, sgt, DMA_BIDIRECTIONAL, 0);
-	if (ret)
+	if (!dma_map_sg(pfdev->dev, sgt->sgl, sgt->nents, DMA_BIDIRECTIONAL)) {
+		ret = -EINVAL;
 		goto err_map;
+	}
 
 	mmu_map_sg(pfdev, bomapping->mmu, addr,
 		   IOMMU_WRITE | IOMMU_READ | IOMMU_NOEXEC, sgt);
@@ -528,7 +529,6 @@ static int panfrost_mmu_map_fault_addr(struct panfrost_device *pfdev, int as,
 
 	dev_dbg(pfdev->dev, "mapped page fault @ AS%d %llx", as, addr);
 
-out:
 	panfrost_gem_mapping_put(bomapping);
 
 	return 0;
@@ -538,7 +538,7 @@ err_map:
 err_pages:
 	drm_gem_shmem_put_pages(&bo->base);
 err_bo:
-	drm_gem_object_put(&bo->base.base);
+	drm_gem_object_put_unlocked(&bo->base.base);
 	return ret;
 }
 
@@ -600,8 +600,6 @@ static irqreturn_t panfrost_mmu_irq_handler_thread(int irq, void *data)
 		access_type = (fault_status >> 8) & 0x3;
 		source_id = (fault_status >> 16);
 
-		mmu_write(pfdev, MMU_INT_CLEAR, mask);
-
 		/* Page fault only */
 		ret = -1;
 		if ((status & mask) == BIT(i) && (exception_type & 0xF8) == 0xC0)
@@ -625,6 +623,8 @@ static irqreturn_t panfrost_mmu_irq_handler_thread(int irq, void *data)
 				access_type, access_type_name(pfdev, fault_status),
 				source_id);
 
+		mmu_write(pfdev, MMU_INT_CLEAR, mask);
+
 		status &= ~mask;
 	}
 
@@ -640,11 +640,9 @@ int panfrost_mmu_init(struct panfrost_device *pfdev)
 	if (irq <= 0)
 		return -ENODEV;
 
-	err = devm_request_threaded_irq(pfdev->dev, irq,
-					panfrost_mmu_irq_handler,
+	err = devm_request_threaded_irq(pfdev->dev, irq, panfrost_mmu_irq_handler,
 					panfrost_mmu_irq_handler_thread,
-					IRQF_SHARED, KBUILD_MODNAME "-mmu",
-					pfdev);
+					IRQF_SHARED, "mmu", pfdev);
 
 	if (err) {
 		dev_err(pfdev->dev, "failed to request mmu irq");

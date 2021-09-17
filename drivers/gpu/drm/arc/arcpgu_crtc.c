@@ -9,6 +9,7 @@
 #include <drm/drm_device.h>
 #include <drm/drm_fb_cma_helper.h>
 #include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_vblank.h>
 #include <drm/drm_plane_helper.h>
 #include <drm/drm_probe_helper.h>
 #include <linux/clk.h>
@@ -116,7 +117,7 @@ static void arc_pgu_crtc_mode_set_nofb(struct drm_crtc *crtc)
 }
 
 static void arc_pgu_crtc_atomic_enable(struct drm_crtc *crtc,
-				       struct drm_atomic_state *state)
+				       struct drm_crtc_state *old_state)
 {
 	struct arcpgu_drm_private *arcpgu = crtc_to_arcpgu_priv(crtc);
 
@@ -127,7 +128,7 @@ static void arc_pgu_crtc_atomic_enable(struct drm_crtc *crtc,
 }
 
 static void arc_pgu_crtc_atomic_disable(struct drm_crtc *crtc,
-					struct drm_atomic_state *state)
+					struct drm_crtc_state *old_state)
 {
 	struct arcpgu_drm_private *arcpgu = crtc_to_arcpgu_priv(crtc);
 
@@ -137,9 +138,24 @@ static void arc_pgu_crtc_atomic_disable(struct drm_crtc *crtc,
 			      ~ARCPGU_CTRL_ENABLE_MASK);
 }
 
+static void arc_pgu_crtc_atomic_begin(struct drm_crtc *crtc,
+				      struct drm_crtc_state *state)
+{
+	struct drm_pending_vblank_event *event = crtc->state->event;
+
+	if (event) {
+		crtc->state->event = NULL;
+
+		spin_lock_irq(&crtc->dev->event_lock);
+		drm_crtc_send_vblank_event(crtc, event);
+		spin_unlock_irq(&crtc->dev->event_lock);
+	}
+}
+
 static const struct drm_crtc_helper_funcs arc_pgu_crtc_helper_funcs = {
 	.mode_valid	= arc_pgu_crtc_mode_valid,
 	.mode_set_nofb	= arc_pgu_crtc_mode_set_nofb,
+	.atomic_begin	= arc_pgu_crtc_atomic_begin,
 	.atomic_enable	= arc_pgu_crtc_atomic_enable,
 	.atomic_disable	= arc_pgu_crtc_atomic_disable,
 };
@@ -162,10 +178,15 @@ static const struct drm_plane_helper_funcs arc_pgu_plane_helper_funcs = {
 	.atomic_update = arc_pgu_plane_atomic_update,
 };
 
+static void arc_pgu_plane_destroy(struct drm_plane *plane)
+{
+	drm_plane_cleanup(plane);
+}
+
 static const struct drm_plane_funcs arc_pgu_plane_funcs = {
 	.update_plane		= drm_atomic_helper_update_plane,
 	.disable_plane		= drm_atomic_helper_disable_plane,
-	.destroy		= drm_plane_cleanup,
+	.destroy		= arc_pgu_plane_destroy,
 	.reset			= drm_atomic_helper_plane_reset,
 	.atomic_duplicate_state = drm_atomic_helper_plane_duplicate_state,
 	.atomic_destroy_state	= drm_atomic_helper_plane_destroy_state,
@@ -208,7 +229,7 @@ int arc_pgu_setup_crtc(struct drm_device *drm)
 	ret = drm_crtc_init_with_planes(drm, &arcpgu->crtc, primary, NULL,
 					&arc_pgu_crtc_funcs, NULL);
 	if (ret) {
-		drm_plane_cleanup(primary);
+		arc_pgu_plane_destroy(primary);
 		return ret;
 	}
 

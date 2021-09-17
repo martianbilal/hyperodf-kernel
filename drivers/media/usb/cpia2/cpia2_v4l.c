@@ -56,6 +56,7 @@ MODULE_PARM_DESC(flicker_mode, "Flicker frequency (0 (disabled), " __stringify(5
 
 MODULE_AUTHOR("Steve Miller (STMicroelectronics) <steve.miller@st.com>");
 MODULE_DESCRIPTION("V4L-driver for STMicroelectronics CPiA2 based cameras");
+MODULE_SUPPORTED_DEVICE("video");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(CPIA_VERSION);
 
@@ -1133,7 +1134,7 @@ int cpia2_register_camera(struct camera_data *cam)
 	reset_camera_struct_v4l(cam);
 
 	/* register v4l device */
-	if (video_register_device(&cam->vdev, VFL_TYPE_VIDEO, video_nr) < 0) {
+	if (video_register_device(&cam->vdev, VFL_TYPE_GRABBER, video_nr) < 0) {
 		ERR("video_register_device failed\n");
 		return -ENODEV;
 	}

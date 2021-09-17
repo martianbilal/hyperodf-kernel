@@ -28,7 +28,6 @@
 #include <linux/bitops.h>
 #include <linux/device.h>
 #include <linux/nospec.h>
-#include <linux/static_call.h>
 
 #include <asm/apic.h>
 #include <asm/stacktrace.h>
@@ -53,40 +52,6 @@ DEFINE_PER_CPU(struct cpu_hw_events, cpu_hw_events) = {
 DEFINE_STATIC_KEY_FALSE(rdpmc_never_available_key);
 DEFINE_STATIC_KEY_FALSE(rdpmc_always_available_key);
 
-/*
- * This here uses DEFINE_STATIC_CALL_NULL() to get a static_call defined
- * from just a typename, as opposed to an actual function.
- */
-DEFINE_STATIC_CALL_NULL(x86_pmu_handle_irq,  *x86_pmu.handle_irq);
-DEFINE_STATIC_CALL_NULL(x86_pmu_disable_all, *x86_pmu.disable_all);
-DEFINE_STATIC_CALL_NULL(x86_pmu_enable_all,  *x86_pmu.enable_all);
-DEFINE_STATIC_CALL_NULL(x86_pmu_enable,	     *x86_pmu.enable);
-DEFINE_STATIC_CALL_NULL(x86_pmu_disable,     *x86_pmu.disable);
-
-DEFINE_STATIC_CALL_NULL(x86_pmu_add,  *x86_pmu.add);
-DEFINE_STATIC_CALL_NULL(x86_pmu_del,  *x86_pmu.del);
-DEFINE_STATIC_CALL_NULL(x86_pmu_read, *x86_pmu.read);
-
-DEFINE_STATIC_CALL_NULL(x86_pmu_schedule_events,       *x86_pmu.schedule_events);
-DEFINE_STATIC_CALL_NULL(x86_pmu_get_event_constraints, *x86_pmu.get_event_constraints);
-DEFINE_STATIC_CALL_NULL(x86_pmu_put_event_constraints, *x86_pmu.put_event_constraints);
-
-DEFINE_STATIC_CALL_NULL(x86_pmu_start_scheduling,  *x86_pmu.start_scheduling);
-DEFINE_STATIC_CALL_NULL(x86_pmu_commit_scheduling, *x86_pmu.commit_scheduling);
-DEFINE_STATIC_CALL_NULL(x86_pmu_stop_scheduling,   *x86_pmu.stop_scheduling);
-
-DEFINE_STATIC_CALL_NULL(x86_pmu_sched_task,    *x86_pmu.sched_task);
-DEFINE_STATIC_CALL_NULL(x86_pmu_swap_task_ctx, *x86_pmu.swap_task_ctx);
-
-DEFINE_STATIC_CALL_NULL(x86_pmu_drain_pebs,   *x86_pmu.drain_pebs);
-DEFINE_STATIC_CALL_NULL(x86_pmu_pebs_aliases, *x86_pmu.pebs_aliases);
-
-/*
- * This one is magic, it will get called even when PMU init fails (because
- * there is no PMU), in which case it should simply return NULL.
- */
-DEFINE_STATIC_CALL_RET0(x86_pmu_guest_get_msrs, *x86_pmu.guest_get_msrs);
-
 u64 __read_mostly hw_cache_event_ids
 				[PERF_COUNT_HW_CACHE_MAX]
 				[PERF_COUNT_HW_CACHE_OP_MAX]
@@ -106,13 +71,11 @@ u64 x86_perf_event_update(struct perf_event *event)
 	struct hw_perf_event *hwc = &event->hw;
 	int shift = 64 - x86_pmu.cntval_bits;
 	u64 prev_raw_count, new_raw_count;
+	int idx = hwc->idx;
 	u64 delta;
 
-	if (unlikely(!hwc->event_base))
+	if (idx == INTEL_PMC_IDX_FIXED_BTS)
 		return 0;
-
-	if (unlikely(is_topdown_count(event)) && x86_pmu.update_topdown_event)
-		return x86_pmu.update_topdown_event(event);
 
 	/*
 	 * Careful: an NMI might modify the previous event value.
@@ -259,8 +222,6 @@ static bool check_hw_exists(void)
 		if (ret)
 			goto msr_fail;
 		for (i = 0; i < x86_pmu.num_counters_fixed; i++) {
-			if (fixed_counter_disabled(i))
-				continue;
 			if (val & (0x03 << i*4)) {
 				bios_fail = 1;
 				val_fail = val;
@@ -398,7 +359,6 @@ void x86_release_hardware(void)
 	if (atomic_dec_and_mutex_lock(&pmc_refcount, &pmc_reserve_mutex)) {
 		release_pmc_hardware();
 		release_ds_buffers();
-		release_lbr_buffers();
 		mutex_unlock(&pmc_reserve_mutex);
 	}
 }
@@ -673,12 +633,6 @@ void x86_pmu_disable_all(void)
 	}
 }
 
-struct perf_guest_switch_msr *perf_guest_get_msrs(int *nr)
-{
-	return static_call(x86_pmu_guest_get_msrs)(nr);
-}
-EXPORT_SYMBOL_GPL(perf_guest_get_msrs);
-
 /*
  * There may be PMI landing after enabled=0. The PMI hitting could be before or
  * after disable_all.
@@ -706,7 +660,7 @@ static void x86_pmu_disable(struct pmu *pmu)
 	cpuc->enabled = 0;
 	barrier();
 
-	static_call(x86_pmu_disable_all)();
+	x86_pmu.disable_all();
 }
 
 void x86_pmu_enable_all(int added)
@@ -953,7 +907,8 @@ int x86_schedule_events(struct cpu_hw_events *cpuc, int n, int *assign)
 	if (cpuc->txn_flags & PERF_PMU_TXN_ADD)
 		n0 -= cpuc->n_txn;
 
-	static_call_cond(x86_pmu_start_scheduling)(cpuc);
+	if (x86_pmu.start_scheduling)
+		x86_pmu.start_scheduling(cpuc);
 
 	for (i = 0, wmin = X86_PMC_IDX_MAX, wmax = 0; i < n; i++) {
 		c = cpuc->event_constraint[i];
@@ -970,7 +925,7 @@ int x86_schedule_events(struct cpu_hw_events *cpuc, int n, int *assign)
 		 * change due to external factors (sibling state, allow_tfa).
 		 */
 		if (!c || (c->flags & PERF_X86_EVENT_DYNAMIC)) {
-			c = static_call(x86_pmu_get_event_constraints)(cpuc, i, cpuc->event_list[i]);
+			c = x86_pmu.get_event_constraints(cpuc, i, cpuc->event_list[i]);
 			cpuc->event_constraint[i] = c;
 		}
 
@@ -1053,7 +1008,8 @@ int x86_schedule_events(struct cpu_hw_events *cpuc, int n, int *assign)
 	if (!unsched && assign) {
 		for (i = 0; i < n; i++) {
 			e = cpuc->event_list[i];
-			static_call_cond(x86_pmu_commit_scheduling)(cpuc, i, assign[i]);
+			if (x86_pmu.commit_scheduling)
+				x86_pmu.commit_scheduling(cpuc, i, assign[i]);
 		}
 	} else {
 		for (i = n0; i < n; i++) {
@@ -1062,54 +1018,17 @@ int x86_schedule_events(struct cpu_hw_events *cpuc, int n, int *assign)
 			/*
 			 * release events that failed scheduling
 			 */
-			static_call_cond(x86_pmu_put_event_constraints)(cpuc, e);
+			if (x86_pmu.put_event_constraints)
+				x86_pmu.put_event_constraints(cpuc, e);
 
 			cpuc->event_constraint[i] = NULL;
 		}
 	}
 
-	static_call_cond(x86_pmu_stop_scheduling)(cpuc);
+	if (x86_pmu.stop_scheduling)
+		x86_pmu.stop_scheduling(cpuc);
 
 	return unsched ? -EINVAL : 0;
-}
-
-static int add_nr_metric_event(struct cpu_hw_events *cpuc,
-			       struct perf_event *event)
-{
-	if (is_metric_event(event)) {
-		if (cpuc->n_metric == INTEL_TD_METRIC_NUM)
-			return -EINVAL;
-		cpuc->n_metric++;
-		cpuc->n_txn_metric++;
-	}
-
-	return 0;
-}
-
-static void del_nr_metric_event(struct cpu_hw_events *cpuc,
-				struct perf_event *event)
-{
-	if (is_metric_event(event))
-		cpuc->n_metric--;
-}
-
-static int collect_event(struct cpu_hw_events *cpuc, struct perf_event *event,
-			 int max_count, int n)
-{
-
-	if (x86_pmu.intel_cap.perf_metrics && add_nr_metric_event(cpuc, event))
-		return -EINVAL;
-
-	if (n >= max_count + cpuc->n_metric)
-		return -EINVAL;
-
-	cpuc->event_list[n] = event;
-	if (is_counter_pair(&event->hw)) {
-		cpuc->n_pair++;
-		cpuc->n_txn_pair++;
-	}
-
-	return 0;
 }
 
 /*
@@ -1148,22 +1067,28 @@ static int collect_events(struct cpu_hw_events *cpuc, struct perf_event *leader,
 	}
 
 	if (is_x86_event(leader)) {
-		if (collect_event(cpuc, leader, max_count, n))
+		if (n >= max_count)
 			return -EINVAL;
+		cpuc->event_list[n] = leader;
 		n++;
+		if (is_counter_pair(&leader->hw))
+			cpuc->n_pair++;
 	}
-
 	if (!dogrp)
 		return n;
 
 	for_each_sibling_event(event, leader) {
-		if (!is_x86_event(event) || event->state <= PERF_EVENT_STATE_OFF)
+		if (!is_x86_event(event) ||
+		    event->state <= PERF_EVENT_STATE_OFF)
 			continue;
 
-		if (collect_event(cpuc, event, max_count, n))
+		if (n >= max_count)
 			return -EINVAL;
 
+		cpuc->event_list[n] = event;
 		n++;
+		if (is_counter_pair(&event->hw))
+			cpuc->n_pair++;
 	}
 	return n;
 }
@@ -1172,36 +1097,22 @@ static inline void x86_assign_hw_event(struct perf_event *event,
 				struct cpu_hw_events *cpuc, int i)
 {
 	struct hw_perf_event *hwc = &event->hw;
-	int idx;
 
-	idx = hwc->idx = cpuc->assign[i];
+	hwc->idx = cpuc->assign[i];
 	hwc->last_cpu = smp_processor_id();
 	hwc->last_tag = ++cpuc->tags[i];
 
-	switch (hwc->idx) {
-	case INTEL_PMC_IDX_FIXED_BTS:
-	case INTEL_PMC_IDX_FIXED_VLBR:
+	if (hwc->idx == INTEL_PMC_IDX_FIXED_BTS) {
 		hwc->config_base = 0;
 		hwc->event_base	= 0;
-		break;
-
-	case INTEL_PMC_IDX_METRIC_BASE ... INTEL_PMC_IDX_METRIC_END:
-		/* All the metric events are mapped onto the fixed counter 3. */
-		idx = INTEL_PMC_IDX_FIXED_SLOTS;
-		fallthrough;
-	case INTEL_PMC_IDX_FIXED ... INTEL_PMC_IDX_FIXED_BTS-1:
+	} else if (hwc->idx >= INTEL_PMC_IDX_FIXED) {
 		hwc->config_base = MSR_ARCH_PERFMON_FIXED_CTR_CTRL;
-		hwc->event_base = MSR_ARCH_PERFMON_FIXED_CTR0 +
-				(idx - INTEL_PMC_IDX_FIXED);
-		hwc->event_base_rdpmc = (idx - INTEL_PMC_IDX_FIXED) |
-					INTEL_PMC_FIXED_RDPMC_BASE;
-		break;
-
-	default:
+		hwc->event_base = MSR_ARCH_PERFMON_FIXED_CTR0 + (hwc->idx - INTEL_PMC_IDX_FIXED);
+		hwc->event_base_rdpmc = (hwc->idx - INTEL_PMC_IDX_FIXED) | 1<<30;
+	} else {
 		hwc->config_base = x86_pmu_config_addr(hwc->idx);
 		hwc->event_base  = x86_pmu_event_addr(hwc->idx);
 		hwc->event_base_rdpmc = x86_pmu_rdpmc_index(hwc->idx);
-		break;
 	}
 }
 
@@ -1306,7 +1217,7 @@ static void x86_pmu_enable(struct pmu *pmu)
 	cpuc->enabled = 1;
 	barrier();
 
-	static_call(x86_pmu_enable_all)(added);
+	x86_pmu.enable_all(added);
 }
 
 static DEFINE_PER_CPU(u64 [X86_PMC_IDX_MAX], pmc_prev_left);
@@ -1322,12 +1233,8 @@ int x86_perf_event_set_period(struct perf_event *event)
 	s64 period = hwc->sample_period;
 	int ret = 0, idx = hwc->idx;
 
-	if (unlikely(!hwc->event_base))
+	if (idx == INTEL_PMC_IDX_FIXED_BTS)
 		return 0;
-
-	if (unlikely(is_topdown_count(event)) &&
-	    x86_pmu.set_topdown_event_period)
-		return x86_pmu.set_topdown_event_period(event);
 
 	/*
 	 * If we are way outside a reasonable range then just skip forward:
@@ -1368,11 +1275,11 @@ int x86_perf_event_set_period(struct perf_event *event)
 	wrmsrl(hwc->event_base, (u64)(-left) & x86_pmu.cntval_mask);
 
 	/*
-	 * Sign extend the Merge event counter's upper 16 bits since
+	 * Clear the Merge event counter's upper 16 bits since
 	 * we currently declare a 48-bit counter width
 	 */
 	if (is_counter_pair(hwc))
-		wrmsrl(x86_pmu_event_addr(idx + 1), 0xffff);
+		wrmsrl(x86_pmu_event_addr(idx + 1), 0);
 
 	/*
 	 * Due to erratum on certan cpu we need
@@ -1431,7 +1338,7 @@ static int x86_pmu_add(struct perf_event *event, int flags)
 	if (cpuc->txn_flags & PERF_PMU_TXN_ADD)
 		goto done_collect;
 
-	ret = static_call(x86_pmu_schedule_events)(cpuc, n, assign);
+	ret = x86_pmu.schedule_events(cpuc, n, assign);
 	if (ret)
 		goto out;
 	/*
@@ -1449,11 +1356,13 @@ done_collect:
 	cpuc->n_added += n - n0;
 	cpuc->n_txn += n - n0;
 
-	/*
-	 * This is before x86_pmu_enable() will call x86_pmu_start(),
-	 * so we enable LBRs before an event needs them etc..
-	 */
-	static_call_cond(x86_pmu_add)(event);
+	if (x86_pmu.add) {
+		/*
+		 * This is before x86_pmu_enable() will call x86_pmu_start(),
+		 * so we enable LBRs before an event needs them etc..
+		 */
+		x86_pmu.add(event);
+	}
 
 	ret = 0;
 out:
@@ -1481,7 +1390,7 @@ static void x86_pmu_start(struct perf_event *event, int flags)
 	cpuc->events[idx] = event;
 	__set_bit(idx, cpuc->active_mask);
 	__set_bit(idx, cpuc->running);
-	static_call(x86_pmu_enable)(event);
+	x86_pmu.enable(event);
 	perf_event_update_userpage(event);
 }
 
@@ -1537,8 +1446,6 @@ void perf_event_print_debug(void)
 			cpu, idx, prev_left);
 	}
 	for (idx = 0; idx < x86_pmu.num_counters_fixed; idx++) {
-		if (fixed_counter_disabled(idx))
-			continue;
 		rdmsrl(MSR_ARCH_PERFMON_FIXED_CTR0 + idx, pmc_count);
 
 		pr_info("CPU#%d: fixed-PMC%d count: %016llx\n",
@@ -1553,7 +1460,7 @@ void x86_pmu_stop(struct perf_event *event, int flags)
 	struct hw_perf_event *hwc = &event->hw;
 
 	if (test_bit(hwc->idx, cpuc->active_mask)) {
-		static_call(x86_pmu_disable)(event);
+		x86_pmu.disable(event);
 		__clear_bit(hwc->idx, cpuc->active_mask);
 		cpuc->events[hwc->idx] = NULL;
 		WARN_ON_ONCE(hwc->state & PERF_HES_STOPPED);
@@ -1603,7 +1510,8 @@ static void x86_pmu_del(struct perf_event *event, int flags)
 	if (i >= cpuc->n_events - cpuc->n_added)
 		--cpuc->n_added;
 
-	static_call_cond(x86_pmu_put_event_constraints)(cpuc, event);
+	if (x86_pmu.put_event_constraints)
+		x86_pmu.put_event_constraints(cpuc, event);
 
 	/* Delete the array entry. */
 	while (++i < cpuc->n_events) {
@@ -1612,18 +1520,17 @@ static void x86_pmu_del(struct perf_event *event, int flags)
 	}
 	cpuc->event_constraint[i-1] = NULL;
 	--cpuc->n_events;
-	if (x86_pmu.intel_cap.perf_metrics)
-		del_nr_metric_event(cpuc, event);
 
 	perf_event_update_userpage(event);
 
 do_del:
-
-	/*
-	 * This is after x86_pmu_stop(); so we disable LBRs after any
-	 * event can need them etc..
-	 */
-	static_call_cond(x86_pmu_del)(event);
+	if (x86_pmu.del) {
+		/*
+		 * This is after x86_pmu_stop(); so we disable LBRs after any
+		 * event can need them etc..
+		 */
+		x86_pmu.del(event);
+	}
 }
 
 int x86_pmu_handle_irq(struct pt_regs *regs)
@@ -1701,7 +1608,7 @@ perf_event_nmi_handler(unsigned int cmd, struct pt_regs *regs)
 		return NMI_DONE;
 
 	start_clock = sched_clock();
-	ret = static_call(x86_pmu_handle_irq)(regs);
+	ret = x86_pmu.handle_irq(regs);
 	finish_clock = sched_clock();
 
 	perf_sample_event_took(finish_clock - start_clock);
@@ -1914,40 +1821,6 @@ ssize_t x86_event_sysfs_show(char *page, u64 config, u64 event)
 static struct attribute_group x86_pmu_attr_group;
 static struct attribute_group x86_pmu_caps_group;
 
-static void x86_pmu_static_call_update(void)
-{
-	static_call_update(x86_pmu_handle_irq, x86_pmu.handle_irq);
-	static_call_update(x86_pmu_disable_all, x86_pmu.disable_all);
-	static_call_update(x86_pmu_enable_all, x86_pmu.enable_all);
-	static_call_update(x86_pmu_enable, x86_pmu.enable);
-	static_call_update(x86_pmu_disable, x86_pmu.disable);
-
-	static_call_update(x86_pmu_add, x86_pmu.add);
-	static_call_update(x86_pmu_del, x86_pmu.del);
-	static_call_update(x86_pmu_read, x86_pmu.read);
-
-	static_call_update(x86_pmu_schedule_events, x86_pmu.schedule_events);
-	static_call_update(x86_pmu_get_event_constraints, x86_pmu.get_event_constraints);
-	static_call_update(x86_pmu_put_event_constraints, x86_pmu.put_event_constraints);
-
-	static_call_update(x86_pmu_start_scheduling, x86_pmu.start_scheduling);
-	static_call_update(x86_pmu_commit_scheduling, x86_pmu.commit_scheduling);
-	static_call_update(x86_pmu_stop_scheduling, x86_pmu.stop_scheduling);
-
-	static_call_update(x86_pmu_sched_task, x86_pmu.sched_task);
-	static_call_update(x86_pmu_swap_task_ctx, x86_pmu.swap_task_ctx);
-
-	static_call_update(x86_pmu_drain_pebs, x86_pmu.drain_pebs);
-	static_call_update(x86_pmu_pebs_aliases, x86_pmu.pebs_aliases);
-
-	static_call_update(x86_pmu_guest_get_msrs, x86_pmu.guest_get_msrs);
-}
-
-static void _x86_pmu_read(struct perf_event *event)
-{
-	x86_perf_event_update(event);
-}
-
 static int __init init_hw_perf_events(void)
 {
 	struct x86_pmu_quirk *quirk;
@@ -1965,10 +1838,6 @@ static int __init init_hw_perf_events(void)
 	case X86_VENDOR_HYGON:
 		err = amd_pmu_init();
 		x86_pmu.name = "HYGON";
-		break;
-	case X86_VENDOR_ZHAOXIN:
-	case X86_VENDOR_CENTAUR:
-		err = zhaoxin_pmu_init();
 		break;
 	default:
 		err = -ENOTSUPP;
@@ -2013,18 +1882,8 @@ static int __init init_hw_perf_events(void)
 	pr_info("... generic registers:      %d\n",     x86_pmu.num_counters);
 	pr_info("... value mask:             %016Lx\n", x86_pmu.cntval_mask);
 	pr_info("... max period:             %016Lx\n", x86_pmu.max_period);
-	pr_info("... fixed-purpose events:   %lu\n",
-			hweight64((((1ULL << x86_pmu.num_counters_fixed) - 1)
-					<< INTEL_PMC_IDX_FIXED) & x86_pmu.intel_ctrl));
+	pr_info("... fixed-purpose events:   %d\n",     x86_pmu.num_counters_fixed);
 	pr_info("... event mask:             %016Lx\n", x86_pmu.intel_ctrl);
-
-	if (!x86_pmu.read)
-		x86_pmu.read = _x86_pmu_read;
-
-	if (!x86_pmu.guest_get_msrs)
-		x86_pmu.guest_get_msrs = (void *)&__static_call_return0;
-
-	x86_pmu_static_call_update();
 
 	/*
 	 * Install callbacks. Core will call them for each online
@@ -2062,9 +1921,11 @@ out:
 }
 early_initcall(init_hw_perf_events);
 
-static void x86_pmu_read(struct perf_event *event)
+static inline void x86_pmu_read(struct perf_event *event)
 {
-	static_call(x86_pmu_read)(event);
+	if (x86_pmu.read)
+		return x86_pmu.read(event);
+	x86_perf_event_update(event);
 }
 
 /*
@@ -2088,8 +1949,6 @@ static void x86_pmu_start_txn(struct pmu *pmu, unsigned int txn_flags)
 
 	perf_pmu_disable(pmu);
 	__this_cpu_write(cpu_hw_events.n_txn, 0);
-	__this_cpu_write(cpu_hw_events.n_txn_pair, 0);
-	__this_cpu_write(cpu_hw_events.n_txn_metric, 0);
 }
 
 /*
@@ -2115,8 +1974,6 @@ static void x86_pmu_cancel_txn(struct pmu *pmu)
 	 */
 	__this_cpu_sub(cpu_hw_events.n_added, __this_cpu_read(cpu_hw_events.n_txn));
 	__this_cpu_sub(cpu_hw_events.n_events, __this_cpu_read(cpu_hw_events.n_txn));
-	__this_cpu_sub(cpu_hw_events.n_pair, __this_cpu_read(cpu_hw_events.n_txn_pair));
-	__this_cpu_sub(cpu_hw_events.n_metric, __this_cpu_read(cpu_hw_events.n_txn_metric));
 	perf_pmu_enable(pmu);
 }
 
@@ -2145,7 +2002,7 @@ static int x86_pmu_commit_txn(struct pmu *pmu)
 	if (!x86_pmu_initialized())
 		return -EAGAIN;
 
-	ret = static_call(x86_pmu_schedule_events)(cpuc, n, assign);
+	ret = x86_pmu.schedule_events(cpuc, n, assign);
 	if (ret)
 		return ret;
 
@@ -2305,6 +2162,11 @@ static int x86_pmu_event_init(struct perf_event *event)
 	return err;
 }
 
+static void refresh_pce(void *ignored)
+{
+	load_mm_cr4_irqsoff(this_cpu_read(cpu_tlbstate.loaded_mm));
+}
+
 static void x86_pmu_event_mapped(struct perf_event *event, struct mm_struct *mm)
 {
 	if (!(event->hw.flags & PERF_X86_EVENT_RDPMC_ALLOWED))
@@ -2317,13 +2179,13 @@ static void x86_pmu_event_mapped(struct perf_event *event, struct mm_struct *mm)
 	 * userspace with CR4.PCE clear while another task is still
 	 * doing on_each_cpu_mask() to propagate CR4.PCE.
 	 *
-	 * For now, this can't happen because all callers hold mmap_lock
+	 * For now, this can't happen because all callers hold mmap_sem
 	 * for write.  If this changes, we'll need a different solution.
 	 */
-	mmap_assert_write_locked(mm);
+	lockdep_assert_held_write(&mm->mmap_sem);
 
 	if (atomic_inc_return(&mm->context.perf_rdpmc_allowed) == 1)
-		on_each_cpu_mask(mm_cpumask(mm), cr4_update_pce, NULL, 1);
+		on_each_cpu_mask(mm_cpumask(mm), refresh_pce, NULL, 1);
 }
 
 static void x86_pmu_event_unmapped(struct perf_event *event, struct mm_struct *mm)
@@ -2333,20 +2195,22 @@ static void x86_pmu_event_unmapped(struct perf_event *event, struct mm_struct *m
 		return;
 
 	if (atomic_dec_and_test(&mm->context.perf_rdpmc_allowed))
-		on_each_cpu_mask(mm_cpumask(mm), cr4_update_pce, NULL, 1);
+		on_each_cpu_mask(mm_cpumask(mm), refresh_pce, NULL, 1);
 }
 
 static int x86_pmu_event_idx(struct perf_event *event)
 {
-	struct hw_perf_event *hwc = &event->hw;
+	int idx = event->hw.idx;
 
-	if (!(hwc->flags & PERF_X86_EVENT_RDPMC_ALLOWED))
+	if (!(event->hw.flags & PERF_X86_EVENT_RDPMC_ALLOWED))
 		return 0;
 
-	if (is_metric_idx(hwc->idx))
-		return INTEL_PMC_FIXED_RDPMC_METRICS + 1;
-	else
-		return hwc->event_base_rdpmc + 1;
+	if (x86_pmu.num_counters_fixed && idx >= INTEL_PMC_IDX_FIXED) {
+		idx -= INTEL_PMC_IDX_FIXED;
+		idx |= 1 << 30;
+	}
+
+	return idx + 1;
 }
 
 static ssize_t get_attr_rdpmc(struct device *cdev,
@@ -2389,7 +2253,7 @@ static ssize_t set_attr_rdpmc(struct device *cdev,
 		else if (x86_pmu.attr_rdpmc == 2)
 			static_branch_dec(&rdpmc_always_available_key);
 
-		on_each_cpu(cr4_update_pce, NULL, 1);
+		on_each_cpu(refresh_pce, NULL, 1);
 		x86_pmu.attr_rdpmc = val;
 	}
 
@@ -2436,13 +2300,15 @@ static const struct attribute_group *x86_pmu_attr_groups[] = {
 
 static void x86_pmu_sched_task(struct perf_event_context *ctx, bool sched_in)
 {
-	static_call_cond(x86_pmu_sched_task)(ctx, sched_in);
+	if (x86_pmu.sched_task)
+		x86_pmu.sched_task(ctx, sched_in);
 }
 
 static void x86_pmu_swap_task_ctx(struct perf_event_context *prev,
 				  struct perf_event_context *next)
 {
-	static_call_cond(x86_pmu_swap_task_ctx)(prev, next);
+	if (x86_pmu.swap_task_ctx)
+		x86_pmu.swap_task_ctx(prev, next);
 }
 
 void perf_check_microcode(void)
@@ -2498,6 +2364,7 @@ static struct pmu pmu = {
 
 	.event_idx		= x86_pmu_event_idx,
 	.sched_task		= x86_pmu_sched_task,
+	.task_ctx_size          = sizeof(struct x86_perf_task_context),
 	.swap_task_ctx		= x86_pmu_swap_task_ctx,
 	.check_period		= x86_pmu_check_period,
 
@@ -2623,9 +2490,9 @@ perf_callchain_user32(struct pt_regs *regs, struct perf_callchain_entry_ctx *ent
 	/* 32-bit process in 64-bit kernel. */
 	unsigned long ss_base, cs_base;
 	struct stack_frame_ia32 frame;
-	const struct stack_frame_ia32 __user *fp;
+	const void __user *fp;
 
-	if (user_64bit_mode(regs))
+	if (!test_thread_flag(TIF_IA32))
 		return 0;
 
 	cs_base = get_segment_base(regs->cs);
@@ -2634,12 +2501,18 @@ perf_callchain_user32(struct pt_regs *regs, struct perf_callchain_entry_ctx *ent
 	fp = compat_ptr(ss_base + regs->bp);
 	pagefault_disable();
 	while (entry->nr < entry->max_stack) {
+		unsigned long bytes;
+		frame.next_frame     = 0;
+		frame.return_address = 0;
+
 		if (!valid_user_frame(fp, sizeof(frame)))
 			break;
 
-		if (__get_user(frame.next_frame, &fp->next_frame))
+		bytes = __copy_from_user_nmi(&frame.next_frame, fp, 4);
+		if (bytes != 0)
 			break;
-		if (__get_user(frame.return_address, &fp->return_address))
+		bytes = __copy_from_user_nmi(&frame.return_address, fp+4, 4);
+		if (bytes != 0)
 			break;
 
 		perf_callchain_store(entry, cs_base + frame.return_address);
@@ -2660,7 +2533,7 @@ void
 perf_callchain_user(struct perf_callchain_entry_ctx *entry, struct pt_regs *regs)
 {
 	struct stack_frame frame;
-	const struct stack_frame __user *fp;
+	const unsigned long __user *fp;
 
 	if (perf_guest_cbs && perf_guest_cbs->is_in_guest()) {
 		/* TODO: We don't support guest os callchain now */
@@ -2673,7 +2546,7 @@ perf_callchain_user(struct perf_callchain_entry_ctx *entry, struct pt_regs *regs
 	if (regs->flags & (X86_VM_MASK | PERF_EFLAGS_VM))
 		return;
 
-	fp = (void __user *)regs->bp;
+	fp = (unsigned long __user *)regs->bp;
 
 	perf_callchain_store(entry, regs->ip);
 
@@ -2685,12 +2558,19 @@ perf_callchain_user(struct perf_callchain_entry_ctx *entry, struct pt_regs *regs
 
 	pagefault_disable();
 	while (entry->nr < entry->max_stack) {
+		unsigned long bytes;
+
+		frame.next_frame	     = NULL;
+		frame.return_address = 0;
+
 		if (!valid_user_frame(fp, sizeof(frame)))
 			break;
 
-		if (__get_user(frame.next_frame, &fp->next_frame))
+		bytes = __copy_from_user_nmi(&frame.next_frame, fp, sizeof(*fp));
+		if (bytes != 0)
 			break;
-		if (__get_user(frame.return_address, &fp->return_address))
+		bytes = __copy_from_user_nmi(&frame.return_address, fp + 1, sizeof(*fp));
+		if (bytes != 0)
 			break;
 
 		perf_callchain_store(entry, frame.return_address);

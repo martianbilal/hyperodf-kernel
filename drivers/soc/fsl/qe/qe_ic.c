@@ -44,7 +44,7 @@
 
 struct qe_ic {
 	/* Control registers offset */
-	__be32 __iomem *regs;
+	u32 __iomem *regs;
 
 	/* The remapper for this QEIC */
 	struct irq_domain *irqhost;

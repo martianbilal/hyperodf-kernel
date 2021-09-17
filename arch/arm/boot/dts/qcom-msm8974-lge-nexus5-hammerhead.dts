@@ -12,7 +12,6 @@
 
 	aliases {
 		serial0 = &blsp1_uart1;
-		serial1 = &blsp2_uart10;
 	};
 
 	chosen {
@@ -239,7 +238,7 @@
 
 &soc {
 	serial@f991d000 {
-		status = "okay";
+		status = "ok";
 	};
 
 	pinctrl@fd510000 {
@@ -356,61 +355,10 @@
 				bias-disable;
 			};
 		};
-
-		bt_pin: bt {
-			hostwake {
-				pins = "gpio42";
-				function = "gpio";
-			};
-
-			devwake {
-				pins = "gpio62";
-				function = "gpio";
-			};
-
-			shutdown {
-				pins = "gpio41";
-				function = "gpio";
-			};
-		};
-
-		blsp2_uart10_pin_a: blsp2-uart10-pin-active {
-			tx {
-				pins = "gpio53";
-				function = "blsp_uart10";
-
-				drive-strength = <2>;
-				bias-disable;
-			};
-
-			rx {
-				pins = "gpio54";
-				function = "blsp_uart10";
-
-				drive-strength = <2>;
-				bias-pull-up;
-			};
-
-			cts {
-				pins = "gpio55";
-				function = "blsp_uart10";
-
-				drive-strength = <2>;
-				bias-pull-up;
-			};
-
-			rts {
-				pins = "gpio56";
-				function = "blsp_uart10";
-
-				drive-strength = <2>;
-				bias-disable;
-			};
-		};
 	};
 
 	sdhci@f9824900 {
-		status = "okay";
+		status = "ok";
 
 		vmmc-supply = <&pm8941_l20>;
 		vqmmc-supply = <&pm8941_s3>;
@@ -423,7 +371,7 @@
 	};
 
 	sdhci@f98a4900 {
-		status = "okay";
+		status = "ok";
 
 		max-frequency = <100000000>;
 		bus-width = <4>;
@@ -470,27 +418,8 @@
 		};
 	};
 
-	serial@f9960000 {
-		status = "okay";
-
-		pinctrl-names = "default";
-		pinctrl-0 = <&blsp2_uart10_pin_a>;
-
-		bluetooth {
-			compatible = "brcm,bcm43438-bt";
-			max-speed = <3000000>;
-
-			pinctrl-names = "default";
-			pinctrl-0 = <&bt_pin>;
-
-			host-wakeup-gpios = <&msmgpio 42 GPIO_ACTIVE_HIGH>;
-			device-wakeup-gpios = <&msmgpio 62 GPIO_ACTIVE_HIGH>;
-			shutdown-gpios = <&msmgpio 41 GPIO_ACTIVE_HIGH>;
-		};
-	};
-
 	i2c@f9967000 {
-		status = "okay";
+		status = "ok";
 		pinctrl-names = "default";
 		pinctrl-0 = <&i2c11_pins>;
 		clock-frequency = <355000>;
@@ -498,7 +427,7 @@
 
 		led-controller@38 {
 			compatible = "ti,lm3630a";
-			status = "okay";
+			status = "ok";
 			reg = <0x38>;
 
 			#address-cells = <1>;
@@ -514,7 +443,7 @@
 	};
 
 	i2c@f9968000 {
-		status = "okay";
+		status = "ok";
 		pinctrl-names = "default";
 		pinctrl-0 = <&i2c12_pins>;
 		clock-frequency = <100000>;
@@ -551,7 +480,7 @@
 	};
 
 	i2c@f9923000 {
-		status = "okay";
+		status = "ok";
 		pinctrl-names = "default";
 		pinctrl-0 = <&i2c1_pins>;
 		clock-frequency = <100000>;
@@ -566,26 +495,10 @@
 
 			usb_otg_vbus: usb-otg-vbus { };
 		};
-
-		fuelgauge: max17048@36 {
-			compatible = "maxim,max17048";
-			reg = <0x36>;
-
-			maxim,double-soc;
-			maxim,rcomp = /bits/ 8 <0x4d>;
-
-			interrupt-parent = <&msmgpio>;
-			interrupts = <9 IRQ_TYPE_LEVEL_LOW>;
-
-			pinctrl-names = "default";
-			pinctrl-0 = <&fuelgauge_pin>;
-
-			maxim,alert-low-soc-level = <2>;
-		};
 	};
 
 	i2c@f9924000 {
-		status = "okay";
+		status = "ok";
 
 		clock-frequency = <355000>;
 		qcom,src-freq = <50000000>;
@@ -620,7 +533,7 @@
 	};
 
 	i2c@f9925000 {
-		status = "okay";
+		status = "ok";
 		pinctrl-names = "default";
 		pinctrl-0 = <&i2c3_pins>;
 		clock-frequency = <100000>;
@@ -638,7 +551,7 @@
 	};
 
 	usb@f9a55000 {
-		status = "okay";
+		status = "ok";
 
 		phys = <&usb_hs1_phy>;
 		phy-select = <&tcsr 0xb000 0>;
@@ -652,7 +565,7 @@
 
 		ulpi {
 			phy@a {
-				status = "okay";
+				status = "ok";
 
 				v1p8-supply = <&pm8941_l6>;
 				v3p3-supply = <&pm8941_l24>;
@@ -663,14 +576,14 @@
 	};
 
 	mdss@fd900000 {
-		status = "okay";
+		status = "ok";
 
 		mdp@fd900000 {
-			status = "okay";
+			status = "ok";
 		};
 
 		dsi@fd922800 {
-			status = "okay";
+			status = "ok";
 
 			vdda-supply = <&pm8941_l2>;
 			vdd-supply = <&pm8941_lvs3>;
@@ -704,7 +617,7 @@
 		};
 
 		dsi-phy@fd922a00 {
-			status = "okay";
+			status = "ok";
 
 			vddio-supply = <&pm8941_l12>;
 		};
@@ -719,15 +632,6 @@
 				function = "normal";
 
 				bias-pull-up;
-				power-source = <PM8941_GPIO_S3>;
-			};
-
-			fuelgauge_pin: fuelgauge-int {
-				pins = "gpio9";
-				function = "normal";
-
-				bias-disable;
-				input-enable;
 				power-source = <PM8941_GPIO_S3>;
 			};
 

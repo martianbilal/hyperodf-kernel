@@ -8,7 +8,6 @@
  * TODO: gesture + proximity calib offsets
  */
 
-#include <linux/acpi.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -562,7 +561,7 @@ static int apds9960_write_raw(struct iio_dev *indio_dev,
 		}
 	default:
 		return -EINVAL;
-	}
+	};
 
 	return 0;
 }
@@ -1002,6 +1001,7 @@ static int apds9960_probe(struct i2c_client *client,
 
 	iio_device_attach_buffer(indio_dev, buffer);
 
+	indio_dev->dev.parent = &client->dev;
 	indio_dev->info = &apds9960_info;
 	indio_dev->name = APDS9960_DRV_NAME;
 	indio_dev->channels = apds9960_channels;
@@ -1114,12 +1114,6 @@ static const struct i2c_device_id apds9960_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, apds9960_id);
 
-static const struct acpi_device_id apds9960_acpi_match[] = {
-	{ "MSHW0184" },
-	{ }
-};
-MODULE_DEVICE_TABLE(acpi, apds9960_acpi_match);
-
 static const struct of_device_id apds9960_of_match[] = {
 	{ .compatible = "avago,apds9960" },
 	{ }
@@ -1131,7 +1125,6 @@ static struct i2c_driver apds9960_driver = {
 		.name	= APDS9960_DRV_NAME,
 		.of_match_table = apds9960_of_match,
 		.pm	= &apds9960_pm_ops,
-		.acpi_match_table = apds9960_acpi_match,
 	},
 	.probe		= apds9960_probe,
 	.remove		= apds9960_remove,

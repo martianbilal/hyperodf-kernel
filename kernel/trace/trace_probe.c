@@ -639,8 +639,8 @@ static int traceprobe_parse_probe_arg_body(char *arg, ssize_t *size,
 			ret = -EINVAL;
 			goto fail;
 		}
-		if ((code->op == FETCH_OP_IMM || code->op == FETCH_OP_COMM ||
-		     code->op == FETCH_OP_DATA) || parg->count) {
+		if ((code->op == FETCH_OP_IMM || code->op == FETCH_OP_COMM) ||
+		     parg->count) {
 			/*
 			 * IMM, DATA and COMM is pointing actual address, those
 			 * must be kept, and if parg->count != 0, this is an
@@ -1006,7 +1006,7 @@ int trace_probe_init(struct trace_probe *tp, const char *event,
 	INIT_LIST_HEAD(&tp->event->class.fields);
 	INIT_LIST_HEAD(&tp->event->probes);
 	INIT_LIST_HEAD(&tp->list);
-	list_add(&tp->list, &tp->event->probes);
+	list_add(&tp->event->probes, &tp->list);
 
 	call = trace_probe_event_call(tp);
 	call->class = &tp->event->class;
@@ -1133,21 +1133,4 @@ bool trace_probe_match_command_args(struct trace_probe *tp,
 			return false;
 	}
 	return true;
-}
-
-int trace_probe_create(const char *raw_command, int (*createfn)(int, const char **))
-{
-	int argc = 0, ret = 0;
-	char **argv;
-
-	argv = argv_split(GFP_KERNEL, raw_command, &argc);
-	if (!argv)
-		return -ENOMEM;
-
-	if (argc)
-		ret = createfn(argc, (const char **)argv);
-
-	argv_free(argv);
-
-	return ret;
 }

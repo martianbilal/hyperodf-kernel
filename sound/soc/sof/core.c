@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause)
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-3-Clause)
 //
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
@@ -14,9 +14,6 @@
 #include <sound/sof.h>
 #include "sof-priv.h"
 #include "ops.h"
-#if IS_ENABLED(CONFIG_SND_SOC_SOF_DEBUG_PROBES)
-#include "probe.h"
-#endif
 
 /* see SOF_DBG_ flags */
 int sof_core_debug;
@@ -176,7 +173,6 @@ static int sof_probe_continue(struct snd_sof_dev *sdev)
 	/* init the IPC */
 	sdev->ipc = snd_sof_ipc_init(sdev);
 	if (!sdev->ipc) {
-		ret = -ENOMEM;
 		dev_err(sdev->dev, "error: failed to init DSP IPC %d\n", ret);
 		goto ipc_err;
 	}
@@ -246,8 +242,6 @@ static int sof_probe_continue(struct snd_sof_dev *sdev)
 	if (plat_data->sof_probe_complete)
 		plat_data->sof_probe_complete(sdev->dev);
 
-	sdev->probe_completed = true;
-
 	return 0;
 
 fw_trace_err:
@@ -292,15 +286,12 @@ int snd_sof_device_probe(struct device *dev, struct snd_sof_pdata *plat_data)
 	/* initialize sof device */
 	sdev->dev = dev;
 
-	/* initialize default DSP power state */
-	sdev->dsp_power_state.state = SOF_DSP_PM_D0;
+	/* initialize default D0 sub-state */
+	sdev->d0_substate = SOF_DSP_D0I0;
 
 	sdev->pdata = plat_data;
 	sdev->first_boot = true;
 	sdev->fw_state = SOF_FW_BOOT_NOT_STARTED;
-#if IS_ENABLED(CONFIG_SND_SOC_SOF_DEBUG_PROBES)
-	sdev->extractor_stream_tag = SOF_PROBE_INVALID_NODE_ID;
-#endif
 	dev_set_drvdata(dev, sdev);
 
 	/* check all mandatory ops */
@@ -318,7 +309,6 @@ int snd_sof_device_probe(struct device *dev, struct snd_sof_pdata *plat_data)
 	INIT_LIST_HEAD(&sdev->route_list);
 	spin_lock_init(&sdev->ipc_lock);
 	spin_lock_init(&sdev->hw_lock);
-	mutex_init(&sdev->power_state_access);
 
 	if (IS_ENABLED(CONFIG_SND_SOC_SOF_PROBE_WORK_QUEUE))
 		INIT_WORK(&sdev->probe_work, sof_probe_work);
@@ -342,29 +332,15 @@ int snd_sof_device_probe(struct device *dev, struct snd_sof_pdata *plat_data)
 }
 EXPORT_SYMBOL(snd_sof_device_probe);
 
-bool snd_sof_device_probe_completed(struct device *dev)
-{
-	struct snd_sof_dev *sdev = dev_get_drvdata(dev);
-
-	return sdev->probe_completed;
-}
-EXPORT_SYMBOL(snd_sof_device_probe_completed);
-
 int snd_sof_device_remove(struct device *dev)
 {
 	struct snd_sof_dev *sdev = dev_get_drvdata(dev);
 	struct snd_sof_pdata *pdata = sdev->pdata;
-	int ret;
 
 	if (IS_ENABLED(CONFIG_SND_SOC_SOF_PROBE_WORK_QUEUE))
 		cancel_work_sync(&sdev->probe_work);
 
 	if (sdev->fw_state > SOF_FW_BOOT_NOT_STARTED) {
-		ret = snd_sof_dsp_power_down_notify(sdev);
-		if (ret < 0)
-			dev_warn(dev, "error: %d failed to prepare DSP for device removal",
-				 ret);
-
 		snd_sof_fw_unload(sdev);
 		snd_sof_ipc_free(sdev);
 		snd_sof_free_debug(sdev);
@@ -394,20 +370,6 @@ int snd_sof_device_remove(struct device *dev)
 	return 0;
 }
 EXPORT_SYMBOL(snd_sof_device_remove);
-
-int snd_sof_device_shutdown(struct device *dev)
-{
-	struct snd_sof_dev *sdev = dev_get_drvdata(dev);
-
-	if (IS_ENABLED(CONFIG_SND_SOC_SOF_PROBE_WORK_QUEUE))
-		cancel_work_sync(&sdev->probe_work);
-
-	if (sdev->fw_state == SOF_FW_BOOT_COMPLETE)
-		return snd_sof_shutdown(sdev);
-
-	return 0;
-}
-EXPORT_SYMBOL(snd_sof_device_shutdown);
 
 MODULE_AUTHOR("Liam Girdwood");
 MODULE_DESCRIPTION("Sound Open Firmware (SOF) Core");

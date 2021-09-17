@@ -27,7 +27,6 @@
 #define _DMUB_PSR_H_
 
 #include "os_types.h"
-#include "dc_link.h"
 
 struct dmub_psr {
 	struct dc_context *ctx;
@@ -35,16 +34,14 @@ struct dmub_psr {
 };
 
 struct dmub_psr_funcs {
-	bool (*psr_copy_settings)(struct dmub_psr *dmub, struct dc_link *link, struct psr_context *psr_context);
-	void (*psr_enable)(struct dmub_psr *dmub, bool enable, bool wait);
-	void (*psr_get_state)(struct dmub_psr *dmub, enum dc_psr_state *dc_psr_state);
-	void (*psr_set_level)(struct dmub_psr *dmub, uint16_t psr_level);
-	void (*psr_force_static)(struct dmub_psr *dmub);
-	void (*psr_get_residency)(struct dmub_psr *dmub, uint32_t *residency);
+	void (*set_psr_enable)(struct dmub_psr *dmub, bool enable);
+	bool (*setup_psr)(struct dmub_psr *dmub, struct dc_link *link, struct psr_context *psr_context);
+	void (*get_psr_state)(uint32_t *psr_state);
+	void (*set_psr_level)(struct dmub_psr *dmub, uint16_t psr_level);
 };
 
 struct dmub_psr *dmub_psr_create(struct dc_context *ctx);
 void dmub_psr_destroy(struct dmub_psr **dmub);
 
 
-#endif /* _DMUB_PSR_H_ */
+#endif /* _DCE_DMUB_H_ */

@@ -267,7 +267,6 @@ static void configfs_remove_dirent(struct dentry *dentry)
  *	configfs_create_dir - create a directory for an config_item.
  *	@item:		config_itemwe're creating directory for.
  *	@dentry:	config_item's dentry.
- *	@frag:		config_item's fragment.
  *
  *	Note: user-created entries won't be allowed under this new directory
  *	until it is validated by configfs_dir_set_ready()
@@ -1169,7 +1168,7 @@ EXPORT_SYMBOL(configfs_depend_item);
 
 /*
  * Release the dependent linkage.  This is much simpler than
- * configfs_depend_item() because we know that the client driver is
+ * configfs_depend_item() because we know that that the client driver is
  * pinned, thus the subsystem is pinned, and therefore configfs is pinned.
  */
 void configfs_undepend_item(struct config_item *target)
@@ -1268,8 +1267,7 @@ out_root_unlock:
 }
 EXPORT_SYMBOL(configfs_depend_item_unlocked);
 
-static int configfs_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
-			  struct dentry *dentry, umode_t mode)
+static int configfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 {
 	int ret = 0;
 	int module_got = 0;
@@ -1690,11 +1688,11 @@ static loff_t configfs_dir_lseek(struct file *file, loff_t offset, int whence)
 	switch (whence) {
 		case 1:
 			offset += file->f_pos;
-			fallthrough;
+			/* fall through */
 		case 0:
 			if (offset >= 0)
 				break;
-			fallthrough;
+			/* fall through */
 		default:
 			return -EINVAL;
 	}

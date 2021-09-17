@@ -12,8 +12,6 @@
 #ifndef __CONFIG_DOT_H__
 #define __CONFIG_DOT_H__
 
-#define DEFAULT_BUFFER_SIZE     4096
-
 struct dlm_config_node {
 	int nodeid;
 	int weight;
@@ -33,7 +31,6 @@ struct dlm_config_info {
 	int ci_log_debug;
 	int ci_log_info;
 	int ci_protocol;
-	int ci_mark;
 	int ci_timewarn_cs;
 	int ci_waitwarn_us;
 	int ci_new_rsb_count;

@@ -71,9 +71,9 @@ properties:
     maxItems: 2
 
   reg-names:
-    items:
-      - const: vpu
-      - const: hhi
+   items:
+     - const: vpu
+     - const: hhi
 
   interrupts:
     maxItems: 1
@@ -83,12 +83,12 @@ properties:
     description: phandle to the associated power domain
 
   port@0:
-    $ref: /schemas/graph.yaml#/properties/port
+    type: object
     description:
       A port node pointing to the CVBS VDAC port node.
 
   port@1:
-    $ref: /schemas/graph.yaml#/properties/port
+    type: object
     description:
       A port node pointing to the HDMI-TX port node.
 
@@ -106,8 +106,6 @@ required:
   - port@1
   - "#address-cells"
   - "#size-cells"
-
-additionalProperties: false
 
 examples:
   - |

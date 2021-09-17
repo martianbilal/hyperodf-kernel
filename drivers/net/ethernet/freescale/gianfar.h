@@ -68,6 +68,7 @@ struct ethtool_rx_list {
 #define RXBUF_ALIGNMENT 64
 
 #define DRV_NAME "gfar-enet"
+extern const char gfar_driver_version[];
 
 /* MAXIMUM NUMBER OF QUEUES SUPPORTED */
 #define MAX_TX_QS	0x8

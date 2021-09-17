@@ -38,7 +38,7 @@ int snd_hdac_get_stream_stripe_ctl(struct hdac_bus *bus,
 		else
 			value = (channels * bits_per_sample) / sdo_line;
 
-		if (value >= bus->sdo_limit)
+		if (value >= 8)
 			break;
 	}
 
@@ -150,11 +150,8 @@ void snd_hdac_stream_reset(struct hdac_stream *azx_dev)
 {
 	unsigned char val;
 	int timeout;
-	int dma_run_state;
 
 	snd_hdac_stream_clear(azx_dev);
-
-	dma_run_state = snd_hdac_stream_readb(azx_dev, SD_CTL) & SD_CTL_DMA_START;
 
 	snd_hdac_stream_updateb(azx_dev, SD_CTL, 0, SD_CTL_STREAM_RESET);
 	udelay(3);
@@ -165,10 +162,6 @@ void snd_hdac_stream_reset(struct hdac_stream *azx_dev)
 		if (val)
 			break;
 	} while (--timeout);
-
-	if (azx_dev->bus->dma_stop_delay && dma_run_state)
-		udelay(azx_dev->bus->dma_stop_delay);
-
 	val &= ~SD_CTL_STREAM_RESET;
 	snd_hdac_stream_writeb(azx_dev, SD_CTL, val);
 	udelay(3);
@@ -435,11 +428,12 @@ int snd_hdac_stream_setup_periods(struct hdac_stream *azx_dev)
 	pos_adj = bus->bdl_pos_adj;
 	if (!azx_dev->no_period_wakeup && pos_adj > 0) {
 		pos_align = pos_adj;
-		pos_adj = DIV_ROUND_UP(pos_adj * runtime->rate, 48000);
+		pos_adj = (pos_adj * runtime->rate + 47999) / 48000;
 		if (!pos_adj)
 			pos_adj = pos_align;
 		else
-			pos_adj = roundup(pos_adj, pos_align);
+			pos_adj = ((pos_adj + pos_align - 1) / pos_align) *
+				pos_align;
 		pos_adj = frames_to_bytes(runtime, pos_adj);
 		if (pos_adj >= period_bytes) {
 			dev_warn(bus->dev, "Too big adjustment %d\n",

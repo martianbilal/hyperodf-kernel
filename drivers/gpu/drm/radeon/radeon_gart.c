@@ -72,8 +72,8 @@ int radeon_gart_table_ram_alloc(struct radeon_device *rdev)
 {
 	void *ptr;
 
-	ptr = dma_alloc_coherent(&rdev->pdev->dev, rdev->gart.table_size,
-				 &rdev->gart.table_addr, GFP_KERNEL);
+	ptr = pci_alloc_consistent(rdev->pdev, rdev->gart.table_size,
+				   &rdev->gart.table_addr);
 	if (ptr == NULL) {
 		return -ENOMEM;
 	}
@@ -85,6 +85,7 @@ int radeon_gart_table_ram_alloc(struct radeon_device *rdev)
 	}
 #endif
 	rdev->gart.ptr = ptr;
+	memset((void *)rdev->gart.ptr, 0, rdev->gart.table_size);
 	return 0;
 }
 
@@ -109,8 +110,9 @@ void radeon_gart_table_ram_free(struct radeon_device *rdev)
 			      rdev->gart.table_size >> PAGE_SHIFT);
 	}
 #endif
-	dma_free_coherent(&rdev->pdev->dev, rdev->gart.table_size,
-			  (void *)rdev->gart.ptr, rdev->gart.table_addr);
+	pci_free_consistent(rdev->pdev, rdev->gart.table_size,
+			    (void *)rdev->gart.ptr,
+			    rdev->gart.table_addr);
 	rdev->gart.ptr = NULL;
 	rdev->gart.table_addr = 0;
 }
@@ -301,8 +303,7 @@ int radeon_gart_bind(struct radeon_device *rdev, unsigned offset,
 	p = t / (PAGE_SIZE / RADEON_GPU_PAGE_SIZE);
 
 	for (i = 0; i < pages; i++, p++) {
-		rdev->gart.pages[p] = pagelist ? pagelist[i] :
-			rdev->dummy_page.page;
+		rdev->gart.pages[p] = pagelist[i];
 		page_base = dma_addr[i];
 		for (j = 0; j < (PAGE_SIZE / RADEON_GPU_PAGE_SIZE); j++, t++) {
 			page_entry = radeon_gart_get_page_entry(page_base, flags);

@@ -162,45 +162,46 @@ int mv88e6xxx_port_set_link(struct mv88e6xxx_chip *chip, int port, int link)
 	return 0;
 }
 
-int mv88e6xxx_port_sync_link(struct mv88e6xxx_chip *chip, int port, unsigned int mode, bool isup)
+int mv88e6xxx_port_set_duplex(struct mv88e6xxx_chip *chip, int port, int dup)
 {
-	const struct mv88e6xxx_ops *ops = chip->info->ops;
-	int err = 0;
-	int link;
+	u16 reg;
+	int err;
 
-	if (isup)
-		link = LINK_FORCED_UP;
-	else
-		link = LINK_FORCED_DOWN;
+	err = mv88e6xxx_port_read(chip, port, MV88E6XXX_PORT_MAC_CTL, &reg);
+	if (err)
+		return err;
 
-	if (ops->port_set_link)
-		err = ops->port_set_link(chip, port, link);
+	reg &= ~(MV88E6XXX_PORT_MAC_CTL_FORCE_DUPLEX |
+		 MV88E6XXX_PORT_MAC_CTL_DUPLEX_FULL);
 
-	return err;
+	switch (dup) {
+	case DUPLEX_HALF:
+		reg |= MV88E6XXX_PORT_MAC_CTL_FORCE_DUPLEX;
+		break;
+	case DUPLEX_FULL:
+		reg |= MV88E6XXX_PORT_MAC_CTL_FORCE_DUPLEX |
+			MV88E6XXX_PORT_MAC_CTL_DUPLEX_FULL;
+		break;
+	case DUPLEX_UNFORCED:
+		/* normal duplex detection */
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
+
+	err = mv88e6xxx_port_write(chip, port, MV88E6XXX_PORT_MAC_CTL, reg);
+	if (err)
+		return err;
+
+	dev_dbg(chip->dev, "p%d: %s %s duplex\n", port,
+		reg & MV88E6XXX_PORT_MAC_CTL_FORCE_DUPLEX ? "Force" : "Unforce",
+		reg & MV88E6XXX_PORT_MAC_CTL_DUPLEX_FULL ? "full" : "half");
+
+	return 0;
 }
 
-int mv88e6185_port_sync_link(struct mv88e6xxx_chip *chip, int port, unsigned int mode, bool isup)
-{
-	const struct mv88e6xxx_ops *ops = chip->info->ops;
-	int err = 0;
-	int link;
-
-	if (mode == MLO_AN_INBAND)
-		link = LINK_UNFORCED;
-	else if (isup)
-		link = LINK_FORCED_UP;
-	else
-		link = LINK_FORCED_DOWN;
-
-	if (ops->port_set_link)
-		err = ops->port_set_link(chip, port, link);
-
-	return err;
-}
-
-static int mv88e6xxx_port_set_speed_duplex(struct mv88e6xxx_chip *chip,
-					   int port, int speed, bool alt_bit,
-					   bool force_bit, int duplex)
+static int mv88e6xxx_port_set_speed(struct mv88e6xxx_chip *chip, int port,
+				    int speed, bool alt_bit, bool force_bit)
 {
 	u16 reg, ctrl;
 	int err;
@@ -238,29 +239,11 @@ static int mv88e6xxx_port_set_speed_duplex(struct mv88e6xxx_chip *chip,
 		return -EOPNOTSUPP;
 	}
 
-	switch (duplex) {
-	case DUPLEX_HALF:
-		ctrl |= MV88E6XXX_PORT_MAC_CTL_FORCE_DUPLEX;
-		break;
-	case DUPLEX_FULL:
-		ctrl |= MV88E6XXX_PORT_MAC_CTL_FORCE_DUPLEX |
-			MV88E6XXX_PORT_MAC_CTL_DUPLEX_FULL;
-		break;
-	case DUPLEX_UNFORCED:
-		/* normal duplex detection */
-		break;
-	default:
-		return -EOPNOTSUPP;
-	}
-
 	err = mv88e6xxx_port_read(chip, port, MV88E6XXX_PORT_MAC_CTL, &reg);
 	if (err)
 		return err;
 
-	reg &= ~(MV88E6XXX_PORT_MAC_CTL_SPEED_MASK |
-		 MV88E6XXX_PORT_MAC_CTL_FORCE_DUPLEX |
-		 MV88E6XXX_PORT_MAC_CTL_DUPLEX_FULL);
-
+	reg &= ~MV88E6XXX_PORT_MAC_CTL_SPEED_MASK;
 	if (alt_bit)
 		reg &= ~MV88E6390_PORT_MAC_CTL_ALTSPEED;
 	if (force_bit) {
@@ -278,16 +261,12 @@ static int mv88e6xxx_port_set_speed_duplex(struct mv88e6xxx_chip *chip,
 		dev_dbg(chip->dev, "p%d: Speed set to %d Mbps\n", port, speed);
 	else
 		dev_dbg(chip->dev, "p%d: Speed unforced\n", port);
-	dev_dbg(chip->dev, "p%d: %s %s duplex\n", port,
-		reg & MV88E6XXX_PORT_MAC_CTL_FORCE_DUPLEX ? "Force" : "Unforce",
-		reg & MV88E6XXX_PORT_MAC_CTL_DUPLEX_FULL ? "full" : "half");
 
 	return 0;
 }
 
 /* Support 10, 100, 200 Mbps (e.g. 88E6065 family) */
-int mv88e6065_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
-				    int speed, int duplex)
+int mv88e6065_port_set_speed(struct mv88e6xxx_chip *chip, int port, int speed)
 {
 	if (speed == SPEED_MAX)
 		speed = 200;
@@ -296,13 +275,11 @@ int mv88e6065_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 		return -EOPNOTSUPP;
 
 	/* Setting 200 Mbps on port 0 to 3 selects 100 Mbps */
-	return mv88e6xxx_port_set_speed_duplex(chip, port, speed, false, false,
-					       duplex);
+	return mv88e6xxx_port_set_speed(chip, port, speed, false, false);
 }
 
 /* Support 10, 100, 1000 Mbps (e.g. 88E6185 family) */
-int mv88e6185_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
-				    int speed, int duplex)
+int mv88e6185_port_set_speed(struct mv88e6xxx_chip *chip, int port, int speed)
 {
 	if (speed == SPEED_MAX)
 		speed = 1000;
@@ -310,13 +287,11 @@ int mv88e6185_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 	if (speed == 200 || speed > 1000)
 		return -EOPNOTSUPP;
 
-	return mv88e6xxx_port_set_speed_duplex(chip, port, speed, false, false,
-					       duplex);
+	return mv88e6xxx_port_set_speed(chip, port, speed, false, false);
 }
 
 /* Support 10, 100 Mbps (e.g. 88E6250 family) */
-int mv88e6250_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
-				    int speed, int duplex)
+int mv88e6250_port_set_speed(struct mv88e6xxx_chip *chip, int port, int speed)
 {
 	if (speed == SPEED_MAX)
 		speed = 100;
@@ -324,13 +299,11 @@ int mv88e6250_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 	if (speed > 100)
 		return -EOPNOTSUPP;
 
-	return mv88e6xxx_port_set_speed_duplex(chip, port, speed, false, false,
-					       duplex);
+	return mv88e6xxx_port_set_speed(chip, port, speed, false, false);
 }
 
 /* Support 10, 100, 200, 1000, 2500 Mbps (e.g. 88E6341) */
-int mv88e6341_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
-				    int speed, int duplex)
+int mv88e6341_port_set_speed(struct mv88e6xxx_chip *chip, int port, int speed)
 {
 	if (speed == SPEED_MAX)
 		speed = port < 5 ? 1000 : 2500;
@@ -344,8 +317,7 @@ int mv88e6341_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 	if (speed == 2500 && port < 5)
 		return -EOPNOTSUPP;
 
-	return mv88e6xxx_port_set_speed_duplex(chip, port, speed, !port, true,
-					       duplex);
+	return mv88e6xxx_port_set_speed(chip, port, speed, !port, true);
 }
 
 phy_interface_t mv88e6341_port_max_speed_mode(int port)
@@ -357,8 +329,7 @@ phy_interface_t mv88e6341_port_max_speed_mode(int port)
 }
 
 /* Support 10, 100, 200, 1000 Mbps (e.g. 88E6352 family) */
-int mv88e6352_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
-				    int speed, int duplex)
+int mv88e6352_port_set_speed(struct mv88e6xxx_chip *chip, int port, int speed)
 {
 	if (speed == SPEED_MAX)
 		speed = 1000;
@@ -369,13 +340,11 @@ int mv88e6352_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 	if (speed == 200 && port < 5)
 		return -EOPNOTSUPP;
 
-	return mv88e6xxx_port_set_speed_duplex(chip, port, speed, true, false,
-					       duplex);
+	return mv88e6xxx_port_set_speed(chip, port, speed, true, false);
 }
 
 /* Support 10, 100, 200, 1000, 2500 Mbps (e.g. 88E6390) */
-int mv88e6390_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
-				    int speed, int duplex)
+int mv88e6390_port_set_speed(struct mv88e6xxx_chip *chip, int port, int speed)
 {
 	if (speed == SPEED_MAX)
 		speed = port < 9 ? 1000 : 2500;
@@ -389,8 +358,7 @@ int mv88e6390_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 	if (speed == 2500 && port < 9)
 		return -EOPNOTSUPP;
 
-	return mv88e6xxx_port_set_speed_duplex(chip, port, speed, true, true,
-					       duplex);
+	return mv88e6xxx_port_set_speed(chip, port, speed, true, true);
 }
 
 phy_interface_t mv88e6390_port_max_speed_mode(int port)
@@ -402,8 +370,7 @@ phy_interface_t mv88e6390_port_max_speed_mode(int port)
 }
 
 /* Support 10, 100, 200, 1000, 2500, 10000 Mbps (e.g. 88E6190X) */
-int mv88e6390x_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
-				     int speed, int duplex)
+int mv88e6390x_port_set_speed(struct mv88e6xxx_chip *chip, int port, int speed)
 {
 	if (speed == SPEED_MAX)
 		speed = port < 9 ? 1000 : 10000;
@@ -414,8 +381,7 @@ int mv88e6390x_port_set_speed_duplex(struct mv88e6xxx_chip *chip, int port,
 	if (speed >= 2500 && port < 9)
 		return -EOPNOTSUPP;
 
-	return mv88e6xxx_port_set_speed_duplex(chip, port, speed, true, true,
-					       duplex);
+	return mv88e6xxx_port_set_speed(chip, port, speed, true, true);
 }
 
 phy_interface_t mv88e6390x_port_max_speed_mode(int port)
@@ -620,6 +586,183 @@ int mv88e6352_port_get_cmode(struct mv88e6xxx_chip *chip, int port, u8 *cmode)
 	return 0;
 }
 
+int mv88e6250_port_link_state(struct mv88e6xxx_chip *chip, int port,
+			      struct phylink_link_state *state)
+{
+	int err;
+	u16 reg;
+
+	err = mv88e6xxx_port_read(chip, port, MV88E6XXX_PORT_STS, &reg);
+	if (err)
+		return err;
+
+	if (port < 5) {
+		switch (reg & MV88E6250_PORT_STS_PORTMODE_MASK) {
+		case MV88E6250_PORT_STS_PORTMODE_PHY_10_HALF:
+			state->speed = SPEED_10;
+			state->duplex = DUPLEX_HALF;
+			break;
+		case MV88E6250_PORT_STS_PORTMODE_PHY_100_HALF:
+			state->speed = SPEED_100;
+			state->duplex = DUPLEX_HALF;
+			break;
+		case MV88E6250_PORT_STS_PORTMODE_PHY_10_FULL:
+			state->speed = SPEED_10;
+			state->duplex = DUPLEX_FULL;
+			break;
+		case MV88E6250_PORT_STS_PORTMODE_PHY_100_FULL:
+			state->speed = SPEED_100;
+			state->duplex = DUPLEX_FULL;
+			break;
+		default:
+			state->speed = SPEED_UNKNOWN;
+			state->duplex = DUPLEX_UNKNOWN;
+			break;
+		}
+	} else {
+		switch (reg & MV88E6250_PORT_STS_PORTMODE_MASK) {
+		case MV88E6250_PORT_STS_PORTMODE_MII_10_HALF:
+			state->speed = SPEED_10;
+			state->duplex = DUPLEX_HALF;
+			break;
+		case MV88E6250_PORT_STS_PORTMODE_MII_100_HALF:
+			state->speed = SPEED_100;
+			state->duplex = DUPLEX_HALF;
+			break;
+		case MV88E6250_PORT_STS_PORTMODE_MII_10_FULL:
+			state->speed = SPEED_10;
+			state->duplex = DUPLEX_FULL;
+			break;
+		case MV88E6250_PORT_STS_PORTMODE_MII_100_FULL:
+			state->speed = SPEED_100;
+			state->duplex = DUPLEX_FULL;
+			break;
+		default:
+			state->speed = SPEED_UNKNOWN;
+			state->duplex = DUPLEX_UNKNOWN;
+			break;
+		}
+	}
+
+	state->link = !!(reg & MV88E6250_PORT_STS_LINK);
+	state->an_enabled = 1;
+	state->an_complete = state->link;
+	state->interface = PHY_INTERFACE_MODE_NA;
+
+	return 0;
+}
+
+int mv88e6352_port_link_state(struct mv88e6xxx_chip *chip, int port,
+			      struct phylink_link_state *state)
+{
+	int err;
+	u16 reg;
+
+	switch (chip->ports[port].cmode) {
+	case MV88E6XXX_PORT_STS_CMODE_RGMII:
+		err = mv88e6xxx_port_read(chip, port, MV88E6XXX_PORT_MAC_CTL,
+					  &reg);
+		if (err)
+			return err;
+
+		if ((reg & MV88E6XXX_PORT_MAC_CTL_RGMII_DELAY_RXCLK) &&
+		    (reg & MV88E6XXX_PORT_MAC_CTL_RGMII_DELAY_TXCLK))
+			state->interface = PHY_INTERFACE_MODE_RGMII_ID;
+		else if (reg & MV88E6XXX_PORT_MAC_CTL_RGMII_DELAY_RXCLK)
+			state->interface = PHY_INTERFACE_MODE_RGMII_RXID;
+		else if (reg & MV88E6XXX_PORT_MAC_CTL_RGMII_DELAY_TXCLK)
+			state->interface = PHY_INTERFACE_MODE_RGMII_TXID;
+		else
+			state->interface = PHY_INTERFACE_MODE_RGMII;
+		break;
+	case MV88E6XXX_PORT_STS_CMODE_1000BASEX:
+		state->interface = PHY_INTERFACE_MODE_1000BASEX;
+		break;
+	case MV88E6XXX_PORT_STS_CMODE_SGMII:
+		state->interface = PHY_INTERFACE_MODE_SGMII;
+		break;
+	case MV88E6XXX_PORT_STS_CMODE_2500BASEX:
+		state->interface = PHY_INTERFACE_MODE_2500BASEX;
+		break;
+	case MV88E6XXX_PORT_STS_CMODE_XAUI:
+		state->interface = PHY_INTERFACE_MODE_XAUI;
+		break;
+	case MV88E6XXX_PORT_STS_CMODE_RXAUI:
+		state->interface = PHY_INTERFACE_MODE_RXAUI;
+		break;
+	default:
+		/* we do not support other cmode values here */
+		state->interface = PHY_INTERFACE_MODE_NA;
+	}
+
+	err = mv88e6xxx_port_read(chip, port, MV88E6XXX_PORT_STS, &reg);
+	if (err)
+		return err;
+
+	switch (reg & MV88E6XXX_PORT_STS_SPEED_MASK) {
+	case MV88E6XXX_PORT_STS_SPEED_10:
+		state->speed = SPEED_10;
+		break;
+	case MV88E6XXX_PORT_STS_SPEED_100:
+		state->speed = SPEED_100;
+		break;
+	case MV88E6XXX_PORT_STS_SPEED_1000:
+		state->speed = SPEED_1000;
+		break;
+	case MV88E6XXX_PORT_STS_SPEED_10000:
+		if ((reg & MV88E6XXX_PORT_STS_CMODE_MASK) ==
+		    MV88E6XXX_PORT_STS_CMODE_2500BASEX)
+			state->speed = SPEED_2500;
+		else
+			state->speed = SPEED_10000;
+		break;
+	}
+
+	state->duplex = reg & MV88E6XXX_PORT_STS_DUPLEX ?
+			DUPLEX_FULL : DUPLEX_HALF;
+	state->link = !!(reg & MV88E6XXX_PORT_STS_LINK);
+	state->an_enabled = 1;
+	state->an_complete = state->link;
+
+	return 0;
+}
+
+int mv88e6185_port_link_state(struct mv88e6xxx_chip *chip, int port,
+			      struct phylink_link_state *state)
+{
+	if (state->interface == PHY_INTERFACE_MODE_1000BASEX) {
+		u8 cmode = chip->ports[port].cmode;
+
+		/* When a port is in "Cross-chip serdes" mode, it uses
+		 * 1000Base-X full duplex mode, but there is no automatic
+		 * link detection. Use the sync OK status for link (as it
+		 * would do for 1000Base-X mode.)
+		 */
+		if (cmode == MV88E6185_PORT_STS_CMODE_SERDES) {
+			u16 mac;
+			int err;
+
+			err = mv88e6xxx_port_read(chip, port,
+						  MV88E6XXX_PORT_MAC_CTL, &mac);
+			if (err)
+				return err;
+
+			state->link = !!(mac & MV88E6185_PORT_MAC_CTL_SYNC_OK);
+			state->an_enabled = 1;
+			state->an_complete =
+				!!(mac & MV88E6185_PORT_MAC_CTL_AN_DONE);
+			state->duplex =
+				state->link ? DUPLEX_FULL : DUPLEX_UNKNOWN;
+			state->speed =
+				state->link ? SPEED_1000 : SPEED_UNKNOWN;
+
+			return 0;
+		}
+	}
+
+	return mv88e6352_port_link_state(chip, port, state);
+}
+
 /* Offset 0x02: Jamming Control
  *
  * Do not limit the period of time that this port can be paused for by
@@ -789,8 +932,8 @@ int mv88e6351_port_set_frame_mode(struct mv88e6xxx_chip *chip, int port,
 	return mv88e6xxx_port_write(chip, port, MV88E6XXX_PORT_CTL0, reg);
 }
 
-int mv88e6185_port_set_forward_unknown(struct mv88e6xxx_chip *chip,
-				       int port, bool unicast)
+static int mv88e6185_port_set_forward_unknown(struct mv88e6xxx_chip *chip,
+					      int port, bool unicast)
 {
 	int err;
 	u16 reg;
@@ -807,8 +950,8 @@ int mv88e6185_port_set_forward_unknown(struct mv88e6xxx_chip *chip,
 	return mv88e6xxx_port_write(chip, port, MV88E6XXX_PORT_CTL0, reg);
 }
 
-int mv88e6352_port_set_ucast_flood(struct mv88e6xxx_chip *chip, int port,
-				   bool unicast)
+int mv88e6352_port_set_egress_floods(struct mv88e6xxx_chip *chip, int port,
+				     bool unicast, bool multicast)
 {
 	int err;
 	u16 reg;
@@ -817,28 +960,16 @@ int mv88e6352_port_set_ucast_flood(struct mv88e6xxx_chip *chip, int port,
 	if (err)
 		return err;
 
-	if (unicast)
-		reg |= MV88E6352_PORT_CTL0_EGRESS_FLOODS_UC;
+	reg &= ~MV88E6352_PORT_CTL0_EGRESS_FLOODS_MASK;
+
+	if (unicast && multicast)
+		reg |= MV88E6352_PORT_CTL0_EGRESS_FLOODS_ALL_UNKNOWN_DA;
+	else if (unicast)
+		reg |= MV88E6352_PORT_CTL0_EGRESS_FLOODS_NO_UNKNOWN_MC_DA;
+	else if (multicast)
+		reg |= MV88E6352_PORT_CTL0_EGRESS_FLOODS_NO_UNKNOWN_UC_DA;
 	else
-		reg &= ~MV88E6352_PORT_CTL0_EGRESS_FLOODS_UC;
-
-	return mv88e6xxx_port_write(chip, port, MV88E6XXX_PORT_CTL0, reg);
-}
-
-int mv88e6352_port_set_mcast_flood(struct mv88e6xxx_chip *chip, int port,
-				   bool multicast)
-{
-	int err;
-	u16 reg;
-
-	err = mv88e6xxx_port_read(chip, port, MV88E6XXX_PORT_CTL0, &reg);
-	if (err)
-		return err;
-
-	if (multicast)
-		reg |= MV88E6352_PORT_CTL0_EGRESS_FLOODS_MC;
-	else
-		reg &= ~MV88E6352_PORT_CTL0_EGRESS_FLOODS_MC;
+		reg |= MV88E6352_PORT_CTL0_EGRESS_FLOODS_NO_UNKNOWN_DA;
 
 	return mv88e6xxx_port_write(chip, port, MV88E6XXX_PORT_CTL0, reg);
 }
@@ -859,27 +990,6 @@ int mv88e6xxx_port_set_message_port(struct mv88e6xxx_chip *chip, int port,
 		val |= MV88E6XXX_PORT_CTL1_MESSAGE_PORT;
 	else
 		val &= ~MV88E6XXX_PORT_CTL1_MESSAGE_PORT;
-
-	return mv88e6xxx_port_write(chip, port, MV88E6XXX_PORT_CTL1, val);
-}
-
-int mv88e6xxx_port_set_trunk(struct mv88e6xxx_chip *chip, int port,
-			     bool trunk, u8 id)
-{
-	u16 val;
-	int err;
-
-	err = mv88e6xxx_port_read(chip, port, MV88E6XXX_PORT_CTL1, &val);
-	if (err)
-		return err;
-
-	val &= ~MV88E6XXX_PORT_CTL1_TRUNK_ID_MASK;
-
-	if (trunk)
-		val |= MV88E6XXX_PORT_CTL1_TRUNK_PORT |
-			(id << MV88E6XXX_PORT_CTL1_TRUNK_ID_SHIFT);
-	else
-		val &= ~MV88E6XXX_PORT_CTL1_TRUNK_PORT;
 
 	return mv88e6xxx_port_write(chip, port, MV88E6XXX_PORT_CTL1, val);
 }
@@ -1025,8 +1135,8 @@ static const char * const mv88e6xxx_port_8021q_mode_names[] = {
 	[MV88E6XXX_PORT_CTL2_8021Q_MODE_SECURE] = "Secure",
 };
 
-int mv88e6185_port_set_default_forward(struct mv88e6xxx_chip *chip,
-				       int port, bool multicast)
+static int mv88e6185_port_set_default_forward(struct mv88e6xxx_chip *chip,
+					      int port, bool multicast)
 {
 	int err;
 	u16 reg;
@@ -1041,6 +1151,18 @@ int mv88e6185_port_set_default_forward(struct mv88e6xxx_chip *chip,
 		reg &= ~MV88E6XXX_PORT_CTL2_DEFAULT_FORWARD;
 
 	return mv88e6xxx_port_write(chip, port, MV88E6XXX_PORT_CTL2, reg);
+}
+
+int mv88e6185_port_set_egress_floods(struct mv88e6xxx_chip *chip, int port,
+				     bool unicast, bool multicast)
+{
+	int err;
+
+	err = mv88e6185_port_set_forward_unknown(chip, port, unicast);
+	if (err)
+		return err;
+
+	return mv88e6185_port_set_default_forward(chip, port, multicast);
 }
 
 int mv88e6095_port_set_upstream_port(struct mv88e6xxx_chip *chip, int port,

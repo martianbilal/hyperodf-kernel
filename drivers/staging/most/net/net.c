@@ -15,7 +15,8 @@
 #include <linux/list.h>
 #include <linux/wait.h>
 #include <linux/kobject.h>
-#include <linux/most.h>
+
+#include "../most.h"
 
 #define MEP_HDR_LEN 8
 #define MDP_HDR_LEN 16
@@ -68,7 +69,7 @@ struct net_dev_context {
 };
 
 static struct list_head net_devices = LIST_HEAD_INIT(net_devices);
-static DEFINE_MUTEX(probe_disc_mt); /* ch->linked = true, most_nd_open */
+static struct mutex probe_disc_mt; /* ch->linked = true, most_nd_open */
 static DEFINE_SPINLOCK(list_lock); /* list_head, ch->linked = false, dev_hold */
 static struct most_component comp;
 
@@ -520,6 +521,7 @@ static int __init most_net_init(void)
 {
 	int err;
 
+	mutex_init(&probe_disc_mt);
 	err = most_register_component(&comp);
 	if (err)
 		return err;
@@ -563,11 +565,13 @@ static void on_netinfo(struct most_interface *iface,
 
 	if (m && is_valid_ether_addr(m)) {
 		if (!is_valid_ether_addr(dev->dev_addr)) {
-			netdev_info(dev, "set mac %pM\n", m);
+			netdev_info(dev, "set mac %02x-%02x-%02x-%02x-%02x-%02x\n",
+				    m[0], m[1], m[2], m[3], m[4], m[5]);
 			ether_addr_copy(dev->dev_addr, m);
 			netif_dormant_off(dev);
 		} else if (!ether_addr_equal(dev->dev_addr, m)) {
-			netdev_warn(dev, "reject mac %pM\n", m);
+			netdev_warn(dev, "reject mac %02x-%02x-%02x-%02x-%02x-%02x\n",
+				    m[0], m[1], m[2], m[3], m[4], m[5]);
 		}
 	}
 

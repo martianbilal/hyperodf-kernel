@@ -307,7 +307,7 @@ static int sc27xx_adc_convert_volt(struct sc27xx_adc_data *data, int channel,
 
 	sc27xx_adc_volt_ratio(data, channel, scale, &numerator, &denominator);
 
-	return DIV_ROUND_CLOSEST(volt * denominator, numerator);
+	return (volt * denominator + numerator / 2) / numerator;
 }
 
 static int sc27xx_adc_read_processed(struct sc27xx_adc_data *data,
@@ -533,6 +533,7 @@ static int sc27xx_adc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	indio_dev->dev.parent = dev;
 	indio_dev->name = dev_name(dev);
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->info = &sc27xx_info;

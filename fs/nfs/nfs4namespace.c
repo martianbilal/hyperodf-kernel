@@ -308,7 +308,6 @@ static int try_location(struct fs_context *fc,
 	if (IS_ERR(export_path))
 		return PTR_ERR(export_path);
 
-	kfree(ctx->nfs_server.export_path);
 	ctx->nfs_server.export_path = export_path;
 
 	source = kmalloc(len + 1 + ctx->nfs_server.export_path_len + 1,
@@ -355,7 +354,7 @@ static int try_location(struct fs_context *fc,
 
 /**
  * nfs_follow_referral - set up mountpoint when hitting a referral on moved error
- * @fc: pointer to struct nfs_fs_context
+ * @dentry: parent directory
  * @locations: array of NFSv4 server location information
  *
  */

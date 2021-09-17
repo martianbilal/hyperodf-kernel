@@ -385,7 +385,7 @@ static int adau17x1_set_dai_sysclk(struct snd_soc_dai *dai,
 	case ADAU17X1_CLK_SRC_PLL_AUTO:
 		if (!adau->mclk)
 			return -EINVAL;
-		fallthrough;
+		/* Fall-through */
 	case ADAU17X1_CLK_SRC_PLL:
 		is_pll = true;
 		break;
@@ -469,7 +469,7 @@ static int adau17x1_hw_params(struct snd_pcm_substream *substream,
 		ret = adau17x1_auto_pll(dai, params);
 		if (ret)
 			return ret;
-		fallthrough;
+		/* Fall-through */
 	case ADAU17X1_CLK_SRC_PLL:
 		freq = adau->pll_freq;
 		break;
@@ -1095,7 +1095,8 @@ void adau17x1_remove(struct device *dev)
 {
 	struct adau *adau = dev_get_drvdata(dev);
 
-	clk_disable_unprepare(adau->mclk);
+	if (adau->mclk)
+		clk_disable_unprepare(adau->mclk);
 }
 EXPORT_SYMBOL_GPL(adau17x1_remove);
 

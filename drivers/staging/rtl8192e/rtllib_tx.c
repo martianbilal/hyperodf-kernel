@@ -241,7 +241,7 @@ static int rtllib_classify(struct sk_buff *skb, u8 bIsAmsdu)
 		return 0;
 
 #ifdef VERBOSE_DEBUG
-	print_hex_dump_bytes("%s: ", __func__, DUMP_PREFIX_NONE, skb->data,
+	print_hex_dump_bytes("rtllib_classify(): ", DUMP_PREFIX_NONE, skb->data,
 			     skb->len);
 #endif
 	ip = ip_hdr(skb);
@@ -297,7 +297,7 @@ static void rtllib_tx_query_agg_cap(struct rtllib_device *ieee,
 			netdev_info(ieee->dev, "%s: can't get TS\n", __func__);
 			return;
 		}
-		if (!pTxTs->TxAdmittedBARecord.bValid) {
+		if (pTxTs->TxAdmittedBARecord.bValid == false) {
 			if (ieee->wpa_ie_len && (ieee->pairwise_key_type ==
 			    KEY_TYPE_NA)) {
 				;
@@ -307,7 +307,7 @@ static void rtllib_tx_query_agg_cap(struct rtllib_device *ieee,
 				TsStartAddBaProcess(ieee, pTxTs);
 			}
 			goto FORCED_AGG_SETTING;
-		} else if (!pTxTs->bUsingBa) {
+		} else if (pTxTs->bUsingBa == false) {
 			if (SN_LESS(pTxTs->TxAdmittedBARecord.BaStartSeqCtrl.field.SeqNum,
 			   (pTxTs->TxCurSeq+1)%4096))
 				pTxTs->bUsingBa = true;
@@ -365,9 +365,9 @@ static void rtllib_query_HTCapShortGI(struct rtllib_device *ieee,
 		return;
 	}
 
-	if (pHTInfo->bCurBW40MHz && pHTInfo->bCurShortGI40MHz)
+	if ((pHTInfo->bCurBW40MHz == true) && pHTInfo->bCurShortGI40MHz)
 		tcb_desc->bUseShortGI = true;
-	else if (!pHTInfo->bCurBW40MHz && pHTInfo->bCurShortGI20MHz)
+	else if ((pHTInfo->bCurBW40MHz == false) && pHTInfo->bCurShortGI20MHz)
 		tcb_desc->bUseShortGI = true;
 }
 
@@ -859,7 +859,7 @@ static int rtllib_xmit_inter(struct sk_buff *skb, struct net_device *dev)
 			if (ieee->seq_ctrl[0] == 0xFFF)
 				ieee->seq_ctrl[0] = 0;
 			else
-				ieee->seq_ctrl[0]++;
+					ieee->seq_ctrl[0]++;
 		}
 	} else {
 		if (unlikely(skb->len < sizeof(struct rtllib_hdr_3addr))) {

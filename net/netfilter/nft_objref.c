@@ -95,7 +95,7 @@ static const struct nft_expr_ops nft_objref_ops = {
 
 struct nft_objref_map {
 	struct nft_set		*set;
-	u8			sreg;
+	enum nft_registers	sreg:8;
 	struct nft_set_binding	binding;
 };
 
@@ -137,8 +137,8 @@ static int nft_objref_map_init(const struct nft_ctx *ctx,
 	if (!(set->flags & NFT_SET_OBJECT))
 		return -EINVAL;
 
-	err = nft_parse_register_load(tb[NFTA_OBJREF_SET_SREG], &priv->sreg,
-				      set->klen);
+	priv->sreg = nft_parse_register(tb[NFTA_OBJREF_SET_SREG]);
+	err = nft_validate_register_load(priv->sreg, set->klen);
 	if (err < 0)
 		return err;
 
@@ -252,4 +252,3 @@ module_exit(nft_objref_module_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Pablo Neira Ayuso <pablo@netfilter.org>");
 MODULE_ALIAS_NFT_EXPR("objref");
-MODULE_DESCRIPTION("nftables stateful object reference module");

@@ -7,13 +7,11 @@
 #include <linux/debugfs.h>
 #include <linux/init.h>
 #include <linux/io.h>
-#include <linux/iommu.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/seq_file.h>
 #include <linux/topology.h>
-#include <linux/uacce.h>
 
 #include "sec.h"
 
@@ -23,15 +21,17 @@
 #define SEC_PF_PCI_DEVICE_ID		0xa255
 #define SEC_VF_PCI_DEVICE_ID		0xa256
 
-#define SEC_BD_ERR_CHK_EN0		0xEFFFFFFF
-#define SEC_BD_ERR_CHK_EN1		0x7ffff7fd
-#define SEC_BD_ERR_CHK_EN3		0xffffbfff
+#define SEC_XTS_MIV_ENABLE_REG		0x301384
+#define SEC_XTS_MIV_ENABLE_MSK		0x7FFFFFFF
+#define SEC_XTS_MIV_DISABLE_MSK		0xFFFFFFFF
+#define SEC_BD_ERR_CHK_EN1		0xfffff7fd
+#define SEC_BD_ERR_CHK_EN2		0xffffbfff
 
 #define SEC_SQE_SIZE			128
 #define SEC_SQ_SIZE			(SEC_SQE_SIZE * QM_Q_DEPTH)
-#define SEC_PF_DEF_Q_NUM		256
+#define SEC_PF_DEF_Q_NUM		64
 #define SEC_PF_DEF_Q_BASE		0
-#define SEC_CTX_Q_NUM_DEF		2
+#define SEC_CTX_Q_NUM_DEF		24
 #define SEC_CTX_Q_NUM_MAX		32
 
 #define SEC_CTRL_CNT_CLR_CE		0x301120
@@ -46,18 +46,17 @@
 #define SEC_ECC_ADDR(err)			((err) >> 0)
 #define SEC_CORE_INT_DISABLE		0x0
 #define SEC_CORE_INT_ENABLE		0x1ff
-#define SEC_CORE_INT_CLEAR		0x1ff
-#define SEC_SAA_ENABLE			0x17f
 
-#define SEC_RAS_CE_REG			0x301050
-#define SEC_RAS_FE_REG			0x301054
-#define SEC_RAS_NFE_REG			0x301058
+#define SEC_RAS_CE_REG			0x50
+#define SEC_RAS_FE_REG			0x54
+#define SEC_RAS_NFE_REG			0x58
 #define SEC_RAS_CE_ENB_MSK		0x88
 #define SEC_RAS_FE_ENB_MSK		0x0
 #define SEC_RAS_NFE_ENB_MSK		0x177
 #define SEC_RAS_DISABLE			0x0
 #define SEC_MEM_START_INIT_REG		0x0100
 #define SEC_MEM_INIT_DONE_REG		0x0104
+#define SEC_QM_ABNORMAL_INT_MASK	0x100004
 
 #define SEC_CONTROL_REG			0x0200
 #define SEC_TRNG_EN_SHIFT		8
@@ -68,32 +67,17 @@
 
 #define SEC_INTERFACE_USER_CTRL0_REG	0x0220
 #define SEC_INTERFACE_USER_CTRL1_REG	0x0224
-#define SEC_SAA_EN_REG					0x0270
-#define SEC_BD_ERR_CHK_EN_REG0		0x0380
 #define SEC_BD_ERR_CHK_EN_REG1		0x0384
-#define SEC_BD_ERR_CHK_EN_REG3		0x038c
+#define SEC_BD_ERR_CHK_EN_REG2		0x038c
 
 #define SEC_USER0_SMMU_NORMAL		(BIT(23) | BIT(15))
 #define SEC_USER1_SMMU_NORMAL		(BIT(31) | BIT(23) | BIT(15) | BIT(7))
-#define SEC_USER1_ENABLE_CONTEXT_SSV	BIT(24)
-#define SEC_USER1_ENABLE_DATA_SSV	BIT(16)
-#define SEC_USER1_WB_CONTEXT_SSV	BIT(8)
-#define SEC_USER1_WB_DATA_SSV		BIT(0)
-#define SEC_USER1_SVA_SET		(SEC_USER1_ENABLE_CONTEXT_SSV | \
-					SEC_USER1_ENABLE_DATA_SSV | \
-					SEC_USER1_WB_CONTEXT_SSV |  \
-					SEC_USER1_WB_DATA_SSV)
-#define SEC_USER1_SMMU_SVA		(SEC_USER1_SMMU_NORMAL | SEC_USER1_SVA_SET)
-#define SEC_USER1_SMMU_MASK		(~SEC_USER1_SVA_SET)
 #define SEC_CORE_INT_STATUS_M_ECC	BIT(2)
 
 #define SEC_DELAY_10_US			10
 #define SEC_POLL_TIMEOUT_US		1000
+#define SEC_VF_CNT_MASK			0xffffffc0
 #define SEC_DBGFS_VAL_MAX_LEN		20
-#define SEC_SINGLE_PORT_MAX_TRANS	0x2060
-
-#define SEC_SQE_MASK_OFFSET		64
-#define SEC_SQE_MASK_LEN		48
 
 #define SEC_ADDR(qm, offset) ((qm)->io_base + (offset) + \
 			     SEC_ENGINE_PF_CFG_OFF + SEC_ACC_COMMON_REG_OFF)
@@ -103,18 +87,10 @@ struct sec_hw_error {
 	const char *msg;
 };
 
-struct sec_dfx_item {
-	const char *name;
-	u32 offset;
-};
-
 static const char sec_name[] = "hisi_sec2";
 static struct dentry *sec_debugfs_root;
-
-static struct hisi_qm_list sec_devices = {
-	.register_to_crypto	= sec_register_to_crypto,
-	.unregister_from_crypto	= sec_unregister_from_crypto,
-};
+static LIST_HEAD(sec_list);
+static DEFINE_MUTEX(sec_list_lock);
 
 static const struct sec_hw_error sec_hw_errors[] = {
 	{.int_msk = BIT(0), .msg = "sec_axi_rresp_err_rint"},
@@ -129,22 +105,43 @@ static const struct sec_hw_error sec_hw_errors[] = {
 	{ /* sentinel */ }
 };
 
+struct sec_dev *sec_find_device(int node)
+{
+#define SEC_NUMA_MAX_DISTANCE	100
+	int min_distance = SEC_NUMA_MAX_DISTANCE;
+	int dev_node = 0, free_qp_num = 0;
+	struct sec_dev *sec, *ret = NULL;
+	struct hisi_qm *qm;
+	struct device *dev;
+
+	mutex_lock(&sec_list_lock);
+	list_for_each_entry(sec, &sec_list, list) {
+		qm = &sec->qm;
+		dev = &qm->pdev->dev;
+#ifdef CONFIG_NUMA
+		dev_node = dev->numa_node;
+		if (dev_node < 0)
+			dev_node = 0;
+#endif
+		if (node_distance(dev_node, node) < min_distance) {
+			free_qp_num = hisi_qm_get_free_qp_num(qm);
+			if (free_qp_num >= sec->ctx_q_num) {
+				ret = sec;
+				min_distance = node_distance(dev_node, node);
+			}
+		}
+	}
+	mutex_unlock(&sec_list_lock);
+
+	return ret;
+}
+
 static const char * const sec_dbg_file_name[] = {
 	[SEC_CURRENT_QM] = "current_qm",
 	[SEC_CLEAR_ENABLE] = "clear_enable",
 };
 
-static struct sec_dfx_item sec_dfx_labels[] = {
-	{"send_cnt", offsetof(struct sec_dfx, send_cnt)},
-	{"recv_cnt", offsetof(struct sec_dfx, recv_cnt)},
-	{"send_busy_cnt", offsetof(struct sec_dfx, send_busy_cnt)},
-	{"recv_busy_cnt", offsetof(struct sec_dfx, recv_busy_cnt)},
-	{"err_bd_cnt", offsetof(struct sec_dfx, err_bd_cnt)},
-	{"invalid_req_cnt", offsetof(struct sec_dfx, invalid_req_cnt)},
-	{"done_flag_cnt", offsetof(struct sec_dfx, done_flag_cnt)},
-};
-
-static const struct debugfs_reg32 sec_dfx_regs[] = {
+static struct debugfs_reg32 sec_dfx_regs[] = {
 	{"SEC_PF_ABNORMAL_INT_SOURCE    ",  0x301010},
 	{"SEC_SAA_EN                    ",  0x301270},
 	{"SEC_BD_LATENCY_MIN            ",  0x301600},
@@ -170,17 +167,48 @@ static const struct debugfs_reg32 sec_dfx_regs[] = {
 
 static int sec_pf_q_num_set(const char *val, const struct kernel_param *kp)
 {
-	return q_num_set(val, kp, SEC_PF_PCI_DEVICE_ID);
+	struct pci_dev *pdev;
+	u32 n, q_num;
+	u8 rev_id;
+	int ret;
+
+	if (!val)
+		return -EINVAL;
+
+	pdev = pci_get_device(PCI_VENDOR_ID_HUAWEI,
+			      SEC_PF_PCI_DEVICE_ID, NULL);
+	if (!pdev) {
+		q_num = min_t(u32, SEC_QUEUE_NUM_V1, SEC_QUEUE_NUM_V2);
+		pr_info("No device, suppose queue number is %d!\n", q_num);
+	} else {
+		rev_id = pdev->revision;
+
+		switch (rev_id) {
+		case QM_HW_V1:
+			q_num = SEC_QUEUE_NUM_V1;
+			break;
+		case QM_HW_V2:
+			q_num = SEC_QUEUE_NUM_V2;
+			break;
+		default:
+			return -EINVAL;
+		}
+	}
+
+	ret = kstrtou32(val, 10, &n);
+	if (ret || !n || n > q_num)
+		return -EINVAL;
+
+	return param_set_int(val, kp);
 }
 
 static const struct kernel_param_ops sec_pf_q_num_ops = {
 	.set = sec_pf_q_num_set,
 	.get = param_get_int,
 };
-
 static u32 pf_q_num = SEC_PF_DEF_Q_NUM;
 module_param_cb(pf_q_num, &sec_pf_q_num_ops, &pf_q_num, 0444);
-MODULE_PARM_DESC(pf_q_num, "Number of queues in PF(v1 2-4096, v2 2-1024)");
+MODULE_PARM_DESC(pf_q_num, "Number of queues in PF(v1 0-4096, v2 0-1024)");
 
 static int sec_ctx_q_num_set(const char *val, const struct kernel_param *kp)
 {
@@ -208,54 +236,7 @@ static const struct kernel_param_ops sec_ctx_q_num_ops = {
 };
 static u32 ctx_q_num = SEC_CTX_Q_NUM_DEF;
 module_param_cb(ctx_q_num, &sec_ctx_q_num_ops, &ctx_q_num, 0444);
-MODULE_PARM_DESC(ctx_q_num, "Queue num in ctx (2 default, 2, 4, ..., 32)");
-
-static const struct kernel_param_ops vfs_num_ops = {
-	.set = vfs_num_set,
-	.get = param_get_int,
-};
-
-static u32 vfs_num;
-module_param_cb(vfs_num, &vfs_num_ops, &vfs_num, 0444);
-MODULE_PARM_DESC(vfs_num, "Number of VFs to enable(1-63), 0(default)");
-
-void sec_destroy_qps(struct hisi_qp **qps, int qp_num)
-{
-	hisi_qm_free_qps(qps, qp_num);
-	kfree(qps);
-}
-
-struct hisi_qp **sec_create_qps(void)
-{
-	int node = cpu_to_node(smp_processor_id());
-	u32 ctx_num = ctx_q_num;
-	struct hisi_qp **qps;
-	int ret;
-
-	qps = kcalloc(ctx_num, sizeof(struct hisi_qp *), GFP_KERNEL);
-	if (!qps)
-		return NULL;
-
-	ret = hisi_qm_alloc_qps_node(&sec_devices, ctx_num, 0, node, qps);
-	if (!ret)
-		return qps;
-
-	kfree(qps);
-	return NULL;
-}
-
-static const struct kernel_param_ops sec_uacce_mode_ops = {
-	.set = uacce_mode_set,
-	.get = param_get_int,
-};
-
-/*
- * uacce_mode = 0 means sec only register to crypto,
- * uacce_mode = 1 means sec both register to crypto and uacce.
- */
-static u32 uacce_mode = UACCE_MODE_NOUACCE;
-module_param_cb(uacce_mode, &sec_uacce_mode_ops, &uacce_mode, 0444);
-MODULE_PARM_DESC(uacce_mode, UACCE_MODE_DESC);
+MODULE_PARM_DESC(ctx_q_num, "Queue num in ctx (24 default, 2, 4, ..., 32)");
 
 static const struct pci_device_id sec_dev_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_HUAWEI, SEC_PF_PCI_DEVICE_ID) },
@@ -264,8 +245,23 @@ static const struct pci_device_id sec_dev_ids[] = {
 };
 MODULE_DEVICE_TABLE(pci, sec_dev_ids);
 
-static u8 sec_get_endian(struct hisi_qm *qm)
+static inline void sec_add_to_list(struct sec_dev *sec)
 {
+	mutex_lock(&sec_list_lock);
+	list_add_tail(&sec->list, &sec_list);
+	mutex_unlock(&sec_list_lock);
+}
+
+static inline void sec_remove_from_list(struct sec_dev *sec)
+{
+	mutex_lock(&sec_list_lock);
+	list_del(&sec->list);
+	mutex_unlock(&sec_list_lock);
+}
+
+static u8 sec_get_endian(struct sec_dev *sec)
+{
+	struct hisi_qm *qm = &sec->qm;
 	u32 reg;
 
 	/*
@@ -293,8 +289,9 @@ static u8 sec_get_endian(struct hisi_qm *qm)
 		return SEC_64BE;
 }
 
-static int sec_engine_init(struct hisi_qm *qm)
+static int sec_engine_init(struct sec_dev *sec)
 {
+	struct hisi_qm *qm = &sec->qm;
 	int ret;
 	u32 reg;
 
@@ -309,7 +306,7 @@ static int sec_engine_init(struct hisi_qm *qm)
 					 reg, reg & 0x1, SEC_DELAY_10_US,
 					 SEC_POLL_TIMEOUT_US);
 	if (ret) {
-		pci_err(qm->pdev, "fail to init sec mem\n");
+		dev_err(&qm->pdev->dev, "fail to init sec mem\n");
 		return ret;
 	}
 
@@ -322,37 +319,35 @@ static int sec_engine_init(struct hisi_qm *qm)
 	writel_relaxed(reg, SEC_ADDR(qm, SEC_INTERFACE_USER_CTRL0_REG));
 
 	reg = readl_relaxed(SEC_ADDR(qm, SEC_INTERFACE_USER_CTRL1_REG));
-	reg &= SEC_USER1_SMMU_MASK;
-	if (qm->use_sva && qm->ver == QM_HW_V2)
-		reg |= SEC_USER1_SMMU_SVA;
-	else
-		reg |= SEC_USER1_SMMU_NORMAL;
+	reg |= SEC_USER1_SMMU_NORMAL;
 	writel_relaxed(reg, SEC_ADDR(qm, SEC_INTERFACE_USER_CTRL1_REG));
 
-	writel(SEC_SINGLE_PORT_MAX_TRANS,
-	       qm->io_base + AM_CFG_SINGLE_PORT_MAX_TRANS);
-
-	writel(SEC_SAA_ENABLE, SEC_ADDR(qm, SEC_SAA_EN_REG));
-
-	/* Enable sm4 extra mode, as ctr/ecb */
-	writel_relaxed(SEC_BD_ERR_CHK_EN0,
-		       SEC_ADDR(qm, SEC_BD_ERR_CHK_EN_REG0));
-	/* Enable sm4 xts mode multiple iv */
 	writel_relaxed(SEC_BD_ERR_CHK_EN1,
 		       SEC_ADDR(qm, SEC_BD_ERR_CHK_EN_REG1));
-	writel_relaxed(SEC_BD_ERR_CHK_EN3,
-		       SEC_ADDR(qm, SEC_BD_ERR_CHK_EN_REG3));
+	writel_relaxed(SEC_BD_ERR_CHK_EN2,
+		       SEC_ADDR(qm, SEC_BD_ERR_CHK_EN_REG2));
+
+	/* enable clock gate control */
+	reg = readl_relaxed(SEC_ADDR(qm, SEC_CONTROL_REG));
+	reg |= SEC_CLK_GATE_ENABLE;
+	writel_relaxed(reg, SEC_ADDR(qm, SEC_CONTROL_REG));
 
 	/* config endian */
 	reg = readl_relaxed(SEC_ADDR(qm, SEC_CONTROL_REG));
-	reg |= sec_get_endian(qm);
+	reg |= sec_get_endian(sec);
 	writel_relaxed(reg, SEC_ADDR(qm, SEC_CONTROL_REG));
+
+	/* Enable sm4 xts mode multiple iv */
+	writel_relaxed(SEC_XTS_MIV_ENABLE_MSK,
+		       qm->io_base + SEC_XTS_MIV_ENABLE_REG);
 
 	return 0;
 }
 
-static int sec_set_user_domain_and_cache(struct hisi_qm *qm)
+static int sec_set_user_domain_and_cache(struct sec_dev *sec)
 {
+	struct hisi_qm *qm = &sec->qm;
+
 	/* qm user domain */
 	writel(AXUSER_BASE, qm->io_base + QM_ARUSER_M_CFG_1);
 	writel(ARUSER_M_CFG_ENABLE, qm->io_base + QM_ARUSER_M_CFG_ENABLE);
@@ -373,22 +368,15 @@ static int sec_set_user_domain_and_cache(struct hisi_qm *qm)
 	       CQC_CACHE_WB_ENABLE | FIELD_PREP(SQC_CACHE_WB_THRD, 1) |
 	       FIELD_PREP(CQC_CACHE_WB_THRD, 1), qm->io_base + QM_CACHE_CTL);
 
-	return sec_engine_init(qm);
+	return sec_engine_init(sec);
 }
 
 /* sec_debug_regs_clear() - clear the sec debug regs */
 static void sec_debug_regs_clear(struct hisi_qm *qm)
 {
-	int i;
-
 	/* clear current_qm */
 	writel(0x0, qm->io_base + QM_DFX_MB_CNT_VF);
 	writel(0x0, qm->io_base + QM_DFX_DB_CNT_VF);
-
-	/* clear sec dfx regs */
-	writel(0x1, qm->io_base + SEC_CTRL_CNT_CLR_CE);
-	for (i = 0; i < ARRAY_SIZE(sec_dfx_regs); i++)
-		readl(qm->io_base + sec_dfx_regs[i].offset);
 
 	/* clear rdclr_en */
 	writel(0x0, qm->io_base + SEC_CTRL_CNT_CLR_CE);
@@ -396,20 +384,21 @@ static void sec_debug_regs_clear(struct hisi_qm *qm)
 	hisi_qm_debug_regs_clear(qm);
 }
 
-static void sec_hw_error_enable(struct hisi_qm *qm)
+static void sec_hw_error_enable(struct sec_dev *sec)
 {
+	struct hisi_qm *qm = &sec->qm;
 	u32 val;
 
 	if (qm->ver == QM_HW_V1) {
 		writel(SEC_CORE_INT_DISABLE, qm->io_base + SEC_CORE_INT_MASK);
-		pci_info(qm->pdev, "V1 not support hw error handle\n");
+		dev_info(&qm->pdev->dev, "V1 not support hw error handle\n");
 		return;
 	}
 
-	val = readl(SEC_ADDR(qm, SEC_CONTROL_REG));
+	val = readl(qm->io_base + SEC_CONTROL_REG);
 
 	/* clear SEC hw error source if having */
-	writel(SEC_CORE_INT_CLEAR, qm->io_base + SEC_CORE_INT_SOURCE);
+	writel(SEC_CORE_INT_DISABLE, qm->io_base + SEC_CORE_INT_SOURCE);
 
 	/* enable SEC hw error interrupts */
 	writel(SEC_CORE_INT_ENABLE, qm->io_base + SEC_CORE_INT_MASK);
@@ -422,14 +411,15 @@ static void sec_hw_error_enable(struct hisi_qm *qm)
 	/* enable SEC block master OOO when m-bit error occur */
 	val = val | SEC_AXI_SHUTDOWN_ENABLE;
 
-	writel(val, SEC_ADDR(qm, SEC_CONTROL_REG));
+	writel(val, qm->io_base + SEC_CONTROL_REG);
 }
 
-static void sec_hw_error_disable(struct hisi_qm *qm)
+static void sec_hw_error_disable(struct sec_dev *sec)
 {
+	struct hisi_qm *qm = &sec->qm;
 	u32 val;
 
-	val = readl(SEC_ADDR(qm, SEC_CONTROL_REG));
+	val = readl(qm->io_base + SEC_CONTROL_REG);
 
 	/* disable RAS int */
 	writel(SEC_RAS_DISABLE, qm->io_base + SEC_RAS_CE_REG);
@@ -442,7 +432,28 @@ static void sec_hw_error_disable(struct hisi_qm *qm)
 	/* disable SEC block master OOO when m-bit error occur */
 	val = val & SEC_AXI_SHUTDOWN_DISABLE;
 
-	writel(val, SEC_ADDR(qm, SEC_CONTROL_REG));
+	writel(val, qm->io_base + SEC_CONTROL_REG);
+}
+
+static void sec_hw_error_init(struct sec_dev *sec)
+{
+	if (sec->qm.fun_type == QM_HW_VF)
+		return;
+
+	hisi_qm_hw_error_init(&sec->qm, QM_BASE_CE,
+			      QM_BASE_NFE | QM_ACC_DO_TASK_TIMEOUT
+			      | QM_ACC_WB_NOT_READY_TIMEOUT, 0,
+			      QM_DB_RANDOM_INVALID);
+	sec_hw_error_enable(sec);
+}
+
+static void sec_hw_error_uninit(struct sec_dev *sec)
+{
+	if (sec->qm.fun_type == QM_HW_VF)
+		return;
+
+	sec_hw_error_disable(sec);
+	writel(GENMASK(12, 0), sec->qm.io_base + SEC_QM_ABNORMAL_INT_MASK);
 }
 
 static u32 sec_current_qm_read(struct sec_debug_file *file)
@@ -455,22 +466,23 @@ static u32 sec_current_qm_read(struct sec_debug_file *file)
 static int sec_current_qm_write(struct sec_debug_file *file, u32 val)
 {
 	struct hisi_qm *qm = file->qm;
+	struct sec_dev *sec = container_of(qm, struct sec_dev, qm);
 	u32 vfq_num;
 	u32 tmp;
 
-	if (val > qm->vfs_num)
+	if (val > sec->num_vfs)
 		return -EINVAL;
 
 	/* According PF or VF Dev ID to calculation curr_qm_qp_num and store */
 	if (!val) {
 		qm->debug.curr_qm_qp_num = qm->qp_num;
 	} else {
-		vfq_num = (qm->ctrl_qp_num - qm->qp_num) / qm->vfs_num;
+		vfq_num = (qm->ctrl_qp_num - qm->qp_num) / sec->num_vfs;
 
-		if (val == qm->vfs_num)
+		if (val == sec->num_vfs)
 			qm->debug.curr_qm_qp_num =
 				qm->ctrl_qp_num - qm->qp_num -
-				(qm->vfs_num - 1) * vfq_num;
+				(sec->num_vfs - 1) * vfq_num;
 		else
 			qm->debug.curr_qm_qp_num = vfq_num;
 	}
@@ -600,181 +612,112 @@ static const struct file_operations sec_dbg_fops = {
 static int sec_debugfs_atomic64_get(void *data, u64 *val)
 {
 	*val = atomic64_read((atomic64_t *)data);
-
 	return 0;
 }
-
-static int sec_debugfs_atomic64_set(void *data, u64 val)
-{
-	if (val)
-		return -EINVAL;
-
-	atomic64_set((atomic64_t *)data, 0);
-
-	return 0;
-}
-
 DEFINE_DEBUGFS_ATTRIBUTE(sec_atomic64_ops, sec_debugfs_atomic64_get,
-			 sec_debugfs_atomic64_set, "%lld\n");
+			 NULL, "%lld\n");
 
-static int sec_core_debug_init(struct hisi_qm *qm)
+static int sec_core_debug_init(struct sec_dev *sec)
 {
-	struct sec_dev *sec = container_of(qm, struct sec_dev, qm);
+	struct hisi_qm *qm = &sec->qm;
 	struct device *dev = &qm->pdev->dev;
 	struct sec_dfx *dfx = &sec->debug.dfx;
 	struct debugfs_regset32 *regset;
 	struct dentry *tmp_d;
-	int i;
 
-	tmp_d = debugfs_create_dir("sec_dfx", qm->debug.debug_root);
+	tmp_d = debugfs_create_dir("sec_dfx", sec->qm.debug.debug_root);
 
 	regset = devm_kzalloc(dev, sizeof(*regset), GFP_KERNEL);
 	if (!regset)
-		return -ENOMEM;
+		return -ENOENT;
 
 	regset->regs = sec_dfx_regs;
 	regset->nregs = ARRAY_SIZE(sec_dfx_regs);
 	regset->base = qm->io_base;
 
-	if (qm->pdev->device == SEC_PF_PCI_DEVICE_ID)
-		debugfs_create_regset32("regs", 0444, tmp_d, regset);
+	debugfs_create_regset32("regs", 0444, tmp_d, regset);
 
-	for (i = 0; i < ARRAY_SIZE(sec_dfx_labels); i++) {
-		atomic64_t *data = (atomic64_t *)((uintptr_t)dfx +
-					sec_dfx_labels[i].offset);
-		debugfs_create_file(sec_dfx_labels[i].name, 0644,
-				   tmp_d, data, &sec_atomic64_ops);
-	}
+	debugfs_create_file("send_cnt", 0444, tmp_d,
+			    &dfx->send_cnt, &sec_atomic64_ops);
+
+	debugfs_create_file("recv_cnt", 0444, tmp_d,
+			    &dfx->recv_cnt, &sec_atomic64_ops);
 
 	return 0;
 }
 
-static int sec_debug_init(struct hisi_qm *qm)
+static int sec_debug_init(struct sec_dev *sec)
 {
-	struct sec_dev *sec = container_of(qm, struct sec_dev, qm);
 	int i;
 
-	if (qm->pdev->device == SEC_PF_PCI_DEVICE_ID) {
-		for (i = SEC_CURRENT_QM; i < SEC_DEBUG_FILE_NUM; i++) {
-			spin_lock_init(&sec->debug.files[i].lock);
-			sec->debug.files[i].index = i;
-			sec->debug.files[i].qm = qm;
+	for (i = SEC_CURRENT_QM; i < SEC_DEBUG_FILE_NUM; i++) {
+		spin_lock_init(&sec->debug.files[i].lock);
+		sec->debug.files[i].index = i;
+		sec->debug.files[i].qm = &sec->qm;
 
-			debugfs_create_file(sec_dbg_file_name[i], 0600,
-						  qm->debug.debug_root,
-						  sec->debug.files + i,
-						  &sec_dbg_fops);
-		}
+		debugfs_create_file(sec_dbg_file_name[i], 0600,
+				    sec->qm.debug.debug_root,
+				    sec->debug.files + i,
+				    &sec_dbg_fops);
 	}
 
-	return sec_core_debug_init(qm);
+	return sec_core_debug_init(sec);
 }
 
-static int sec_debugfs_init(struct hisi_qm *qm)
+static int sec_debugfs_init(struct sec_dev *sec)
 {
+	struct hisi_qm *qm = &sec->qm;
 	struct device *dev = &qm->pdev->dev;
 	int ret;
 
 	qm->debug.debug_root = debugfs_create_dir(dev_name(dev),
 						  sec_debugfs_root);
-	qm->debug.sqe_mask_offset = SEC_SQE_MASK_OFFSET;
-	qm->debug.sqe_mask_len = SEC_SQE_MASK_LEN;
-	hisi_qm_debug_init(qm);
-
-	ret = sec_debug_init(qm);
+	ret = hisi_qm_debug_init(qm);
 	if (ret)
 		goto failed_to_create;
+
+	if (qm->pdev->device == SEC_PF_PCI_DEVICE_ID) {
+		ret = sec_debug_init(sec);
+		if (ret)
+			goto failed_to_create;
+	}
 
 	return 0;
 
 failed_to_create:
 	debugfs_remove_recursive(sec_debugfs_root);
+
 	return ret;
 }
 
-static void sec_debugfs_exit(struct hisi_qm *qm)
+static void sec_debugfs_exit(struct sec_dev *sec)
 {
-	debugfs_remove_recursive(qm->debug.debug_root);
+	debugfs_remove_recursive(sec->qm.debug.debug_root);
 }
-
-static void sec_log_hw_error(struct hisi_qm *qm, u32 err_sts)
-{
-	const struct sec_hw_error *errs = sec_hw_errors;
-	struct device *dev = &qm->pdev->dev;
-	u32 err_val;
-
-	while (errs->msg) {
-		if (errs->int_msk & err_sts) {
-			dev_err(dev, "%s [error status=0x%x] found\n",
-					errs->msg, errs->int_msk);
-
-			if (SEC_CORE_INT_STATUS_M_ECC & errs->int_msk) {
-				err_val = readl(qm->io_base +
-						SEC_CORE_SRAM_ECC_ERR_INFO);
-				dev_err(dev, "multi ecc sram num=0x%x\n",
-						SEC_ECC_NUM(err_val));
-			}
-		}
-		errs++;
-	}
-}
-
-static u32 sec_get_hw_err_status(struct hisi_qm *qm)
-{
-	return readl(qm->io_base + SEC_CORE_INT_STATUS);
-}
-
-static void sec_clear_hw_err_status(struct hisi_qm *qm, u32 err_sts)
-{
-	writel(err_sts, qm->io_base + SEC_CORE_INT_SOURCE);
-}
-
-static void sec_open_axi_master_ooo(struct hisi_qm *qm)
-{
-	u32 val;
-
-	val = readl(SEC_ADDR(qm, SEC_CONTROL_REG));
-	writel(val & SEC_AXI_SHUTDOWN_DISABLE, SEC_ADDR(qm, SEC_CONTROL_REG));
-	writel(val | SEC_AXI_SHUTDOWN_ENABLE, SEC_ADDR(qm, SEC_CONTROL_REG));
-}
-
-static const struct hisi_qm_err_ini sec_err_ini = {
-	.hw_init		= sec_set_user_domain_and_cache,
-	.hw_err_enable		= sec_hw_error_enable,
-	.hw_err_disable		= sec_hw_error_disable,
-	.get_dev_hw_err_status	= sec_get_hw_err_status,
-	.clear_dev_hw_err_status = sec_clear_hw_err_status,
-	.log_dev_hw_err		= sec_log_hw_error,
-	.open_axi_master_ooo	= sec_open_axi_master_ooo,
-	.err_info		= {
-		.ce		= QM_BASE_CE,
-		.nfe		= QM_BASE_NFE | QM_ACC_DO_TASK_TIMEOUT |
-				  QM_ACC_WB_NOT_READY_TIMEOUT,
-		.fe		= 0,
-		.ecc_2bits_mask	= SEC_CORE_INT_STATUS_M_ECC,
-		.dev_ce_mask	= SEC_RAS_CE_ENB_MSK,
-		.msi_wr_port	= BIT(0),
-		.acpi_rst	= "SRST",
-	}
-};
 
 static int sec_pf_probe_init(struct sec_dev *sec)
 {
 	struct hisi_qm *qm = &sec->qm;
 	int ret;
 
-	if (qm->ver == QM_HW_V1)
+	switch (qm->ver) {
+	case QM_HW_V1:
 		qm->ctrl_qp_num = SEC_QUEUE_NUM_V1;
-	else
+		break;
+
+	case QM_HW_V2:
 		qm->ctrl_qp_num = SEC_QUEUE_NUM_V2;
+		break;
 
-	qm->err_ini = &sec_err_ini;
+	default:
+		return -EINVAL;
+	}
 
-	ret = sec_set_user_domain_and_cache(qm);
+	ret = sec_set_user_domain_and_cache(sec);
 	if (ret)
 		return ret;
 
-	hisi_qm_dev_err_init(qm);
+	sec_hw_error_init(sec);
 	sec_debug_regs_clear(qm);
 
 	return 0;
@@ -782,52 +725,22 @@ static int sec_pf_probe_init(struct sec_dev *sec)
 
 static int sec_qm_init(struct hisi_qm *qm, struct pci_dev *pdev)
 {
-	int ret;
+	enum qm_hw_ver rev_id;
+
+	rev_id = hisi_qm_get_hw_version(pdev);
+	if (rev_id == QM_HW_UNKNOWN)
+		return -ENODEV;
 
 	qm->pdev = pdev;
-	qm->ver = pdev->revision;
-	qm->algs = "cipher\ndigest\naead\n";
-	qm->mode = uacce_mode;
+	qm->ver = rev_id;
+
 	qm->sqe_size = SEC_SQE_SIZE;
 	qm->dev_name = sec_name;
-
 	qm->fun_type = (pdev->device == SEC_PF_PCI_DEVICE_ID) ?
 			QM_HW_PF : QM_HW_VF;
-	if (qm->fun_type == QM_HW_PF) {
-		qm->qp_base = SEC_PF_DEF_Q_BASE;
-		qm->qp_num = pf_q_num;
-		qm->debug.curr_qm_qp_num = pf_q_num;
-		qm->qm_list = &sec_devices;
-	} else if (qm->fun_type == QM_HW_VF && qm->ver == QM_HW_V1) {
-		/*
-		 * have no way to get qm configure in VM in v1 hardware,
-		 * so currently force PF to uses SEC_PF_DEF_Q_NUM, and force
-		 * to trigger only one VF in v1 hardware.
-		 * v2 hardware has no such problem.
-		 */
-		qm->qp_base = SEC_PF_DEF_Q_NUM;
-		qm->qp_num = SEC_QUEUE_NUM_V1 - SEC_PF_DEF_Q_NUM;
-	}
+	qm->use_dma_api = true;
 
-	/*
-	 * WQ_HIGHPRI: SEC request must be low delayed,
-	 * so need a high priority workqueue.
-	 * WQ_UNBOUND: SEC task is likely with long
-	 * running CPU intensive workloads.
-	 */
-	qm->wq = alloc_workqueue("%s", WQ_HIGHPRI | WQ_MEM_RECLAIM |
-				 WQ_UNBOUND, num_online_cpus(),
-				 pci_name(qm->pdev));
-	if (!qm->wq) {
-		pci_err(qm->pdev, "fail to alloc workqueue\n");
-		return -ENOMEM;
-	}
-
-	ret = hisi_qm_init(qm);
-	if (ret)
-		destroy_workqueue(qm->wq);
-
-	return ret;
+	return hisi_qm_init(qm);
 }
 
 static void sec_qm_uninit(struct hisi_qm *qm)
@@ -835,42 +748,38 @@ static void sec_qm_uninit(struct hisi_qm *qm)
 	hisi_qm_uninit(qm);
 }
 
-static int sec_probe_init(struct sec_dev *sec)
+static int sec_probe_init(struct hisi_qm *qm, struct sec_dev *sec)
 {
-	struct hisi_qm *qm = &sec->qm;
-	int ret;
-
 	if (qm->fun_type == QM_HW_PF) {
-		ret = sec_pf_probe_init(sec);
-		if (ret)
-			return ret;
+		qm->qp_base = SEC_PF_DEF_Q_BASE;
+		qm->qp_num = pf_q_num;
+		qm->debug.curr_qm_qp_num = pf_q_num;
+
+		return sec_pf_probe_init(sec);
+	} else if (qm->fun_type == QM_HW_VF) {
+		/*
+		 * have no way to get qm configure in VM in v1 hardware,
+		 * so currently force PF to uses SEC_PF_DEF_Q_NUM, and force
+		 * to trigger only one VF in v1 hardware.
+		 * v2 hardware has no such problem.
+		 */
+		if (qm->ver == QM_HW_V1) {
+			qm->qp_base = SEC_PF_DEF_Q_NUM;
+			qm->qp_num = SEC_QUEUE_NUM_V1 - SEC_PF_DEF_Q_NUM;
+		} else if (qm->ver == QM_HW_V2) {
+			/* v2 starts to support get vft by mailbox */
+			return hisi_qm_get_vft(qm, &qm->qp_base, &qm->qp_num);
+		}
+	} else {
+		return -ENODEV;
 	}
 
 	return 0;
 }
 
-static void sec_probe_uninit(struct hisi_qm *qm)
+static void sec_probe_uninit(struct sec_dev *sec)
 {
-	hisi_qm_dev_err_uninit(qm);
-
-	destroy_workqueue(qm->wq);
-}
-
-static void sec_iommu_used_check(struct sec_dev *sec)
-{
-	struct iommu_domain *domain;
-	struct device *dev = &sec->qm.pdev->dev;
-
-	domain = iommu_get_domain_for_dev(dev);
-
-	/* Check if iommu is used */
-	sec->iommu_used = false;
-	if (domain) {
-		if (domain->type & __IOMMU_DOMAIN_PAGING)
-			sec->iommu_used = true;
-		dev_info(dev, "SMMU Opened, the iommu type = %u\n",
-			domain->type);
-	}
+	sec_hw_error_uninit(sec);
 }
 
 static int sec_probe(struct pci_dev *pdev, const struct pci_device_id *id)
@@ -883,17 +792,19 @@ static int sec_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (!sec)
 		return -ENOMEM;
 
+	pci_set_drvdata(pdev, sec);
+
+	sec->ctx_q_num = ctx_q_num;
+
 	qm = &sec->qm;
+
 	ret = sec_qm_init(qm, pdev);
 	if (ret) {
-		pci_err(pdev, "Failed to init SEC QM (%d)!\n", ret);
+		pci_err(pdev, "Failed to pre init qm!\n");
 		return ret;
 	}
 
-	sec->ctx_q_num = ctx_q_num;
-	sec_iommu_used_check(sec);
-
-	ret = sec_probe_init(sec);
+	ret = sec_probe_init(qm, sec);
 	if (ret) {
 		pci_err(pdev, "Failed to probe!\n");
 		goto err_qm_uninit;
@@ -905,70 +816,240 @@ static int sec_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_probe_uninit;
 	}
 
-	ret = sec_debugfs_init(qm);
+	ret = sec_debugfs_init(sec);
 	if (ret)
 		pci_warn(pdev, "Failed to init debugfs!\n");
 
-	ret = hisi_qm_alg_register(qm, &sec_devices);
+	sec_add_to_list(sec);
+
+	ret = sec_register_to_crypto();
 	if (ret < 0) {
 		pr_err("Failed to register driver to crypto.\n");
-		goto err_qm_stop;
-	}
-
-	if (qm->uacce) {
-		ret = uacce_register(qm->uacce);
-		if (ret) {
-			pci_err(pdev, "failed to register uacce (%d)!\n", ret);
-			goto err_alg_unregister;
-		}
-	}
-
-	if (qm->fun_type == QM_HW_PF && vfs_num) {
-		ret = hisi_qm_sriov_enable(pdev, vfs_num);
-		if (ret < 0)
-			goto err_alg_unregister;
+		goto err_remove_from_list;
 	}
 
 	return 0;
 
-err_alg_unregister:
-	hisi_qm_alg_unregister(qm, &sec_devices);
-err_qm_stop:
-	sec_debugfs_exit(qm);
-	hisi_qm_stop(qm, QM_NORMAL);
+err_remove_from_list:
+	sec_remove_from_list(sec);
+	sec_debugfs_exit(sec);
+	hisi_qm_stop(qm);
+
 err_probe_uninit:
-	sec_probe_uninit(qm);
+	sec_probe_uninit(sec);
+
 err_qm_uninit:
 	sec_qm_uninit(qm);
+
 	return ret;
+}
+
+/* now we only support equal assignment */
+static int sec_vf_q_assign(struct sec_dev *sec, u32 num_vfs)
+{
+	struct hisi_qm *qm = &sec->qm;
+	u32 qp_num = qm->qp_num;
+	u32 q_base = qp_num;
+	u32 q_num, remain_q_num;
+	int i, j, ret;
+
+	if (!num_vfs)
+		return -EINVAL;
+
+	remain_q_num = qm->ctrl_qp_num - qp_num;
+	q_num = remain_q_num / num_vfs;
+
+	for (i = 1; i <= num_vfs; i++) {
+		if (i == num_vfs)
+			q_num += remain_q_num % num_vfs;
+		ret = hisi_qm_set_vft(qm, i, q_base, q_num);
+		if (ret) {
+			for (j = i; j > 0; j--)
+				hisi_qm_set_vft(qm, j, 0, 0);
+			return ret;
+		}
+		q_base += q_num;
+	}
+
+	return 0;
+}
+
+static int sec_clear_vft_config(struct sec_dev *sec)
+{
+	struct hisi_qm *qm = &sec->qm;
+	u32 num_vfs = sec->num_vfs;
+	int ret;
+	u32 i;
+
+	for (i = 1; i <= num_vfs; i++) {
+		ret = hisi_qm_set_vft(qm, i, 0, 0);
+		if (ret)
+			return ret;
+	}
+
+	sec->num_vfs = 0;
+
+	return 0;
+}
+
+static int sec_sriov_enable(struct pci_dev *pdev, int max_vfs)
+{
+	struct sec_dev *sec = pci_get_drvdata(pdev);
+	int pre_existing_vfs, ret;
+	u32 num_vfs;
+
+	pre_existing_vfs = pci_num_vf(pdev);
+
+	if (pre_existing_vfs) {
+		pci_err(pdev, "Can't enable VF. Please disable at first!\n");
+		return 0;
+	}
+
+	num_vfs = min_t(u32, max_vfs, SEC_VF_NUM);
+
+	ret = sec_vf_q_assign(sec, num_vfs);
+	if (ret) {
+		pci_err(pdev, "Can't assign queues for VF!\n");
+		return ret;
+	}
+
+	sec->num_vfs = num_vfs;
+
+	ret = pci_enable_sriov(pdev, num_vfs);
+	if (ret) {
+		pci_err(pdev, "Can't enable VF!\n");
+		sec_clear_vft_config(sec);
+		return ret;
+	}
+
+	return num_vfs;
+}
+
+static int sec_sriov_disable(struct pci_dev *pdev)
+{
+	struct sec_dev *sec = pci_get_drvdata(pdev);
+
+	if (pci_vfs_assigned(pdev)) {
+		pci_err(pdev, "Can't disable VFs while VFs are assigned!\n");
+		return -EPERM;
+	}
+
+	/* remove in sec_pci_driver will be called to free VF resources */
+	pci_disable_sriov(pdev);
+
+	return sec_clear_vft_config(sec);
+}
+
+static int sec_sriov_configure(struct pci_dev *pdev, int num_vfs)
+{
+	if (num_vfs)
+		return sec_sriov_enable(pdev, num_vfs);
+	else
+		return sec_sriov_disable(pdev);
 }
 
 static void sec_remove(struct pci_dev *pdev)
 {
-	struct hisi_qm *qm = pci_get_drvdata(pdev);
+	struct sec_dev *sec = pci_get_drvdata(pdev);
+	struct hisi_qm *qm = &sec->qm;
 
-	hisi_qm_wait_task_finish(qm, &sec_devices);
-	hisi_qm_alg_unregister(qm, &sec_devices);
-	if (qm->fun_type == QM_HW_PF && qm->vfs_num)
-		hisi_qm_sriov_disable(pdev, true);
+	sec_unregister_from_crypto();
 
-	sec_debugfs_exit(qm);
+	sec_remove_from_list(sec);
 
-	(void)hisi_qm_stop(qm, QM_NORMAL);
+	if (qm->fun_type == QM_HW_PF && sec->num_vfs)
+		(void)sec_sriov_disable(pdev);
+
+	sec_debugfs_exit(sec);
+
+	(void)hisi_qm_stop(qm);
 
 	if (qm->fun_type == QM_HW_PF)
 		sec_debug_regs_clear(qm);
 
-	sec_probe_uninit(qm);
+	sec_probe_uninit(sec);
 
 	sec_qm_uninit(qm);
 }
 
+static void sec_log_hw_error(struct sec_dev *sec, u32 err_sts)
+{
+	const struct sec_hw_error *errs = sec_hw_errors;
+	struct device *dev = &sec->qm.pdev->dev;
+	u32 err_val;
+
+	while (errs->msg) {
+		if (errs->int_msk & err_sts) {
+			dev_err(dev, "%s [error status=0x%x] found\n",
+				errs->msg, errs->int_msk);
+
+			if (SEC_CORE_INT_STATUS_M_ECC & err_sts) {
+				err_val = readl(sec->qm.io_base +
+						SEC_CORE_SRAM_ECC_ERR_INFO);
+				dev_err(dev, "multi ecc sram num=0x%x\n",
+					SEC_ECC_NUM(err_val));
+				dev_err(dev, "multi ecc sram addr=0x%x\n",
+					SEC_ECC_ADDR(err_val));
+			}
+		}
+		errs++;
+	}
+}
+
+static pci_ers_result_t sec_hw_error_handle(struct sec_dev *sec)
+{
+	u32 err_sts;
+
+	/* read err sts */
+	err_sts = readl(sec->qm.io_base + SEC_CORE_INT_STATUS);
+	if (err_sts) {
+		sec_log_hw_error(sec, err_sts);
+
+		/* clear error interrupts */
+		writel(err_sts, sec->qm.io_base + SEC_CORE_INT_SOURCE);
+
+		return PCI_ERS_RESULT_NEED_RESET;
+	}
+
+	return PCI_ERS_RESULT_RECOVERED;
+}
+
+static pci_ers_result_t sec_process_hw_error(struct pci_dev *pdev)
+{
+	struct sec_dev *sec = pci_get_drvdata(pdev);
+	pci_ers_result_t qm_ret, sec_ret;
+
+	if (!sec) {
+		pci_err(pdev, "Can't recover error during device init\n");
+		return PCI_ERS_RESULT_NONE;
+	}
+
+	/* log qm error */
+	qm_ret = hisi_qm_hw_error_handle(&sec->qm);
+
+	/* log sec error */
+	sec_ret = sec_hw_error_handle(sec);
+
+	return (qm_ret == PCI_ERS_RESULT_NEED_RESET ||
+		sec_ret == PCI_ERS_RESULT_NEED_RESET) ?
+		PCI_ERS_RESULT_NEED_RESET : PCI_ERS_RESULT_RECOVERED;
+}
+
+static pci_ers_result_t sec_error_detected(struct pci_dev *pdev,
+					   pci_channel_state_t state)
+{
+	if (pdev->is_virtfn)
+		return PCI_ERS_RESULT_NONE;
+
+	pci_info(pdev, "PCI error detected, state(=%d)!!\n", state);
+	if (state == pci_channel_io_perm_failure)
+		return PCI_ERS_RESULT_DISCONNECT;
+
+	return sec_process_hw_error(pdev);
+}
+
 static const struct pci_error_handlers sec_err_handler = {
-	.error_detected = hisi_qm_dev_err_detected,
-	.slot_reset	= hisi_qm_dev_slot_reset,
-	.reset_prepare	= hisi_qm_reset_prepare,
-	.reset_done	= hisi_qm_reset_done,
+	.error_detected = sec_error_detected,
 };
 
 static struct pci_driver sec_pci_driver = {
@@ -977,8 +1058,7 @@ static struct pci_driver sec_pci_driver = {
 	.probe = sec_probe,
 	.remove = sec_remove,
 	.err_handler = &sec_err_handler,
-	.sriov_configure = hisi_qm_sriov_configure,
-	.shutdown = hisi_qm_dev_shutdown,
+	.sriov_configure = sec_sriov_configure,
 };
 
 static void sec_register_debugfs(void)
@@ -998,7 +1078,6 @@ static int __init sec_init(void)
 {
 	int ret;
 
-	hisi_qm_init_list(&sec_devices);
 	sec_register_debugfs();
 
 	ret = pci_register_driver(&sec_pci_driver);
@@ -1023,6 +1102,5 @@ module_exit(sec_exit);
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Zaibo Xu <xuzaibo@huawei.com>");
 MODULE_AUTHOR("Longfang Liu <liulongfang@huawei.com>");
-MODULE_AUTHOR("Kai Ye <yekai13@huawei.com>");
 MODULE_AUTHOR("Wei Zhang <zhangwei375@huawei.com>");
 MODULE_DESCRIPTION("Driver for HiSilicon SEC accelerator");

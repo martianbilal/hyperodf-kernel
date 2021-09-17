@@ -6,13 +6,14 @@
  * Copyright (c) 2005 Sun Microsystems, Inc. All rights reserved.
  * Copyright (c) 2019, Mellanox Technologies inc.  All rights reserved.
  */
-
 #ifndef IB_CM_H
 #define IB_CM_H
 
 #include <rdma/ib_mad.h>
 #include <rdma/ib_sa.h>
-#include <rdma/rdma_cm.h>
+
+/* ib_cm and ib_user_cm modules share /sys/class/infiniband_cm */
+extern struct class cm_class;
 
 enum ib_cm_state {
 	IB_CM_IDLE,
@@ -114,7 +115,6 @@ struct ib_cm_req_event_param {
 	unsigned int		retry_count:3;
 	unsigned int		rnr_retry_count:3;
 	unsigned int		srq:1;
-	struct rdma_ucm_ece	ece;
 };
 
 struct ib_cm_rep_event_param {
@@ -129,7 +129,6 @@ struct ib_cm_rep_event_param {
 	unsigned int		flow_control:1;
 	unsigned int		rnr_retry_count:3;
 	unsigned int		srq:1;
-	struct rdma_ucm_ece	ece;
 };
 
 enum ib_cm_rej_reason {
@@ -165,8 +164,7 @@ enum ib_cm_rej_reason {
 	IB_CM_REJ_DUPLICATE_LOCAL_COMM_ID	= 30,
 	IB_CM_REJ_INVALID_CLASS_VERSION		= 31,
 	IB_CM_REJ_INVALID_FLOW_LABEL		= 32,
-	IB_CM_REJ_INVALID_ALT_FLOW_LABEL	= 33,
-	IB_CM_REJ_VENDOR_OPTION_NOT_SUPPORTED	= 35,
+	IB_CM_REJ_INVALID_ALT_FLOW_LABEL	= 33
 };
 
 struct ib_cm_rej_event_param {
@@ -362,6 +360,7 @@ struct ib_cm_req_param {
 	u32			starting_psn;
 	const void		*private_data;
 	u8			private_data_len;
+	u8			peer_to_peer;
 	u8			responder_resources;
 	u8			initiator_depth;
 	u8			remote_cm_response_timeout;
@@ -371,7 +370,6 @@ struct ib_cm_req_param {
 	u8			rnr_retry_count;
 	u8			max_cm_retries;
 	u8			srq;
-	struct rdma_ucm_ece	ece;
 };
 
 /**
@@ -395,7 +393,6 @@ struct ib_cm_rep_param {
 	u8		flow_control;
 	u8		rnr_retry_count;
 	u8		srq;
-	struct rdma_ucm_ece ece;
 };
 
 /**
@@ -550,7 +547,6 @@ struct ib_cm_sidr_rep_param {
 	u8			info_length;
 	const void		*private_data;
 	u8			private_data_len;
-	struct rdma_ucm_ece	ece;
 };
 
 /**

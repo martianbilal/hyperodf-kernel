@@ -44,7 +44,7 @@ void *thr(void *arg)
 	struct kvm_run *run = tc->run;
 
 	res = ioctl(kvmcpu, KVM_RUN, 0);
-	pr_info("ret1=%d exit_reason=%d suberror=%d\n",
+	printf("ret1=%d exit_reason=%d suberror=%d\n",
 		res, run->exit_reason, run->internal.suberror);
 
 	return 0;
@@ -93,12 +93,12 @@ int main(void)
 	int warnings_before, warnings_after;
 
 	if (!is_intel_cpu()) {
-		print_skip("Must be run on an Intel CPU");
+		printf("Must be run on an Intel CPU, skipping test\n");
 		exit(KSFT_SKIP);
 	}
 
 	if (vm_is_unrestricted_guest(NULL)) {
-		print_skip("Unrestricted guest must be disabled");
+		printf("Unrestricted guest must be disabled, skipping test\n");
 		exit(KSFT_SKIP);
 	}
 

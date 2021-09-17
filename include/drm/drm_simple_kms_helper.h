@@ -100,11 +100,8 @@ struct drm_simple_display_pipe_funcs {
 	 * This is the function drivers should submit the
 	 * &drm_pending_vblank_event from. Using either
 	 * drm_crtc_arm_vblank_event(), when the driver supports vblank
-	 * interrupt handling, or drm_crtc_send_vblank_event() for more
-	 * complex case. In case the hardware lacks vblank support entirely,
-	 * drivers can set &struct drm_crtc_state.no_vblank in
-	 * &struct drm_simple_display_pipe_funcs.check and let DRM's
-	 * atomic helper fake a vblank event.
+	 * interrupt handling, or drm_crtc_send_vblank_event() directly in case
+	 * the hardware lacks vblank support entirely.
 	 */
 	void (*update)(struct drm_simple_display_pipe *pipe,
 		       struct drm_plane_state *old_plane_state);
@@ -180,33 +177,5 @@ int drm_simple_display_pipe_init(struct drm_device *dev,
 			const uint32_t *formats, unsigned int format_count,
 			const uint64_t *format_modifiers,
 			struct drm_connector *connector);
-
-int drm_simple_encoder_init(struct drm_device *dev,
-			    struct drm_encoder *encoder,
-			    int encoder_type);
-
-void *__drmm_simple_encoder_alloc(struct drm_device *dev, size_t size,
-				  size_t offset, int encoder_type);
-
-/**
- * drmm_simple_encoder_alloc - Allocate and initialize an encoder with basic
- *                             functionality.
- * @dev: drm device
- * @type: the type of the struct which contains struct &drm_encoder
- * @member: the name of the &drm_encoder within @type.
- * @encoder_type: user visible type of the encoder
- *
- * Allocates and initializes an encoder that has no further functionality.
- * Settings for possible CRTC and clones are left to their initial values.
- * Cleanup is automatically handled through registering drm_encoder_cleanup()
- * with drmm_add_action().
- *
- * Returns:
- * Pointer to new encoder, or ERR_PTR on failure.
- */
-#define drmm_simple_encoder_alloc(dev, type, member, encoder_type) \
-	((type *)__drmm_simple_encoder_alloc(dev, sizeof(type), \
-					     offsetof(type, member), \
-					     encoder_type))
 
 #endif /* __LINUX_DRM_SIMPLE_KMS_HELPER_H */

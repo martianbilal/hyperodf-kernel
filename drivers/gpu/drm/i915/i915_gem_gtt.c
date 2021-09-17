@@ -15,6 +15,8 @@
 #include <asm/set_memory.h>
 #include <asm/smp.h>
 
+#include <drm/i915_drm.h>
+
 #include "display/intel_frontbuffer.h"
 #include "gt/intel_gt.h"
 #include "gt/intel_gt_requests.h"
@@ -31,8 +33,6 @@ int i915_gem_gtt_prepare_pages(struct drm_i915_gem_object *obj,
 		if (dma_map_sg_attrs(&obj->base.dev->pdev->dev,
 				     pages->sgl, pages->nents,
 				     PCI_DMA_BIDIRECTIONAL,
-				     DMA_ATTR_SKIP_CPU_SYNC |
-				     DMA_ATTR_NO_KERNEL_MAPPING |
 				     DMA_ATTR_NO_WARN))
 			return 0;
 
@@ -55,17 +55,21 @@ int i915_gem_gtt_prepare_pages(struct drm_i915_gem_object *obj,
 void i915_gem_gtt_finish_pages(struct drm_i915_gem_object *obj,
 			       struct sg_table *pages)
 {
-	struct drm_i915_private *i915 = to_i915(obj->base.dev);
-	struct i915_ggtt *ggtt = &i915->ggtt;
+	struct drm_i915_private *dev_priv = to_i915(obj->base.dev);
+	struct device *kdev = &dev_priv->drm.pdev->dev;
+	struct i915_ggtt *ggtt = &dev_priv->ggtt;
 
-	/* XXX This does not prevent more requests being submitted! */
-	if (unlikely(ggtt->do_idle_maps))
-		/* Wait a bit, in the hope it avoids the hang */
-		usleep_range(100, 250);
+	if (unlikely(ggtt->do_idle_maps)) {
+		/* XXX This does not prevent more requests being submitted! */
+		if (intel_gt_retire_requests_timeout(ggtt->vm.gt,
+						     -MAX_SCHEDULE_TIMEOUT)) {
+			DRM_ERROR("Failed to wait for idle; VT'd may hang.\n");
+			/* Wait a bit, in hopes it avoids the hang */
+			udelay(10);
+		}
+	}
 
-	dma_unmap_sg(&i915->drm.pdev->dev,
-		     pages->sgl, pages->nents,
-		     PCI_DMA_BIDIRECTIONAL);
+	dma_unmap_sg(kdev, pages->sgl, pages->nents, PCI_DMA_BIDIRECTIONAL);
 }
 
 /**

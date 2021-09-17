@@ -94,19 +94,19 @@ static acpi_status acpi_ged_request_interrupt(struct acpi_resource *ares,
 		trigger = p->triggering;
 	} else {
 		gsi = pext->interrupts[0];
-		trigger = pext->triggering;
+		trigger = p->triggering;
 	}
 
 	irq = r.start;
 
 	switch (gsi) {
 	case 0 ... 255:
-		sprintf(ev_name, "_%c%02X",
+		sprintf(ev_name, "_%c%02hhX",
 			trigger == ACPI_EDGE_SENSITIVE ? 'E' : 'L', gsi);
 
 		if (ACPI_SUCCESS(acpi_get_handle(handle, ev_name, &evt_handle)))
 			break;
-		fallthrough;
+		/* fall through */
 	default:
 		if (ACPI_SUCCESS(acpi_get_handle(handle, "_EVT", &evt_handle)))
 			break;

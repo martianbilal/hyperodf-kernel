@@ -34,14 +34,11 @@ switch_destroy()
 }
 
 # Callback from sch_ets_tests.sh
-collect_stats()
+get_stats()
 {
-	local -a streams=("$@")
-	local stream
+	local stream=$1; shift
 
-	for stream in ${streams[@]}; do
-		qdisc_parent_stats_get $swp2 10:$((stream + 1)) .bytes
-	done
+	link_stats_get $h2.1$stream rx bytes
 }
 
 ets_run

@@ -16,7 +16,7 @@
 
 struct nbyte_data {
 	struct tcf_em_nbyte	hdr;
-	char			pattern[];
+	char			pattern[0];
 };
 
 static int em_nbyte_change(struct net *net, void *data, int data_len,
@@ -31,7 +31,7 @@ static int em_nbyte_change(struct net *net, void *data, int data_len,
 	em->datalen = sizeof(*nbyte) + nbyte->len;
 	em->data = (unsigned long)kmemdup(data, em->datalen, GFP_KERNEL);
 	if (em->data == 0UL)
-		return -ENOMEM;
+		return -ENOBUFS;
 
 	return 0;
 }

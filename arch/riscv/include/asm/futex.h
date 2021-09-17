@@ -46,8 +46,7 @@ arch_futex_atomic_op_inuser(int op, int oparg, int *oval, u32 __user *uaddr)
 {
 	int oldval = 0, ret = 0;
 
-	if (!access_ok(uaddr, sizeof(u32)))
-		return -EFAULT;
+	pagefault_disable();
 
 	switch (op) {
 	case FUTEX_OP_SET:
@@ -73,6 +72,8 @@ arch_futex_atomic_op_inuser(int op, int oparg, int *oval, u32 __user *uaddr)
 	default:
 		ret = -ENOSYS;
 	}
+
+	pagefault_enable();
 
 	if (!ret)
 		*oval = oldval;

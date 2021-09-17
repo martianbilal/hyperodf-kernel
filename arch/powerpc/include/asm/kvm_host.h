@@ -28,6 +28,7 @@
 
 #define KVM_MAX_VCPUS		NR_CPUS
 #define KVM_MAX_VCORES		NR_CPUS
+#define KVM_USER_MEM_SLOTS	512
 
 #include <asm/cputhreads.h>
 
@@ -57,8 +58,7 @@
 #define KVM_ARCH_WANT_MMU_NOTIFIER
 
 extern int kvm_unmap_hva_range(struct kvm *kvm,
-			       unsigned long start, unsigned long end,
-			       unsigned flags);
+			       unsigned long start, unsigned long end);
 extern int kvm_age_hva(struct kvm *kvm, unsigned long start, unsigned long end);
 extern int kvm_test_age_hva(struct kvm *kvm, unsigned long hva);
 extern int kvm_set_spte_hva(struct kvm *kvm, unsigned long hva, pte_t pte);
@@ -303,13 +303,13 @@ struct kvm_arch {
 	u8 radix;
 	u8 fwnmi_enabled;
 	u8 secure_guest;
-	u8 svm_enabled;
 	bool threads_indep;
 	bool nested_enable;
-	bool dawr1_enabled;
 	pgd_t *pgtable;
 	u64 process_table;
 	struct dentry *debugfs_dir;
+	struct dentry *htab_dentry;
+	struct dentry *radix_dentry;
 	struct kvm_resize_hpt *resize_hpt; /* protected by kvm->lock */
 #endif /* CONFIG_KVM_BOOK3S_HV_POSSIBLE */
 #ifdef CONFIG_KVM_BOOK3S_PR_POSSIBLE
@@ -326,7 +326,6 @@ struct kvm_arch {
 #endif
 #ifdef CONFIG_KVM_XICS
 	struct kvmppc_xics *xics;
-	struct kvmppc_xics *xics_device;
 	struct kvmppc_xive *xive;    /* Current XIVE device in use */
 	struct {
 		struct kvmppc_xive *native;
@@ -584,10 +583,8 @@ struct kvm_vcpu_arch {
 	u32 ctrl;
 	u32 dabrx;
 	ulong dabr;
-	ulong dawr0;
-	ulong dawrx0;
-	ulong dawr1;
-	ulong dawrx1;
+	ulong dawr;
+	ulong dawrx;
 	ulong ciabr;
 	ulong cfar;
 	ulong ppr;
@@ -641,14 +638,12 @@ struct kvm_vcpu_arch {
 	u32 ccr1;
 	u32 dbsr;
 
-	u64 mmcr[4];	/* MMCR0, MMCR1, MMCR2, MMCR3 */
-	u64 mmcra;
-	u64 mmcrs;
+	u64 mmcr[5];
 	u32 pmc[8];
 	u32 spmc[2];
 	u64 siar;
 	u64 sdar;
-	u64 sier[3];
+	u64 sier;
 #ifdef CONFIG_PPC_TRANSACTIONAL_MEM
 	u64 tfhar;
 	u64 texasr;
@@ -757,7 +752,7 @@ struct kvm_vcpu_arch {
 	u8 irq_pending; /* Used by XIVE to signal pending guest irqs */
 	u32 last_inst;
 
-	struct rcuwait *waitp;
+	struct swait_queue_head *wqp;
 	struct kvmppc_vcore *vcore;
 	int ret;
 	int trap;
@@ -801,6 +796,7 @@ struct kvm_vcpu_arch {
 	struct mmio_hpte_cache_entry *pgfault_cache;
 
 	struct task_struct *run_task;
+	struct kvm_run *kvm_run;
 
 	spinlock_t vpa_update_lock;
 	struct kvmppc_vpa vpa;
@@ -834,6 +830,7 @@ struct kvm_vcpu_arch {
 	struct kvmhv_tb_accumulator cede_time;	/* time napping inside guest */
 
 	struct dentry *debugfs_dir;
+	struct dentry *debugfs_timings;
 #endif /* CONFIG_KVM_BOOK3S_HV_EXIT_TIMING */
 };
 

@@ -6,6 +6,7 @@
 
 #include <linux/string.h>
 #include <linux/bitops.h>
+#include <drm/i915_drm.h>
 
 #include "i915_drv.h"
 #include "i915_gem.h"
@@ -249,7 +250,7 @@ i915_gem_object_set_tiling(struct drm_i915_gem_object *obj,
 	 * whilst executing a fenced command for an untiled object.
 	 */
 
-	i915_gem_object_lock(obj, NULL);
+	i915_gem_object_lock(obj);
 	if (i915_gem_object_is_framebuffer(obj)) {
 		i915_gem_object_unlock(obj);
 		return -EBUSY;
@@ -270,14 +271,14 @@ i915_gem_object_set_tiling(struct drm_i915_gem_object *obj,
 	    obj->mm.madv == I915_MADV_WILLNEED &&
 	    i915->quirks & QUIRK_PIN_SWIZZLED_PAGES) {
 		if (tiling == I915_TILING_NONE) {
-			GEM_BUG_ON(!i915_gem_object_has_tiling_quirk(obj));
-			i915_gem_object_clear_tiling_quirk(obj);
-			i915_gem_object_make_shrinkable(obj);
+			GEM_BUG_ON(!obj->mm.quirked);
+			__i915_gem_object_unpin_pages(obj);
+			obj->mm.quirked = false;
 		}
 		if (!i915_gem_object_is_tiled(obj)) {
-			GEM_BUG_ON(i915_gem_object_has_tiling_quirk(obj));
-			i915_gem_object_make_unshrinkable(obj);
-			i915_gem_object_set_tiling_quirk(obj);
+			GEM_BUG_ON(obj->mm.quirked);
+			__i915_gem_object_pin_pages(obj);
+			obj->mm.quirked = true;
 		}
 	}
 	mutex_unlock(&obj->mm.lock);
@@ -299,7 +300,7 @@ i915_gem_object_set_tiling(struct drm_i915_gem_object *obj,
 	i915_gem_object_unlock(obj);
 
 	/* Force the fence to be reacquired for GTT access */
-	i915_gem_object_release_mmap_gtt(obj);
+	i915_gem_object_release_mmap(obj);
 
 	/* Try to preallocate memory required to save swizzling on put-pages */
 	if (i915_gem_object_needs_bit17_swizzle(obj)) {

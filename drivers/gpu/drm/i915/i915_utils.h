@@ -34,8 +34,6 @@
 struct drm_i915_private;
 struct timer_list;
 
-#define FDO_BUG_URL "https://gitlab.freedesktop.org/drm/intel/-/wikis/How-to-file-i915-bugs"
-
 #undef WARN_ON
 /* Many gcc seem to no see through this and fall over :( */
 #if 0
@@ -102,23 +100,11 @@ bool i915_error_injected(void);
 	typeof(max) max__ = (max); \
 	(void)(&start__ == &size__); \
 	(void)(&start__ == &max__); \
-	start__ >= max__ || size__ > max__ - start__; \
+	start__ > max__ || size__ > max__ - start__; \
 })
 
 #define range_overflows_t(type, start, size, max) \
 	range_overflows((type)(start), (type)(size), (type)(max))
-
-#define range_overflows_end(start, size, max) ({ \
-	typeof(start) start__ = (start); \
-	typeof(size) size__ = (size); \
-	typeof(max) max__ = (max); \
-	(void)(&start__ == &size__); \
-	(void)(&start__ == &max__); \
-	start__ > max__ || size__ > max__ - start__; \
-})
-
-#define range_overflows_end_t(type, start, size, max) \
-	range_overflows_end((type)(start), (type)(size), (type)(max))
 
 /* Note we don't consider signbits :| */
 #define overflows_type(x, T) \
@@ -260,10 +246,17 @@ static inline void __list_del_many(struct list_head *head,
 	WRITE_ONCE(head->next, first);
 }
 
-static inline int list_is_last_rcu(const struct list_head *list,
-				   const struct list_head *head)
+/*
+ * Wait until the work is finally complete, even if it tries to postpone
+ * by requeueing itself. Note, that if the worker never cancels itself,
+ * we will spin forever.
+ */
+static inline void drain_delayed_work(struct delayed_work *dw)
 {
-	return READ_ONCE(list->next) == head;
+	do {
+		while (flush_delayed_work(dw))
+			;
+	} while (delayed_work_pending(dw));
 }
 
 static inline unsigned long msecs_to_jiffies_timeout(const unsigned int m)
@@ -423,8 +416,7 @@ static inline const char *enableddisabled(bool v)
 	return v ? "enabled" : "disabled";
 }
 
-void add_taint_for_CI(struct drm_i915_private *i915, unsigned int taint);
-static inline void __add_taint_for_CI(unsigned int taint)
+static inline void add_taint_for_CI(unsigned int taint)
 {
 	/*
 	 * The system is "ok", just about surviving for the user, but
@@ -438,14 +430,9 @@ static inline void __add_taint_for_CI(unsigned int taint)
 void cancel_timer(struct timer_list *t);
 void set_timer_ms(struct timer_list *t, unsigned long timeout);
 
-static inline bool timer_active(const struct timer_list *t)
-{
-	return READ_ONCE(t->expires);
-}
-
 static inline bool timer_expired(const struct timer_list *t)
 {
-	return timer_active(t) && !timer_pending(t);
+	return READ_ONCE(t->expires) && !timer_pending(t);
 }
 
 /*

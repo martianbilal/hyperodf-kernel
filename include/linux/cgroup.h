@@ -27,8 +27,6 @@
 
 #include <linux/cgroup-defs.h>
 
-struct kernel_clone_args;
-
 #ifdef CONFIG_CGROUPS
 
 /*
@@ -60,6 +58,9 @@ struct css_task_iter {
 	struct list_head		*tcset_head;
 
 	struct list_head		*task_pos;
+	struct list_head		*tasks_head;
+	struct list_head		*mg_tasks_head;
+	struct list_head		*dying_tasks_head;
 
 	struct list_head		*cur_tasks_head;
 	struct css_set			*cur_cset;
@@ -121,12 +122,9 @@ int proc_cgroup_show(struct seq_file *m, struct pid_namespace *ns,
 		     struct pid *pid, struct task_struct *tsk);
 
 void cgroup_fork(struct task_struct *p);
-extern int cgroup_can_fork(struct task_struct *p,
-			   struct kernel_clone_args *kargs);
-extern void cgroup_cancel_fork(struct task_struct *p,
-			       struct kernel_clone_args *kargs);
-extern void cgroup_post_fork(struct task_struct *p,
-			     struct kernel_clone_args *kargs);
+extern int cgroup_can_fork(struct task_struct *p);
+extern void cgroup_cancel_fork(struct task_struct *p);
+extern void cgroup_post_fork(struct task_struct *p);
 void cgroup_exit(struct task_struct *p);
 void cgroup_release(struct task_struct *p);
 void cgroup_free(struct task_struct *p);
@@ -307,7 +305,7 @@ void css_task_iter_end(struct css_task_iter *it);
  * Inline functions.
  */
 
-static inline u64 cgroup_id(const struct cgroup *cgrp)
+static inline u64 cgroup_id(struct cgroup *cgrp)
 {
 	return cgrp->kn->id;
 }
@@ -701,7 +699,7 @@ void cgroup_path_from_kernfs_id(u64 id, char *buf, size_t buflen);
 struct cgroup_subsys_state;
 struct cgroup;
 
-static inline u64 cgroup_id(const struct cgroup *cgrp) { return 1; }
+static inline u64 cgroup_id(struct cgroup *cgrp) { return 1; }
 static inline void css_get(struct cgroup_subsys_state *css) {}
 static inline void css_put(struct cgroup_subsys_state *css) {}
 static inline int cgroup_attach_task_all(struct task_struct *from,
@@ -710,12 +708,9 @@ static inline int cgroupstats_build(struct cgroupstats *stats,
 				    struct dentry *dentry) { return -EINVAL; }
 
 static inline void cgroup_fork(struct task_struct *p) {}
-static inline int cgroup_can_fork(struct task_struct *p,
-				  struct kernel_clone_args *kargs) { return 0; }
-static inline void cgroup_cancel_fork(struct task_struct *p,
-				      struct kernel_clone_args *kargs) {}
-static inline void cgroup_post_fork(struct task_struct *p,
-				    struct kernel_clone_args *kargs) {}
+static inline int cgroup_can_fork(struct task_struct *p) { return 0; }
+static inline void cgroup_cancel_fork(struct task_struct *p) {}
+static inline void cgroup_post_fork(struct task_struct *p) {}
 static inline void cgroup_exit(struct task_struct *p) {}
 static inline void cgroup_release(struct task_struct *p) {}
 static inline void cgroup_free(struct task_struct *p) {}
@@ -822,7 +817,6 @@ extern spinlock_t cgroup_sk_update_lock;
 
 void cgroup_sk_alloc_disable(void);
 void cgroup_sk_alloc(struct sock_cgroup_data *skcd);
-void cgroup_sk_clone(struct sock_cgroup_data *skcd);
 void cgroup_sk_free(struct sock_cgroup_data *skcd);
 
 static inline struct cgroup *sock_cgroup_ptr(struct sock_cgroup_data *skcd)
@@ -836,7 +830,7 @@ static inline struct cgroup *sock_cgroup_ptr(struct sock_cgroup_data *skcd)
 	 */
 	v = READ_ONCE(skcd->val);
 
-	if (v & 3)
+	if (v & 1)
 		return &cgrp_dfl_root.cgrp;
 
 	return (struct cgroup *)(unsigned long)v ?: &cgrp_dfl_root.cgrp;
@@ -848,12 +842,12 @@ static inline struct cgroup *sock_cgroup_ptr(struct sock_cgroup_data *skcd)
 #else	/* CONFIG_CGROUP_DATA */
 
 static inline void cgroup_sk_alloc(struct sock_cgroup_data *skcd) {}
-static inline void cgroup_sk_clone(struct sock_cgroup_data *skcd) {}
 static inline void cgroup_sk_free(struct sock_cgroup_data *skcd) {}
 
 #endif	/* CONFIG_CGROUP_DATA */
 
 struct cgroup_namespace {
+	refcount_t		count;
 	struct ns_common	ns;
 	struct user_namespace	*user_ns;
 	struct ucounts		*ucounts;
@@ -888,12 +882,12 @@ copy_cgroup_ns(unsigned long flags, struct user_namespace *user_ns,
 static inline void get_cgroup_ns(struct cgroup_namespace *ns)
 {
 	if (ns)
-		refcount_inc(&ns->ns.count);
+		refcount_inc(&ns->count);
 }
 
 static inline void put_cgroup_ns(struct cgroup_namespace *ns)
 {
-	if (ns && refcount_dec_and_test(&ns->ns.count))
+	if (ns && refcount_dec_and_test(&ns->count))
 		free_cgroup_ns(ns);
 }
 

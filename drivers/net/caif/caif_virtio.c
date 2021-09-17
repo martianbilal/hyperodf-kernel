@@ -519,7 +519,7 @@ err:
 }
 
 /* Put the CAIF packet on the virtio ring and kick the receiver */
-static netdev_tx_t cfv_netdev_tx(struct sk_buff *skb, struct net_device *netdev)
+static int cfv_netdev_tx(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct cfv_info *cfv = netdev_priv(netdev);
 	struct buf_info *buf_info;
@@ -598,9 +598,9 @@ err:
 	return NETDEV_TX_OK;
 }
 
-static void cfv_tx_release_tasklet(struct tasklet_struct *t)
+static void cfv_tx_release_tasklet(unsigned long drv)
 {
-	struct cfv_info *cfv = from_tasklet(cfv, t, tx_release_tasklet);
+	struct cfv_info *cfv = (struct cfv_info *)drv;
 	cfv_release_used_buf(cfv->vq_tx);
 }
 
@@ -652,7 +652,7 @@ static int cfv_probe(struct virtio_device *vdev)
 	const char *cfv_netdev_name = "cfvrt";
 	struct net_device *netdev;
 	struct cfv_info *cfv;
-	int err;
+	int err = -EINVAL;
 
 	netdev = alloc_netdev(sizeof(struct cfv_info), cfv_netdev_name,
 			      NET_NAME_UNKNOWN, cfv_netdev_setup);
@@ -716,7 +716,9 @@ static int cfv_probe(struct virtio_device *vdev)
 	cfv->ctx.head = USHRT_MAX;
 	netif_napi_add(netdev, &cfv->napi, cfv_rx_poll, CFV_DEFAULT_QUOTA);
 
-	tasklet_setup(&cfv->tx_release_tasklet, cfv_tx_release_tasklet);
+	tasklet_init(&cfv->tx_release_tasklet,
+		     cfv_tx_release_tasklet,
+		     (unsigned long)cfv);
 
 	/* Carrier is off until netdevice is opened */
 	netif_carrier_off(netdev);

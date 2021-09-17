@@ -58,7 +58,7 @@ static u8 clk_pll_get_parent(struct clk_hw *hwclk)
 		CLK_MGR_PLL_CLK_SRC_MASK;
 }
 
-static const struct clk_ops clk_pll_ops = {
+static struct clk_ops clk_pll_ops = {
 	.recalc_rate = clk_pll_recalc_rate,
 	.get_parent = clk_pll_get_parent,
 };
@@ -73,6 +73,7 @@ static struct clk * __init __socfpga_pll_init(struct device_node *node,
 	const char *parent_name[SOCFGPA_MAX_PARENTS];
 	struct clk_init_data init;
 	struct device_node *clkmgr_np;
+	int rc;
 	int i = 0;
 
 	of_property_read_u32(node, "reg", &reg);
@@ -101,13 +102,15 @@ static struct clk * __init __socfpga_pll_init(struct device_node *node,
 	pll_clk->hw.hw.init = &init;
 
 	pll_clk->hw.bit_idx = SOCFPGA_PLL_EXT_ENA;
+	clk_pll_ops.enable = clk_gate_ops.enable;
+	clk_pll_ops.disable = clk_gate_ops.disable;
 
 	clk = clk_register(NULL, &pll_clk->hw.hw);
 	if (WARN_ON(IS_ERR(clk))) {
 		kfree(pll_clk);
 		return NULL;
 	}
-	of_clk_add_provider(node, of_clk_src_simple_get, clk);
+	rc = of_clk_add_provider(node, of_clk_src_simple_get, clk);
 	return clk;
 }
 

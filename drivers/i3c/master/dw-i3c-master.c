@@ -221,7 +221,7 @@ struct dw_i3c_xfer {
 	struct completion comp;
 	int ret;
 	unsigned int ncmds;
-	struct dw_i3c_cmd cmds[];
+	struct dw_i3c_cmd cmds[0];
 };
 
 struct dw_i3c_master {
@@ -603,7 +603,7 @@ static int dw_i3c_master_bus_init(struct i3c_master_controller *m)
 		ret = dw_i2c_clk_cfg(master);
 		if (ret)
 			return ret;
-		fallthrough;
+		/* fall through */
 	case I3C_BUS_MODE_PURE:
 		ret = dw_i3c_clk_cfg(master);
 		if (ret)
@@ -815,6 +815,11 @@ static int dw_i3c_master_daa(struct i3c_master_controller *m)
 	}
 
 	dw_i3c_master_free_xfer(xfer);
+
+	i3c_master_disec_locked(m, I3C_BROADCAST_ADDR,
+				I3C_CCC_EVENT_HJ |
+				I3C_CCC_EVENT_MR |
+				I3C_CCC_EVENT_SIR);
 
 	return 0;
 }

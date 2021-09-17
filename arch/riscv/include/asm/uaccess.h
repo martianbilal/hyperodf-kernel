@@ -8,11 +8,27 @@
 #ifndef _ASM_RISCV_UACCESS_H
 #define _ASM_RISCV_UACCESS_H
 
-#include <asm/pgtable.h>		/* for TASK_SIZE */
-
 /*
  * User space memory access functions
  */
+
+extern unsigned long __must_check __asm_copy_to_user(void __user *to,
+	const void *from, unsigned long n);
+extern unsigned long __must_check __asm_copy_from_user(void *to,
+	const void __user *from, unsigned long n);
+
+static inline unsigned long
+raw_copy_from_user(void *to, const void __user *from, unsigned long n)
+{
+	return __asm_copy_from_user(to, from, n);
+}
+
+static inline unsigned long
+raw_copy_to_user(void __user *to, const void *from, unsigned long n)
+{
+	return __asm_copy_to_user(to, from, n);
+}
+
 #ifdef CONFIG_MMU
 #include <linux/errno.h>
 #include <linux/compiler.h>
@@ -25,6 +41,31 @@
 	__asm__ __volatile__ ("csrs sstatus, %0" : : "r" (SR_SUM) : "memory")
 #define __disable_user_access()							\
 	__asm__ __volatile__ ("csrc sstatus, %0" : : "r" (SR_SUM) : "memory")
+
+/*
+ * The fs value determines whether argument validity checking should be
+ * performed or not.  If get_fs() == USER_DS, checking is performed, with
+ * get_fs() == KERNEL_DS, checking is bypassed.
+ *
+ * For historical reasons, these macros are grossly misnamed.
+ */
+
+#define MAKE_MM_SEG(s)	((mm_segment_t) { (s) })
+
+#define KERNEL_DS	MAKE_MM_SEG(~0UL)
+#define USER_DS		MAKE_MM_SEG(TASK_SIZE)
+
+#define get_fs()	(current_thread_info()->addr_limit)
+
+static inline void set_fs(mm_segment_t fs)
+{
+	current_thread_info()->addr_limit = fs;
+}
+
+#define segment_eq(a, b) ((a).seg == (b).seg)
+
+#define user_addr_max()	(get_fs().seg)
+
 
 /**
  * access_ok: - Checks if a user space pointer is valid
@@ -53,7 +94,9 @@
  */
 static inline int __access_ok(unsigned long addr, unsigned long size)
 {
-	return size <= TASK_SIZE && addr <= TASK_SIZE - size;
+	const mm_segment_t fs = get_fs();
+
+	return size <= fs.seg && addr <= fs.seg - size;
 }
 
 /*
@@ -82,6 +125,7 @@ static inline int __access_ok(unsigned long addr, unsigned long size)
 do {								\
 	uintptr_t __tmp;					\
 	__typeof__(x) __x;					\
+	__enable_user_access();					\
 	__asm__ __volatile__ (					\
 		"1:\n"						\
 		"	" insn " %1, %3\n"			\
@@ -99,6 +143,7 @@ do {								\
 		"	.previous"				\
 		: "+r" (err), "=&r" (__x), "=r" (__tmp)		\
 		: "m" (*(ptr)), "i" (-EFAULT));			\
+	__disable_user_access();				\
 	(x) = __x;						\
 } while (0)
 
@@ -111,6 +156,7 @@ do {								\
 	u32 __user *__ptr = (u32 __user *)(ptr);		\
 	u32 __lo, __hi;						\
 	uintptr_t __tmp;					\
+	__enable_user_access();					\
 	__asm__ __volatile__ (					\
 		"1:\n"						\
 		"	lw %1, %4\n"				\
@@ -134,30 +180,12 @@ do {								\
 			"=r" (__tmp)				\
 		: "m" (__ptr[__LSW]), "m" (__ptr[__MSW]),	\
 			"i" (-EFAULT));				\
+	__disable_user_access();				\
 	(x) = (__typeof__(x))((__typeof__((x)-(x)))(		\
 		(((u64)__hi << 32) | __lo)));			\
 } while (0)
 #endif /* CONFIG_64BIT */
 
-#define __get_user_nocheck(x, __gu_ptr, __gu_err)		\
-do {								\
-	switch (sizeof(*__gu_ptr)) {				\
-	case 1:							\
-		__get_user_asm("lb", (x), __gu_ptr, __gu_err);	\
-		break;						\
-	case 2:							\
-		__get_user_asm("lh", (x), __gu_ptr, __gu_err);	\
-		break;						\
-	case 4:							\
-		__get_user_asm("lw", (x), __gu_ptr, __gu_err);	\
-		break;						\
-	case 8:							\
-		__get_user_8((x), __gu_ptr, __gu_err);	\
-		break;						\
-	default:						\
-		BUILD_BUG();					\
-	}							\
-} while (0)
 
 /**
  * __get_user: - Get a simple variable from user space, with less checking.
@@ -181,15 +209,25 @@ do {								\
  */
 #define __get_user(x, ptr)					\
 ({								\
+	register long __gu_err = 0;				\
 	const __typeof__(*(ptr)) __user *__gu_ptr = (ptr);	\
-	long __gu_err = 0;					\
-								\
 	__chk_user_ptr(__gu_ptr);				\
-								\
-	__enable_user_access();					\
-	__get_user_nocheck(x, __gu_ptr, __gu_err);		\
-	__disable_user_access();				\
-								\
+	switch (sizeof(*__gu_ptr)) {				\
+	case 1:							\
+		__get_user_asm("lb", (x), __gu_ptr, __gu_err);	\
+		break;						\
+	case 2:							\
+		__get_user_asm("lh", (x), __gu_ptr, __gu_err);	\
+		break;						\
+	case 4:							\
+		__get_user_asm("lw", (x), __gu_ptr, __gu_err);	\
+		break;						\
+	case 8:							\
+		__get_user_8((x), __gu_ptr, __gu_err);	\
+		break;						\
+	default:						\
+		BUILD_BUG();					\
+	}							\
 	__gu_err;						\
 })
 
@@ -223,6 +261,7 @@ do {								\
 do {								\
 	uintptr_t __tmp;					\
 	__typeof__(*(ptr)) __x = x;				\
+	__enable_user_access();					\
 	__asm__ __volatile__ (					\
 		"1:\n"						\
 		"	" insn " %z3, %2\n"			\
@@ -239,6 +278,7 @@ do {								\
 		"	.previous"				\
 		: "+r" (err), "=r" (__tmp), "=m" (*(ptr))	\
 		: "rJ" (__x), "i" (-EFAULT));			\
+	__disable_user_access();				\
 } while (0)
 
 #ifdef CONFIG_64BIT
@@ -250,6 +290,7 @@ do {								\
 	u32 __user *__ptr = (u32 __user *)(ptr);		\
 	u64 __x = (__typeof__((x)-(x)))(x);			\
 	uintptr_t __tmp;					\
+	__enable_user_access();					\
 	__asm__ __volatile__ (					\
 		"1:\n"						\
 		"	sw %z4, %2\n"				\
@@ -271,11 +312,35 @@ do {								\
 			"=m" (__ptr[__LSW]),			\
 			"=m" (__ptr[__MSW])			\
 		: "rJ" (__x), "rJ" (__x >> 32), "i" (-EFAULT));	\
+	__disable_user_access();				\
 } while (0)
 #endif /* CONFIG_64BIT */
 
-#define __put_user_nocheck(x, __gu_ptr, __pu_err)					\
-do {								\
+
+/**
+ * __put_user: - Write a simple value into user space, with less checking.
+ * @x:   Value to copy to user space.
+ * @ptr: Destination address, in user space.
+ *
+ * Context: User context only.  This function may sleep.
+ *
+ * This macro copies a single simple value from kernel space to user
+ * space.  It supports simple types like char and int, but not larger
+ * data types like structures or arrays.
+ *
+ * @ptr must have pointer-to-simple-variable type, and @x must be assignable
+ * to the result of dereferencing @ptr.
+ *
+ * Caller must check the pointer with access_ok() before calling this
+ * function.
+ *
+ * Returns zero on success, or -EFAULT on error.
+ */
+#define __put_user(x, ptr)					\
+({								\
+	register long __pu_err = 0;				\
+	__typeof__(*(ptr)) __user *__gu_ptr = (ptr);		\
+	__chk_user_ptr(__gu_ptr);				\
 	switch (sizeof(*__gu_ptr)) {				\
 	case 1:							\
 		__put_user_asm("sb", (x), __gu_ptr, __pu_err);	\
@@ -292,41 +357,6 @@ do {								\
 	default:						\
 		BUILD_BUG();					\
 	}							\
-} while (0)
-
-/**
- * __put_user: - Write a simple value into user space, with less checking.
- * @x:   Value to copy to user space.
- * @ptr: Destination address, in user space.
- *
- * Context: User context only.  This function may sleep.
- *
- * This macro copies a single simple value from kernel space to user
- * space.  It supports simple types like char and int, but not larger
- * data types like structures or arrays.
- *
- * @ptr must have pointer-to-simple-variable type, and @x must be assignable
- * to the result of dereferencing @ptr. The value of @x is copied to avoid
- * re-ordering where @x is evaluated inside the block that enables user-space
- * access (thus bypassing user space protection if @x is a function).
- *
- * Caller must check the pointer with access_ok() before calling this
- * function.
- *
- * Returns zero on success, or -EFAULT on error.
- */
-#define __put_user(x, ptr)					\
-({								\
-	__typeof__(*(ptr)) __user *__gu_ptr = (ptr);		\
-	__typeof__(*__gu_ptr) __val = (x);			\
-	long __pu_err = 0;					\
-								\
-	__chk_user_ptr(__gu_ptr);				\
-								\
-	__enable_user_access();					\
-	__put_user_nocheck(__val, __gu_ptr, __pu_err);		\
-	__disable_user_access();				\
-								\
 	__pu_err;						\
 })
 
@@ -354,24 +384,6 @@ do {								\
 		__put_user((x), __p) :				\
 		-EFAULT;					\
 })
-
-
-unsigned long __must_check __asm_copy_to_user(void __user *to,
-	const void *from, unsigned long n);
-unsigned long __must_check __asm_copy_from_user(void *to,
-	const void __user *from, unsigned long n);
-
-static inline unsigned long
-raw_copy_from_user(void *to, const void __user *from, unsigned long n)
-{
-	return __asm_copy_from_user(to, from, n);
-}
-
-static inline unsigned long
-raw_copy_to_user(void __user *to, const void *from, unsigned long n)
-{
-	return __asm_copy_to_user(to, from, n);
-}
 
 extern long strncpy_from_user(char *dest, const char __user *src, long count);
 
@@ -463,26 +475,6 @@ unsigned long __must_check clear_user(void __user *to, unsigned long n)
 	(err) = __err;						\
 	__ret;							\
 })
-
-#define HAVE_GET_KERNEL_NOFAULT
-
-#define __get_kernel_nofault(dst, src, type, err_label)			\
-do {									\
-	long __kr_err;							\
-									\
-	__get_user_nocheck(*((type *)(dst)), (type *)(src), __kr_err);	\
-	if (unlikely(__kr_err))						\
-		goto err_label;						\
-} while (0)
-
-#define __put_kernel_nofault(dst, src, type, err_label)			\
-do {									\
-	long __kr_err;							\
-									\
-	__put_user_nocheck(*((type *)(src)), (type *)(dst), __kr_err);	\
-	if (unlikely(__kr_err))						\
-		goto err_label;						\
-} while (0)
 
 #else /* CONFIG_MMU */
 #include <asm-generic/uaccess.h>

@@ -14,8 +14,8 @@
 #include <linux/err.h>
 #include <asm/ptrace.h>
 
-extern const sys_call_ptr_t sys_call_table[];
-extern const sys_call_ptr_t sys_call_table_emu[];
+extern const unsigned long sys_call_table[];
+extern const unsigned long sys_call_table_emu[];
 
 static inline long syscall_get_nr(struct task_struct *task,
 				  struct pt_regs *regs)
@@ -33,17 +33,7 @@ static inline void syscall_rollback(struct task_struct *task,
 static inline long syscall_get_error(struct task_struct *task,
 				     struct pt_regs *regs)
 {
-	unsigned long error = regs->gprs[2];
-#ifdef CONFIG_COMPAT
-	if (test_tsk_thread_flag(task, TIF_31BIT)) {
-		/*
-		 * Sign-extend the value so (int)-EFOO becomes (long)-EFOO
-		 * and will match correctly in comparisons.
-		 */
-		error = (long)(int)error;
-	}
-#endif
-	return IS_ERR_VALUE(error) ? error : 0;
+	return IS_ERR_VALUE(regs->gprs[2]) ? regs->gprs[2] : 0;
 }
 
 static inline long syscall_get_return_value(struct task_struct *task,
@@ -56,7 +46,6 @@ static inline void syscall_set_return_value(struct task_struct *task,
 					    struct pt_regs *regs,
 					    int error, long val)
 {
-	set_pt_regs_flag(regs, PIF_SYSCALL_RET_SET);
 	regs->gprs[2] = error ? error : val;
 }
 
@@ -98,10 +87,4 @@ static inline int syscall_get_arch(struct task_struct *task)
 #endif
 	return AUDIT_ARCH_S390X;
 }
-
-static inline bool arch_syscall_is_vdso_sigreturn(struct pt_regs *regs)
-{
-	return false;
-}
-
 #endif	/* _ASM_SYSCALL_H */

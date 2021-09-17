@@ -140,7 +140,7 @@ static void decon_ctx_remove(struct decon_context *ctx)
 static u32 decon_calc_clkdiv(struct decon_context *ctx,
 		const struct drm_display_mode *mode)
 {
-	unsigned long ideal_clk = mode->clock;
+	unsigned long ideal_clk = mode->htotal * mode->vtotal * mode->vrefresh;
 	u32 clkdiv;
 
 	/* Find the clock divider value that gets us closest to ideal_clk */
@@ -346,7 +346,6 @@ static void decon_win_set_colkey(struct decon_context *ctx, unsigned int win)
 /**
  * shadow_protect_win() - disable updating values from shadow registers at vsync
  *
- * @ctx: display and enhancement controller context
  * @win: window to protect registers for
  * @protect: 1 to protect (disable updates)
  */

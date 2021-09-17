@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
+/**
  * PCI Endpoint *Function* (EPF) library
  *
  * Copyright (C) 2017 Texas Instruments
@@ -21,36 +21,24 @@ static struct bus_type pci_epf_bus_type;
 static const struct device_type pci_epf_type;
 
 /**
- * pci_epf_type_add_cfs() - Help function drivers to expose function specific
- *                          attributes in configfs
- * @epf: the EPF device that has to be configured using configfs
- * @group: the parent configfs group (corresponding to entries in
- *         pci_epf_device_id)
+ * pci_epf_linkup() - Notify the function driver that EPC device has
+ *		      established a connection with the Root Complex.
+ * @epf: the EPF device bound to the EPC device which has established
+ *	 the connection with the host
  *
- * Invoke to expose function specific attributes in configfs. If the function
- * driver does not have anything to expose (attributes configured by user),
- * return NULL.
+ * Invoke to notify the function driver that EPC device has established
+ * a connection with the Root Complex.
  */
-struct config_group *pci_epf_type_add_cfs(struct pci_epf *epf,
-					  struct config_group *group)
+void pci_epf_linkup(struct pci_epf *epf)
 {
-	struct config_group *epf_type_group;
-
 	if (!epf->driver) {
-		dev_err(&epf->dev, "epf device not bound to driver\n");
-		return NULL;
+		dev_WARN(&epf->dev, "epf device not bound to driver\n");
+		return;
 	}
 
-	if (!epf->driver->ops->add_cfs)
-		return NULL;
-
-	mutex_lock(&epf->lock);
-	epf_type_group = epf->driver->ops->add_cfs(epf, group);
-	mutex_unlock(&epf->lock);
-
-	return epf_type_group;
+	epf->driver->ops->linkup(epf);
 }
-EXPORT_SYMBOL_GPL(pci_epf_type_add_cfs);
+EXPORT_SYMBOL_GPL(pci_epf_linkup);
 
 /**
  * pci_epf_unbind() - Notify the function driver that the binding between the
@@ -67,9 +55,7 @@ void pci_epf_unbind(struct pci_epf *epf)
 		return;
 	}
 
-	mutex_lock(&epf->lock);
 	epf->driver->ops->unbind(epf);
-	mutex_unlock(&epf->lock);
 	module_put(epf->driver->owner);
 }
 EXPORT_SYMBOL_GPL(pci_epf_unbind);
@@ -83,8 +69,6 @@ EXPORT_SYMBOL_GPL(pci_epf_unbind);
  */
 int pci_epf_bind(struct pci_epf *epf)
 {
-	int ret;
-
 	if (!epf->driver) {
 		dev_WARN(&epf->dev, "epf device not bound to driver\n");
 		return -EINVAL;
@@ -93,71 +77,48 @@ int pci_epf_bind(struct pci_epf *epf)
 	if (!try_module_get(epf->driver->owner))
 		return -EAGAIN;
 
-	mutex_lock(&epf->lock);
-	ret = epf->driver->ops->bind(epf);
-	mutex_unlock(&epf->lock);
-
-	return ret;
+	return epf->driver->ops->bind(epf);
 }
 EXPORT_SYMBOL_GPL(pci_epf_bind);
 
 /**
  * pci_epf_free_space() - free the allocated PCI EPF register space
- * @epf: the EPF device from whom to free the memory
  * @addr: the virtual address of the PCI EPF register space
  * @bar: the BAR number corresponding to the register space
- * @type: Identifies if the allocated space is for primary EPC or secondary EPC
  *
  * Invoke to free the allocated PCI EPF register space.
  */
-void pci_epf_free_space(struct pci_epf *epf, void *addr, enum pci_barno bar,
-			enum pci_epc_interface_type type)
+void pci_epf_free_space(struct pci_epf *epf, void *addr, enum pci_barno bar)
 {
 	struct device *dev = epf->epc->dev.parent;
-	struct pci_epf_bar *epf_bar;
-	struct pci_epc *epc;
 
 	if (!addr)
 		return;
 
-	if (type == PRIMARY_INTERFACE) {
-		epc = epf->epc;
-		epf_bar = epf->bar;
-	} else {
-		epc = epf->sec_epc;
-		epf_bar = epf->sec_epc_bar;
-	}
+	dma_free_coherent(dev, epf->bar[bar].size, addr,
+			  epf->bar[bar].phys_addr);
 
-	dev = epc->dev.parent;
-	dma_free_coherent(dev, epf_bar[bar].size, addr,
-			  epf_bar[bar].phys_addr);
-
-	epf_bar[bar].phys_addr = 0;
-	epf_bar[bar].addr = NULL;
-	epf_bar[bar].size = 0;
-	epf_bar[bar].barno = 0;
-	epf_bar[bar].flags = 0;
+	epf->bar[bar].phys_addr = 0;
+	epf->bar[bar].size = 0;
+	epf->bar[bar].barno = 0;
+	epf->bar[bar].flags = 0;
 }
 EXPORT_SYMBOL_GPL(pci_epf_free_space);
 
 /**
  * pci_epf_alloc_space() - allocate memory for the PCI EPF register space
- * @epf: the EPF device to whom allocate the memory
  * @size: the size of the memory that has to be allocated
  * @bar: the BAR number corresponding to the allocated register space
  * @align: alignment size for the allocation region
- * @type: Identifies if the allocation is for primary EPC or secondary EPC
  *
  * Invoke to allocate memory for the PCI EPF register space.
  */
 void *pci_epf_alloc_space(struct pci_epf *epf, size_t size, enum pci_barno bar,
-			  size_t align, enum pci_epc_interface_type type)
+			  size_t align)
 {
-	struct pci_epf_bar *epf_bar;
-	dma_addr_t phys_addr;
-	struct pci_epc *epc;
-	struct device *dev;
 	void *space;
+	struct device *dev = epf->epc->dev.parent;
+	dma_addr_t phys_addr;
 
 	if (size < 128)
 		size = 128;
@@ -167,26 +128,16 @@ void *pci_epf_alloc_space(struct pci_epf *epf, size_t size, enum pci_barno bar,
 	else
 		size = roundup_pow_of_two(size);
 
-	if (type == PRIMARY_INTERFACE) {
-		epc = epf->epc;
-		epf_bar = epf->bar;
-	} else {
-		epc = epf->sec_epc;
-		epf_bar = epf->sec_epc_bar;
-	}
-
-	dev = epc->dev.parent;
 	space = dma_alloc_coherent(dev, size, &phys_addr, GFP_KERNEL);
 	if (!space) {
 		dev_err(dev, "failed to allocate mem space\n");
 		return NULL;
 	}
 
-	epf_bar[bar].phys_addr = phys_addr;
-	epf_bar[bar].addr = space;
-	epf_bar[bar].size = size;
-	epf_bar[bar].barno = bar;
-	epf_bar[bar].flags |= upper_32_bits(size) ?
+	epf->bar[bar].phys_addr = phys_addr;
+	epf->bar[bar].size = size;
+	epf->bar[bar].barno = bar;
+	epf->bar[bar].flags |= upper_32_bits(size) ?
 				PCI_BASE_ADDRESS_MEM_TYPE_64 :
 				PCI_BASE_ADDRESS_MEM_TYPE_32;
 
@@ -263,7 +214,7 @@ int __pci_epf_register_driver(struct pci_epf_driver *driver,
 	if (!driver->ops)
 		return -EINVAL;
 
-	if (!driver->ops->bind || !driver->ops->unbind)
+	if (!driver->ops->bind || !driver->ops->unbind || !driver->ops->linkup)
 		return -EINVAL;
 
 	driver->driver.bus = &pci_epf_bus_type;
@@ -321,7 +272,6 @@ struct pci_epf *pci_epf_create(const char *name)
 	device_initialize(dev);
 	dev->bus = &pci_epf_bus_type;
 	dev->type = &pci_epf_type;
-	mutex_init(&epf->lock);
 
 	ret = dev_set_name(dev, "%s", name);
 	if (ret) {
@@ -338,6 +288,22 @@ struct pci_epf *pci_epf_create(const char *name)
 	return epf;
 }
 EXPORT_SYMBOL_GPL(pci_epf_create);
+
+const struct pci_epf_device_id *
+pci_epf_match_device(const struct pci_epf_device_id *id, struct pci_epf *epf)
+{
+	if (!id || !epf)
+		return NULL;
+
+	while (*id->name) {
+		if (strcmp(epf->name, id->name) == 0)
+			return id;
+		id++;
+	}
+
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(pci_epf_match_device);
 
 static void pci_epf_dev_release(struct device *dev)
 {

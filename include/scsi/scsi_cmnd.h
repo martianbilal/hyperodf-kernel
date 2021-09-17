@@ -68,6 +68,7 @@ struct scsi_pointer {
 struct scsi_cmnd {
 	struct scsi_request req;
 	struct scsi_device *device;
+	struct list_head list;  /* scsi_cmnd participates in queue lists */
 	struct list_head eh_entry; /* entry for the host eh_cmd_q */
 	struct delayed_work abort_work;
 
@@ -141,7 +142,6 @@ struct scsi_cmnd {
 	unsigned long state;	/* Command completion state */
 
 	unsigned char tag;	/* SCSI-II queued command tag */
-	unsigned int extra_len;	/* length of alignment and padding */
 };
 
 /*
@@ -159,14 +159,14 @@ static inline struct scsi_driver *scsi_cmd_to_driver(struct scsi_cmnd *cmd)
 	return *(struct scsi_driver **)cmd->request->rq_disk->private_data;
 }
 
+extern void scsi_put_command(struct scsi_cmnd *);
 extern void scsi_finish_command(struct scsi_cmnd *cmd);
 
 extern void *scsi_kmap_atomic_sg(struct scatterlist *sg, int sg_count,
 				 size_t *offset, size_t *len);
 extern void scsi_kunmap_atomic_sg(void *virt);
 
-blk_status_t scsi_alloc_sgtables(struct scsi_cmnd *cmd);
-void scsi_free_sgtables(struct scsi_cmnd *cmd);
+extern blk_status_t scsi_init_io(struct scsi_cmnd *cmd);
 
 #ifdef CONFIG_SCSI_DMA
 extern int scsi_dma_map(struct scsi_cmnd *cmd);
@@ -307,11 +307,6 @@ static inline struct scsi_data_buffer *scsi_prot(struct scsi_cmnd *cmd)
 
 #define scsi_for_each_prot_sg(cmd, sg, nseg, __i)		\
 	for_each_sg(scsi_prot_sglist(cmd), sg, nseg, __i)
-
-static inline void set_status_byte(struct scsi_cmnd *cmd, char status)
-{
-	cmd->result = (cmd->result & 0xffffff00) | status;
-}
 
 static inline void set_msg_byte(struct scsi_cmnd *cmd, char status)
 {

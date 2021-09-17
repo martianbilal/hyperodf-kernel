@@ -1,7 +1,7 @@
 /*
  * Linux driver for VMware's vmxnet3 ethernet NIC.
  *
- * Copyright (C) 2008-2020, VMware, Inc. All Rights Reserved.
+ * Copyright (C) 2008-2016, VMware, Inc. All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -451,8 +451,12 @@ vmxnet3_tq_destroy(struct vmxnet3_tx_queue *tq,
 				  tq->comp_ring.base, tq->comp_ring.basePA);
 		tq->comp_ring.base = NULL;
 	}
-	kfree(tq->buf_info);
-	tq->buf_info = NULL;
+	if (tq->buf_info) {
+		dma_free_coherent(&adapter->pdev->dev,
+				  tq->tx_ring.size * sizeof(tq->buf_info[0]),
+				  tq->buf_info, tq->buf_info_pa);
+		tq->buf_info = NULL;
+	}
 }
 
 
@@ -501,6 +505,8 @@ static int
 vmxnet3_tq_create(struct vmxnet3_tx_queue *tq,
 		  struct vmxnet3_adapter *adapter)
 {
+	size_t sz;
+
 	BUG_ON(tq->tx_ring.base || tq->data_ring.base ||
 	       tq->comp_ring.base || tq->buf_info);
 
@@ -528,9 +534,9 @@ vmxnet3_tq_create(struct vmxnet3_tx_queue *tq,
 		goto err;
 	}
 
-	tq->buf_info = kcalloc_node(tq->tx_ring.size, sizeof(tq->buf_info[0]),
-				    GFP_KERNEL,
-				    dev_to_node(&adapter->pdev->dev));
+	sz = tq->tx_ring.size * sizeof(tq->buf_info[0]);
+	tq->buf_info = dma_alloc_coherent(&adapter->pdev->dev, sz,
+					  &tq->buf_info_pa, GFP_KERNEL);
 	if (!tq->buf_info)
 		goto err;
 
@@ -836,52 +842,26 @@ vmxnet3_parse_hdr(struct sk_buff *skb, struct vmxnet3_tx_queue *tq,
 	u8 protocol = 0;
 
 	if (ctx->mss) {	/* TSO */
-		if (VMXNET3_VERSION_GE_4(adapter) && skb->encapsulation) {
-			ctx->l4_offset = skb_inner_transport_offset(skb);
-			ctx->l4_hdr_size = inner_tcp_hdrlen(skb);
-			ctx->copy_size = ctx->l4_offset + ctx->l4_hdr_size;
-		} else {
-			ctx->l4_offset = skb_transport_offset(skb);
-			ctx->l4_hdr_size = tcp_hdrlen(skb);
-			ctx->copy_size = ctx->l4_offset + ctx->l4_hdr_size;
-		}
+		ctx->eth_ip_hdr_size = skb_transport_offset(skb);
+		ctx->l4_hdr_size = tcp_hdrlen(skb);
+		ctx->copy_size = ctx->eth_ip_hdr_size + ctx->l4_hdr_size;
 	} else {
 		if (skb->ip_summed == CHECKSUM_PARTIAL) {
-			/* For encap packets, skb_checksum_start_offset refers
-			 * to inner L4 offset. Thus, below works for encap as
-			 * well as non-encap case
-			 */
-			ctx->l4_offset = skb_checksum_start_offset(skb);
+			ctx->eth_ip_hdr_size = skb_checksum_start_offset(skb);
 
-			if (VMXNET3_VERSION_GE_4(adapter) &&
-			    skb->encapsulation) {
-				struct iphdr *iph = inner_ip_hdr(skb);
+			if (ctx->ipv4) {
+				const struct iphdr *iph = ip_hdr(skb);
 
-				if (iph->version == 4) {
-					protocol = iph->protocol;
-				} else {
-					const struct ipv6hdr *ipv6h;
+				protocol = iph->protocol;
+			} else if (ctx->ipv6) {
+				const struct ipv6hdr *ipv6h = ipv6_hdr(skb);
 
-					ipv6h = inner_ipv6_hdr(skb);
-					protocol = ipv6h->nexthdr;
-				}
-			} else {
-				if (ctx->ipv4) {
-					const struct iphdr *iph = ip_hdr(skb);
-
-					protocol = iph->protocol;
-				} else if (ctx->ipv6) {
-					const struct ipv6hdr *ipv6h;
-
-					ipv6h = ipv6_hdr(skb);
-					protocol = ipv6h->nexthdr;
-				}
+				protocol = ipv6h->nexthdr;
 			}
 
 			switch (protocol) {
 			case IPPROTO_TCP:
-				ctx->l4_hdr_size = skb->encapsulation ? inner_tcp_hdrlen(skb) :
-						   tcp_hdrlen(skb);
+				ctx->l4_hdr_size = tcp_hdrlen(skb);
 				break;
 			case IPPROTO_UDP:
 				ctx->l4_hdr_size = sizeof(struct udphdr);
@@ -891,10 +871,10 @@ vmxnet3_parse_hdr(struct sk_buff *skb, struct vmxnet3_tx_queue *tq,
 				break;
 			}
 
-			ctx->copy_size = min(ctx->l4_offset +
+			ctx->copy_size = min(ctx->eth_ip_hdr_size +
 					 ctx->l4_hdr_size, skb->len);
 		} else {
-			ctx->l4_offset = 0;
+			ctx->eth_ip_hdr_size = 0;
 			ctx->l4_hdr_size = 0;
 			/* copy as much as allowed */
 			ctx->copy_size = min_t(unsigned int,
@@ -950,25 +930,6 @@ vmxnet3_copy_hdr(struct sk_buff *skb, struct vmxnet3_tx_queue *tq,
 
 
 static void
-vmxnet3_prepare_inner_tso(struct sk_buff *skb,
-			  struct vmxnet3_tx_ctx *ctx)
-{
-	struct tcphdr *tcph = inner_tcp_hdr(skb);
-	struct iphdr *iph = inner_ip_hdr(skb);
-
-	if (iph->version == 4) {
-		iph->check = 0;
-		tcph->check = ~csum_tcpudp_magic(iph->saddr, iph->daddr, 0,
-						 IPPROTO_TCP, 0);
-	} else {
-		struct ipv6hdr *iph = inner_ipv6_hdr(skb);
-
-		tcph->check = ~csum_ipv6_magic(&iph->saddr, &iph->daddr, 0,
-					       IPPROTO_TCP, 0);
-	}
-}
-
-static void
 vmxnet3_prepare_tso(struct sk_buff *skb,
 		    struct vmxnet3_tx_ctx *ctx)
 {
@@ -981,7 +942,10 @@ vmxnet3_prepare_tso(struct sk_buff *skb,
 		tcph->check = ~csum_tcpudp_magic(iph->saddr, iph->daddr, 0,
 						 IPPROTO_TCP, 0);
 	} else if (ctx->ipv6) {
-		tcp_v6_gso_csum_prep(skb);
+		struct ipv6hdr *iph = ipv6_hdr(skb);
+
+		tcph->check = ~csum_ipv6_magic(&iph->saddr, &iph->daddr, 0,
+					       IPPROTO_TCP, 0);
 	}
 }
 
@@ -1042,11 +1006,7 @@ vmxnet3_tq_xmit(struct sk_buff *skb, struct vmxnet3_tx_queue *tq,
 			}
 			tq->stats.copy_skb_header++;
 		}
-		if (skb->encapsulation) {
-			vmxnet3_prepare_inner_tso(skb, &ctx);
-		} else {
-			vmxnet3_prepare_tso(skb, &ctx);
-		}
+		vmxnet3_prepare_tso(skb, &ctx);
 	} else {
 		if (unlikely(count > VMXNET3_MAX_TXD_PER_PKT)) {
 
@@ -1069,14 +1029,14 @@ vmxnet3_tq_xmit(struct sk_buff *skb, struct vmxnet3_tx_queue *tq,
 		BUG_ON(ret <= 0 && ctx.copy_size != 0);
 		/* hdrs parsed, check against other limits */
 		if (ctx.mss) {
-			if (unlikely(ctx.l4_offset + ctx.l4_hdr_size >
+			if (unlikely(ctx.eth_ip_hdr_size + ctx.l4_hdr_size >
 				     VMXNET3_MAX_TX_BUF_SIZE)) {
 				tq->stats.drop_oversized_hdr++;
 				goto drop_pkt;
 			}
 		} else {
 			if (skb->ip_summed == CHECKSUM_PARTIAL) {
-				if (unlikely(ctx.l4_offset +
+				if (unlikely(ctx.eth_ip_hdr_size +
 					     skb->csum_offset >
 					     VMXNET3_MAX_CSUM_OFFSET)) {
 					tq->stats.drop_oversized_hdr++;
@@ -1123,33 +1083,16 @@ vmxnet3_tq_xmit(struct sk_buff *skb, struct vmxnet3_tx_queue *tq,
 #endif
 	tx_num_deferred = le32_to_cpu(tq->shared->txNumDeferred);
 	if (ctx.mss) {
-		if (VMXNET3_VERSION_GE_4(adapter) && skb->encapsulation) {
-			gdesc->txd.hlen = ctx.l4_offset + ctx.l4_hdr_size;
-			gdesc->txd.om = VMXNET3_OM_ENCAP;
-			gdesc->txd.msscof = ctx.mss;
-
-			if (skb_shinfo(skb)->gso_type & SKB_GSO_UDP_TUNNEL_CSUM)
-				gdesc->txd.oco = 1;
-		} else {
-			gdesc->txd.hlen = ctx.l4_offset + ctx.l4_hdr_size;
-			gdesc->txd.om = VMXNET3_OM_TSO;
-			gdesc->txd.msscof = ctx.mss;
-		}
+		gdesc->txd.hlen = ctx.eth_ip_hdr_size + ctx.l4_hdr_size;
+		gdesc->txd.om = VMXNET3_OM_TSO;
+		gdesc->txd.msscof = ctx.mss;
 		num_pkts = (skb->len - gdesc->txd.hlen + ctx.mss - 1) / ctx.mss;
 	} else {
 		if (skb->ip_summed == CHECKSUM_PARTIAL) {
-			if (VMXNET3_VERSION_GE_4(adapter) &&
-			    skb->encapsulation) {
-				gdesc->txd.hlen = ctx.l4_offset +
-						  ctx.l4_hdr_size;
-				gdesc->txd.om = VMXNET3_OM_ENCAP;
-				gdesc->txd.msscof = 0;		/* Reserved */
-			} else {
-				gdesc->txd.hlen = ctx.l4_offset;
-				gdesc->txd.om = VMXNET3_OM_CSUM;
-				gdesc->txd.msscof = ctx.l4_offset +
-						    skb->csum_offset;
-			}
+			gdesc->txd.hlen = ctx.eth_ip_hdr_size;
+			gdesc->txd.om = VMXNET3_OM_CSUM;
+			gdesc->txd.msscof = ctx.eth_ip_hdr_size +
+					    skb->csum_offset;
 		} else {
 			gdesc->txd.om = 0;
 			gdesc->txd.msscof = 0;
@@ -1228,21 +1171,13 @@ vmxnet3_rx_csum(struct vmxnet3_adapter *adapter,
 		    (le32_to_cpu(gdesc->dword[3]) &
 		     VMXNET3_RCD_CSUM_OK) == VMXNET3_RCD_CSUM_OK) {
 			skb->ip_summed = CHECKSUM_UNNECESSARY;
-			WARN_ON_ONCE(!(gdesc->rcd.tcp || gdesc->rcd.udp) &&
-				     !(le32_to_cpu(gdesc->dword[0]) &
-				     (1UL << VMXNET3_RCD_HDR_INNER_SHIFT)));
-			WARN_ON_ONCE(gdesc->rcd.frg &&
-				     !(le32_to_cpu(gdesc->dword[0]) &
-				     (1UL << VMXNET3_RCD_HDR_INNER_SHIFT)));
+			BUG_ON(!(gdesc->rcd.tcp || gdesc->rcd.udp));
+			BUG_ON(gdesc->rcd.frg);
 		} else if (gdesc->rcd.v6 && (le32_to_cpu(gdesc->dword[3]) &
 					     (1 << VMXNET3_RCD_TUC_SHIFT))) {
 			skb->ip_summed = CHECKSUM_UNNECESSARY;
-			WARN_ON_ONCE(!(gdesc->rcd.tcp || gdesc->rcd.udp) &&
-				     !(le32_to_cpu(gdesc->dword[0]) &
-				     (1UL << VMXNET3_RCD_HDR_INNER_SHIFT)));
-			WARN_ON_ONCE(gdesc->rcd.frg &&
-				     !(le32_to_cpu(gdesc->dword[0]) &
-				     (1UL << VMXNET3_RCD_HDR_INNER_SHIFT)));
+			BUG_ON(!(gdesc->rcd.tcp || gdesc->rcd.udp));
+			BUG_ON(gdesc->rcd.frg);
 		} else {
 			if (gdesc->rcd.csum) {
 				skb->csum = htons(gdesc->rcd.csum);
@@ -1731,9 +1666,13 @@ static void vmxnet3_rq_destroy(struct vmxnet3_rx_queue *rq,
 		rq->comp_ring.base = NULL;
 	}
 
-	kfree(rq->buf_info[0]);
-	rq->buf_info[0] = NULL;
-	rq->buf_info[1] = NULL;
+	if (rq->buf_info[0]) {
+		size_t sz = sizeof(struct vmxnet3_rx_buf_info) *
+			(rq->rx_ring[0].size + rq->rx_ring[1].size);
+		dma_free_coherent(&adapter->pdev->dev, sz, rq->buf_info[0],
+				  rq->buf_info_pa);
+		rq->buf_info[0] = rq->buf_info[1] = NULL;
+	}
 }
 
 static void
@@ -1873,9 +1812,10 @@ vmxnet3_rq_create(struct vmxnet3_rx_queue *rq, struct vmxnet3_adapter *adapter)
 		goto err;
 	}
 
-	bi = kcalloc_node(rq->rx_ring[0].size + rq->rx_ring[1].size,
-			  sizeof(rq->buf_info[0][0]), GFP_KERNEL,
-			  dev_to_node(&adapter->pdev->dev));
+	sz = sizeof(struct vmxnet3_rx_buf_info) * (rq->rx_ring[0].size +
+						   rq->rx_ring[1].size);
+	bi = dma_alloc_coherent(&adapter->pdev->dev, sz, &rq->buf_info_pa,
+				GFP_KERNEL);
 	if (!bi)
 		goto err;
 
@@ -2492,10 +2432,6 @@ vmxnet3_setup_driver_shared(struct vmxnet3_adapter *adapter)
 	if (adapter->netdev->features & NETIF_F_HW_VLAN_CTAG_RX)
 		devRead->misc.uptFeatures |= UPT1_F_RXVLAN;
 
-	if (adapter->netdev->features & (NETIF_F_GSO_UDP_TUNNEL |
-					 NETIF_F_GSO_UDP_TUNNEL_CSUM))
-		devRead->misc.uptFeatures |= UPT1_F_RXINNEROFLD;
-
 	devRead->misc.mtu = cpu_to_le32(adapter->netdev->mtu);
 	devRead->misc.queueDescPA = cpu_to_le64(adapter->queue_desc_pa);
 	devRead->misc.queueDescLen = cpu_to_le32(
@@ -2511,12 +2447,14 @@ vmxnet3_setup_driver_shared(struct vmxnet3_adapter *adapter)
 		tqc->txRingBasePA   = cpu_to_le64(tq->tx_ring.basePA);
 		tqc->dataRingBasePA = cpu_to_le64(tq->data_ring.basePA);
 		tqc->compRingBasePA = cpu_to_le64(tq->comp_ring.basePA);
-		tqc->ddPA           = cpu_to_le64(~0ULL);
+		tqc->ddPA           = cpu_to_le64(tq->buf_info_pa);
 		tqc->txRingSize     = cpu_to_le32(tq->tx_ring.size);
 		tqc->dataRingSize   = cpu_to_le32(tq->data_ring.size);
 		tqc->txDataRingDescSize = cpu_to_le32(tq->txdata_desc_size);
 		tqc->compRingSize   = cpu_to_le32(tq->comp_ring.size);
-		tqc->ddLen          = cpu_to_le32(0);
+		tqc->ddLen          = cpu_to_le32(
+					sizeof(struct vmxnet3_tx_buf_info) *
+					tqc->txRingSize);
 		tqc->intrIdx        = tq->comp_ring.intr_idx;
 	}
 
@@ -2528,11 +2466,14 @@ vmxnet3_setup_driver_shared(struct vmxnet3_adapter *adapter)
 		rqc->rxRingBasePA[0] = cpu_to_le64(rq->rx_ring[0].basePA);
 		rqc->rxRingBasePA[1] = cpu_to_le64(rq->rx_ring[1].basePA);
 		rqc->compRingBasePA  = cpu_to_le64(rq->comp_ring.basePA);
-		rqc->ddPA            = cpu_to_le64(~0ULL);
+		rqc->ddPA            = cpu_to_le64(rq->buf_info_pa);
 		rqc->rxRingSize[0]   = cpu_to_le32(rq->rx_ring[0].size);
 		rqc->rxRingSize[1]   = cpu_to_le32(rq->rx_ring[1].size);
 		rqc->compRingSize    = cpu_to_le32(rq->comp_ring.size);
-		rqc->ddLen           = cpu_to_le32(0);
+		rqc->ddLen           = cpu_to_le32(
+					sizeof(struct vmxnet3_rx_buf_info) *
+					(rqc->rxRingSize[0] +
+					 rqc->rxRingSize[1]));
 		rqc->intrIdx         = rq->comp_ring.intr_idx;
 		if (VMXNET3_VERSION_GE_3(adapter)) {
 			rqc->rxDataRingBasePA =
@@ -2616,39 +2557,6 @@ vmxnet3_init_coalesce(struct vmxnet3_adapter *adapter)
 	spin_unlock_irqrestore(&adapter->cmd_lock, flags);
 }
 
-static void
-vmxnet3_init_rssfields(struct vmxnet3_adapter *adapter)
-{
-	struct Vmxnet3_DriverShared *shared = adapter->shared;
-	union Vmxnet3_CmdInfo *cmdInfo = &shared->cu.cmdInfo;
-	unsigned long flags;
-
-	if (!VMXNET3_VERSION_GE_4(adapter))
-		return;
-
-	spin_lock_irqsave(&adapter->cmd_lock, flags);
-
-	if (adapter->default_rss_fields) {
-		VMXNET3_WRITE_BAR1_REG(adapter, VMXNET3_REG_CMD,
-				       VMXNET3_CMD_GET_RSS_FIELDS);
-		adapter->rss_fields =
-			VMXNET3_READ_BAR1_REG(adapter, VMXNET3_REG_CMD);
-	} else {
-		cmdInfo->setRssFields = adapter->rss_fields;
-		VMXNET3_WRITE_BAR1_REG(adapter, VMXNET3_REG_CMD,
-				       VMXNET3_CMD_SET_RSS_FIELDS);
-		/* Not all requested RSS may get applied, so get and
-		 * cache what was actually applied.
-		 */
-		VMXNET3_WRITE_BAR1_REG(adapter, VMXNET3_REG_CMD,
-				       VMXNET3_CMD_GET_RSS_FIELDS);
-		adapter->rss_fields =
-			VMXNET3_READ_BAR1_REG(adapter, VMXNET3_REG_CMD);
-	}
-
-	spin_unlock_irqrestore(&adapter->cmd_lock, flags);
-}
-
 int
 vmxnet3_activate_dev(struct vmxnet3_adapter *adapter)
 {
@@ -2698,7 +2606,6 @@ vmxnet3_activate_dev(struct vmxnet3_adapter *adapter)
 	}
 
 	vmxnet3_init_coalesce(adapter);
-	vmxnet3_init_rssfields(adapter);
 
 	for (i = 0; i < adapter->num_rx_queues; i++) {
 		VMXNET3_WRITE_BAR0_REG(adapter,
@@ -3135,18 +3042,6 @@ vmxnet3_declare_features(struct vmxnet3_adapter *adapter, bool dma64)
 		NETIF_F_HW_CSUM | NETIF_F_HW_VLAN_CTAG_TX |
 		NETIF_F_HW_VLAN_CTAG_RX | NETIF_F_TSO | NETIF_F_TSO6 |
 		NETIF_F_LRO;
-
-	if (VMXNET3_VERSION_GE_4(adapter)) {
-		netdev->hw_features |= NETIF_F_GSO_UDP_TUNNEL |
-				NETIF_F_GSO_UDP_TUNNEL_CSUM;
-
-		netdev->hw_enc_features = NETIF_F_SG | NETIF_F_RXCSUM |
-			NETIF_F_HW_CSUM | NETIF_F_HW_VLAN_CTAG_TX |
-			NETIF_F_HW_VLAN_CTAG_RX | NETIF_F_TSO | NETIF_F_TSO6 |
-			NETIF_F_LRO | NETIF_F_GSO_UDP_TUNNEL |
-			NETIF_F_GSO_UDP_TUNNEL_CSUM;
-	}
-
 	if (dma64)
 		netdev->hw_features |= NETIF_F_HIGHDMA;
 	netdev->vlan_features = netdev->hw_features &
@@ -3353,7 +3248,6 @@ vmxnet3_probe_device(struct pci_dev *pdev,
 		.ndo_change_mtu = vmxnet3_change_mtu,
 		.ndo_fix_features = vmxnet3_fix_features,
 		.ndo_set_features = vmxnet3_set_features,
-		.ndo_features_check = vmxnet3_features_check,
 		.ndo_get_stats64 = vmxnet3_get_stats64,
 		.ndo_tx_timeout = vmxnet3_tx_timeout,
 		.ndo_set_rx_mode = vmxnet3_set_mc,
@@ -3491,12 +3385,7 @@ vmxnet3_probe_device(struct pci_dev *pdev,
 		goto err_alloc_pci;
 
 	ver = VMXNET3_READ_BAR1_REG(adapter, VMXNET3_REG_VRRS);
-	if (ver & (1 << VMXNET3_REV_4)) {
-		VMXNET3_WRITE_BAR1_REG(adapter,
-				       VMXNET3_REG_VRRS,
-				       1 << VMXNET3_REV_4);
-		adapter->version = VMXNET3_REV_4 + 1;
-	} else if (ver & (1 << VMXNET3_REV_3)) {
+	if (ver & (1 << VMXNET3_REV_3)) {
 		VMXNET3_WRITE_BAR1_REG(adapter,
 				       VMXNET3_REG_VRRS,
 				       1 << VMXNET3_REV_3);
@@ -3542,11 +3431,6 @@ vmxnet3_probe_device(struct pci_dev *pdev,
 		}
 		adapter->coal_conf->coalMode = VMXNET3_COALESCE_DISABLED;
 		adapter->default_coal_mode = true;
-	}
-
-	if (VMXNET3_VERSION_GE_4(adapter)) {
-		adapter->default_rss_fields = true;
-		adapter->rss_fields = VMXNET3_RSS_FIELDS_DEFAULT;
 	}
 
 	SET_NETDEV_DEV(netdev, &pdev->dev);

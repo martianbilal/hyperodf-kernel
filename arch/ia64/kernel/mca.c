@@ -91,13 +91,11 @@
 #include <linux/gfp.h>
 
 #include <asm/delay.h>
-#include <asm/efi.h>
 #include <asm/meminit.h>
 #include <asm/page.h>
 #include <asm/ptrace.h>
 #include <asm/sal.h>
 #include <asm/mca.h>
-#include <asm/mca_asm.h>
 #include <asm/kexec.h>
 
 #include <asm/irq.h>
@@ -106,7 +104,6 @@
 
 #include "mca_drv.h"
 #include "entry.h"
-#include "irq.h"
 
 #if defined(IA64_MCA_DEBUG_INFO)
 # define IA64_MCA_DEBUG(fmt...)	printk(fmt)
@@ -896,7 +893,7 @@ static void
 finish_pt_regs(struct pt_regs *regs, struct ia64_sal_os_state *sos,
 		unsigned long *nat)
 {
-	const struct pal_min_state_area *ms = sos->pal_min_state;
+	const pal_min_state_area_t *ms = sos->pal_min_state;
 	const u64 *bank;
 
 	/* If ipsr.ic then use pmsa_{iip,ipsr,ifs}, else use
@@ -972,7 +969,7 @@ ia64_mca_modify_original_stack(struct pt_regs *regs,
 	char *p;
 	ia64_va va;
 	extern char ia64_leave_kernel[];	/* Need asm address, not function descriptor */
-	const struct pal_min_state_area *ms = sos->pal_min_state;
+	const pal_min_state_area_t *ms = sos->pal_min_state;
 	struct task_struct *previous_current;
 	struct pt_regs *old_regs;
 	struct switch_stack *old_sw;
@@ -1633,7 +1630,7 @@ default_monarch_init_process(struct notifier_block *self, unsigned long val, voi
 	if (read_trylock(&tasklist_lock)) {
 		do_each_thread (g, t) {
 			printk("\nBacktrace of pid %d (%s)\n", t->pid, t->comm);
-			show_stack(t, NULL, KERN_DEFAULT);
+			show_stack(t, NULL);
 		} while_each_thread (g, t);
 		read_unlock(&tasklist_lock);
 	}
@@ -1769,6 +1766,36 @@ ia64_mca_disable_cpe_polling(char *str)
 
 __setup("disable_cpe_poll", ia64_mca_disable_cpe_polling);
 
+static struct irqaction cmci_irqaction = {
+	.handler =	ia64_mca_cmc_int_handler,
+	.name =		"cmc_hndlr"
+};
+
+static struct irqaction cmcp_irqaction = {
+	.handler =	ia64_mca_cmc_int_caller,
+	.name =		"cmc_poll"
+};
+
+static struct irqaction mca_rdzv_irqaction = {
+	.handler =	ia64_mca_rendez_int_handler,
+	.name =		"mca_rdzv"
+};
+
+static struct irqaction mca_wkup_irqaction = {
+	.handler =	ia64_mca_wakeup_int_handler,
+	.name =		"mca_wkup"
+};
+
+static struct irqaction mca_cpe_irqaction = {
+	.handler =	ia64_mca_cpe_int_handler,
+	.name =		"cpe_hndlr"
+};
+
+static struct irqaction mca_cpep_irqaction = {
+	.handler =	ia64_mca_cpe_int_caller,
+	.name =		"cpe_poll"
+};
+
 /* Minimal format of the MCA/INIT stacks.  The pseudo processes that run on
  * these stacks can never sleep, they cannot return from the kernel to user
  * space, they do not appear in a normal ps listing.  So there is no need to
@@ -1824,7 +1851,7 @@ ia64_mca_cpu_init(void *cpu_data)
 			data = mca_bootmem();
 			first_time = 0;
 		} else
-			data = (void *)__get_free_pages(GFP_ATOMIC,
+			data = (void *)__get_free_pages(GFP_KERNEL,
 							get_order(sz));
 		if (!data)
 			panic("Could not allocate MCA memory for cpu %d\n",
@@ -2029,23 +2056,18 @@ void __init ia64_mca_irq_init(void)
 	 *  Configure the CMCI/P vector and handler. Interrupts for CMC are
 	 *  per-processor, so AP CMC interrupts are setup in smp_callin() (smpboot.c).
 	 */
-	register_percpu_irq(IA64_CMC_VECTOR, ia64_mca_cmc_int_handler, 0,
-			    "cmc_hndlr");
-	register_percpu_irq(IA64_CMCP_VECTOR, ia64_mca_cmc_int_caller, 0,
-			    "cmc_poll");
+	register_percpu_irq(IA64_CMC_VECTOR, &cmci_irqaction);
+	register_percpu_irq(IA64_CMCP_VECTOR, &cmcp_irqaction);
 	ia64_mca_cmc_vector_setup();       /* Setup vector on BSP */
 
 	/* Setup the MCA rendezvous interrupt vector */
-	register_percpu_irq(IA64_MCA_RENDEZ_VECTOR, ia64_mca_rendez_int_handler,
-			    0, "mca_rdzv");
+	register_percpu_irq(IA64_MCA_RENDEZ_VECTOR, &mca_rdzv_irqaction);
 
 	/* Setup the MCA wakeup interrupt vector */
-	register_percpu_irq(IA64_MCA_WAKEUP_VECTOR, ia64_mca_wakeup_int_handler,
-			    0, "mca_wkup");
+	register_percpu_irq(IA64_MCA_WAKEUP_VECTOR, &mca_wkup_irqaction);
 
 	/* Setup the CPEI/P handler */
-	register_percpu_irq(IA64_CPEP_VECTOR, ia64_mca_cpe_int_caller, 0,
-			    "cpe_poll");
+	register_percpu_irq(IA64_CPEP_VECTOR, &mca_cpep_irqaction);
 }
 
 /*
@@ -2086,9 +2108,7 @@ ia64_mca_late_init(void)
 			if (irq > 0) {
 				cpe_poll_enabled = 0;
 				irq_set_status_flags(irq, IRQ_PER_CPU);
-				if (request_irq(irq, ia64_mca_cpe_int_handler,
-						0, "cpe_hndlr", NULL))
-					pr_err("Failed to register cpe_hndlr interrupt\n");
+				setup_irq(irq, &mca_cpe_irqaction);
 				ia64_cpe_irq = irq;
 				ia64_mca_register_cpev(cpe_vector);
 				IA64_MCA_DEBUG("%s: CPEI/P setup and enabled.\n",
