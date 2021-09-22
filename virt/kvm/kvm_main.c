@@ -3302,6 +3302,7 @@ static int kvm_ioctl_create_device(struct kvm *kvm,
 static long kvm_vm_ioctl_check_extension_generic(struct kvm *kvm, long arg)
 {
 	switch (arg) {
+	case KVM_CAP_FORK:
 	case KVM_CAP_USER_MEMORY:
 	case KVM_CAP_DESTROY_MEMORY_REGION_WORKS:
 	case KVM_CAP_JOIN_MEMORY_REGIONS_WORKS:
@@ -3370,12 +3371,16 @@ static long kvm_vm_ioctl(struct file *filp,
 	struct kvm *kvm = filp->private_data;
 	void __user *argp = (void __user *)arg;
 	int r;
-
+	printk(KERN_ALERT"kvm_fork : %u", KVM_FORK);
 	if (kvm->mm != current->mm)
 		return -EIO;
 	switch (ioctl) {
 	case KVM_CREATE_VCPU:
 		r = kvm_vm_ioctl_create_vcpu(kvm, arg);
+		break;
+	case KVM_FORK:
+		r = 0;
+		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Fork the vm >>>>>>>>>>>>>>>>>>>>>>>\n\n");
 		break;
 	case KVM_ENABLE_CAP: {
 		struct kvm_enable_cap cap;

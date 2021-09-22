@@ -13,7 +13,7 @@
 #include <linux/ioctl.h>
 #include <asm/kvm.h>
 
-#define KVM_API_VERSION 12
+#define KVM_API_VERSION 13
 
 /* *** Deprecated interfaces *** */
 
@@ -1010,6 +1010,7 @@ struct kvm_ppc_resize_hpt {
 #define KVM_CAP_ARM_NISV_TO_USER 177
 #define KVM_CAP_ARM_INJECT_EXT_DABT 178
 #define KVM_CAP_S390_VCPU_RESETS 179
+#define KVM_CAP_FORK 180
 
 #ifdef KVM_CAP_IRQ_ROUTING
 
@@ -1250,6 +1251,7 @@ struct kvm_vfio_spapr_tce {
 /*
  * ioctls for VM fds
  */
+// #define KVM_FORK _IOW(KVMIO, 0xff)
 #define KVM_SET_MEMORY_REGION     _IOW(KVMIO,  0x40, struct kvm_memory_region)
 /*
  * KVM_CREATE_VCPU receives as a parameter the vcpu slot, and returns
@@ -1477,6 +1479,9 @@ struct kvm_enc_region {
 /* Available with  KVM_CAP_S390_VCPU_RESETS */
 #define KVM_S390_NORMAL_RESET	_IO(KVMIO,   0xc3)
 #define KVM_S390_CLEAR_RESET	_IO(KVMIO,   0xc4)
+
+/* Available with KVM_CAP_FORK*/
+#define KVM_FORK	_IO(KVMIO, 0xc5)
 
 /* Secure Encrypted Virtualization command */
 enum sev_cmd_id {

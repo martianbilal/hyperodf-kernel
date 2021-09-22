@@ -3358,6 +3358,7 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 	case KVM_CAP_GET_MSR_FEATURES:
 	case KVM_CAP_MSR_PLATFORM_INFO:
 	case KVM_CAP_EXCEPTION_PAYLOAD:
+	case KVM_CAP_FORK:
 		r = 1;
 		break;
 	case KVM_CAP_SYNC_REGS:
@@ -4265,6 +4266,7 @@ long kvm_arch_vcpu_ioctl(struct file *filp,
 		r = 0;
 		break;
 	}
+	
 	case KVM_SET_LAPIC: {
 		r = -EINVAL;
 		if (!lapic_in_kernel(vcpu))
@@ -4961,6 +4963,10 @@ long kvm_arch_vm_ioctl(struct file *filp,
 	} u;
 
 	switch (ioctl) {
+	case KVM_FORK:
+		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Fork the vm >>>>>>>>>>>>>>>>>>>>>>>\n\n");
+		r = 0;
+		break;
 	case KVM_SET_TSS_ADDR:
 		r = kvm_vm_ioctl_set_tss_addr(kvm, arg);
 		break;

@@ -1,2 +1,0 @@
-break trace_kvm_page_fault
-
