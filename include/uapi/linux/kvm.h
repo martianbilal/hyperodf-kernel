@@ -73,6 +73,7 @@ struct kvm_breakpoint {
 	__u64 address;
 };
 
+
 struct kvm_debug_guest {
 	__u32 enabled;
 	__u32 pad;
@@ -100,6 +101,14 @@ struct kvm_userspace_memory_region {
 	__u64 guest_phys_addr;
 	__u64 memory_size; /* bytes */
 	__u64 userspace_addr; /* start of the userspace allocated memory */
+};
+
+
+/* for KVM_FORK*/
+struct fork_info { 
+	struct kvm_userspace_memory_region kvm_userspace_mem;
+	int vm_fd;
+	int vcpu_fd;
 };
 
 /*
@@ -1481,7 +1490,7 @@ struct kvm_enc_region {
 #define KVM_S390_CLEAR_RESET	_IO(KVMIO,   0xc4)
 
 /* Available with KVM_CAP_FORK*/
-#define KVM_FORK	_IO(KVMIO, 0xc5)
+#define KVM_FORK	_IOWR(KVMIO, 0xc5, struct fork_info)
 
 /* Secure Encrypted Virtualization command */
 enum sev_cmd_id {

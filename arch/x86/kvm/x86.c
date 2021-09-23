@@ -4963,10 +4963,17 @@ long kvm_arch_vm_ioctl(struct file *filp,
 	} u;
 
 	switch (ioctl) {
-	case KVM_FORK:
-		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Fork the vm >>>>>>>>>>>>>>>>>>>>>>>\n\n");
-		r = 0;
-		break;
+	// case KVM_FORK:
+	// 	int vm_sys_fd; 
+	// 	printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Fork the vm >>>>>>>>>>>>>>>>>>>>>>>\n\n");
+	// 	r = 0;
+	// 	vm_sys_fd = open("/dev/kvm", O_RDWR);
+	// 	if (vm_sys_fd < 0) {
+	// 		perror("open /dev/kvm");
+	// 		exit(1);
+	// 	}
+	// 	printk("vm FD : %lu", vm_sys_fd)
+	// 	break;
 	case KVM_SET_TSS_ADDR:
 		r = kvm_vm_ioctl_set_tss_addr(kvm, arg);
 		break;

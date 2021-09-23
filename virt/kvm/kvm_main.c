@@ -3378,10 +3378,7 @@ static long kvm_vm_ioctl(struct file *filp,
 	case KVM_CREATE_VCPU:
 		r = kvm_vm_ioctl_create_vcpu(kvm, arg);
 		break;
-	case KVM_FORK:
-		r = 0;
-		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Fork the vm >>>>>>>>>>>>>>>>>>>>>>>\n\n");
-		break;
+	
 	case KVM_ENABLE_CAP: {
 		struct kvm_enable_cap cap;
 
@@ -3666,6 +3663,38 @@ static long kvm_dev_ioctl(struct file *filp,
 	case KVM_CREATE_VM:
 		r = kvm_dev_ioctl_create_vm(arg);
 		break;
+	case KVM_FORK: {
+		struct kvm *kvm = filp->private_data;
+		void __user *argp = (void __user *)arg;
+		struct fork_info __user *user_fork_info = argp;
+		struct fork_info info; 
+		struct kvm_userspace_memory_region kvm_userspace_mem;
+		int vm_fd; 
+		int vcpu_fd;
+
+		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Fork the vm >>>>>>>>>>>>>>>>>>>>>>>\n\n");
+
+		if (copy_from_user(&info, user_fork_info, sizeof(info)))
+			goto out;
+
+		vm_fd = kvm_dev_ioctl_create_vm(0);
+		if (0xff000000 > (unsigned int)(-3 * PAGE_SIZE))
+			return -EINVAL;
+		r = kvm_x86_ops->set_tss_addr(kvm, 0xff000000);
+
+		kvm_userspace_mem.slot = 0; 
+		kvm_userspace_mem.flags = 0;
+		kvm_userspace_mem.guest_phys_addr = 0;
+		kvm_vm_ioctl_set_memory_region(kvm, &kvm_userspace_mem);
+		vcpu_fd = kvm_vm_ioctl_create_vcpu(kvm, arg);
+		info.vm_fd = vm_fd;
+		info.vcpu_fd = vcpu_fd;
+		if (copy_to_user(user_fork_info, &info, sizeof(struct fork_info)))
+			goto out;
+
+		r = 0;
+		break;
+	}
 	case KVM_CHECK_EXTENSION:
 		r = kvm_vm_ioctl_check_extension_generic(NULL, arg);
 		break;
