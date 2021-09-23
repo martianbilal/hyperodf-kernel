@@ -3653,7 +3653,7 @@ static long kvm_dev_ioctl(struct file *filp,
 			  unsigned int ioctl, unsigned long arg)
 {
 	long r = -EINVAL;
-
+	
 	switch (ioctl) {
 	case KVM_GET_API_VERSION:
 		if (arg)
@@ -3665,6 +3665,8 @@ static long kvm_dev_ioctl(struct file *filp,
 		break;
 	case KVM_FORK: {
 		struct kvm *kvm = filp->private_data;
+		struct file* vm_file;
+		struct fd f; 
 		void __user *argp = (void __user *)arg;
 		struct fork_info __user *user_fork_info = argp;
 		struct fork_info info; 
@@ -3674,21 +3676,36 @@ static long kvm_dev_ioctl(struct file *filp,
 
 		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Fork the vm >>>>>>>>>>>>>>>>>>>>>>>\n\n");
 
+		printk(KERN_ALERT "Value of Parent VM file in Kernel : %lu", (long unsigned int)filp);
+
 		if (copy_from_user(&info, user_fork_info, sizeof(info)))
 			goto out;
 
 		vm_fd = kvm_dev_ioctl_create_vm(0);
+		f = fdget(vm_fd); 
+		if (!f.file)
+			return -EBADF;
+
+		vm_file = f.file;
+		//
+		printk(KERN_ALERT "Value of VM FD in Kernel : %u", vm_fd);
+		printk(KERN_ALERT "Value of VM file in Kernel : %lu", (long unsigned int)vm_file);
 		if (0xff000000 > (unsigned int)(-3 * PAGE_SIZE))
 			return -EINVAL;
-		r = kvm_x86_ops->set_tss_addr(kvm, 0xff000000);
+		
+		r = vfs_ioctl(vm_file, KVM_SET_TSS_ADDR ,0xff000000);
+
 
 		kvm_userspace_mem.slot = 0; 
 		kvm_userspace_mem.flags = 0;
 		kvm_userspace_mem.guest_phys_addr = 0;
-		kvm_vm_ioctl_set_memory_region(kvm, &kvm_userspace_mem);
-		vcpu_fd = kvm_vm_ioctl_create_vcpu(kvm, arg);
+		kvm_userspace_mem.userspace_addr = info.kvm_userspace_mem.userspace_addr;
+		printk(KERN_ALERT "%llu\n",info.kvm_userspace_mem.userspace_addr);
+		r = vfs_ioctl(vm_file, KVM_SET_USER_MEMORY_REGION, &kvm_userspace_mem);
+		vcpu_fd = vfs_ioctl(vm_file, KVM_CREATE_VCPU, 0);
 		info.vm_fd = vm_fd;
 		info.vcpu_fd = vcpu_fd;
+		printk("the vm fd ::::: %u \n the vcpu fd ::::: %u", vm_fd, vcpu_fd);
 		if (copy_to_user(user_fork_info, &info, sizeof(struct fork_info)))
 			goto out;
 
