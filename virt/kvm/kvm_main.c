@@ -3690,18 +3690,16 @@ static long kvm_dev_ioctl(struct file *filp,
 		//
 		printk(KERN_ALERT "Value of VM FD in Kernel : %u", vm_fd);
 		printk(KERN_ALERT "Value of VM file in Kernel : %lu", (long unsigned int)vm_file);
-		if (0xff000000 > (unsigned int)(-3 * PAGE_SIZE))
-			return -EINVAL;
 		
-		r = vfs_ioctl(vm_file, KVM_SET_TSS_ADDR ,0xff000000);
+		r = vfs_ioctl(vm_file, KVM_SET_TSS_ADDR ,0xfffbd000);
 
 
 		kvm_userspace_mem.slot = 0; 
 		kvm_userspace_mem.flags = 0;
 		kvm_userspace_mem.guest_phys_addr = 0;
-		kvm_userspace_mem.userspace_addr = info.kvm_userspace_mem.userspace_addr;
-		printk(KERN_ALERT "%llu\n",info.kvm_userspace_mem.userspace_addr);
-		r = vfs_ioctl(vm_file, KVM_SET_USER_MEMORY_REGION, &kvm_userspace_mem);
+		kvm_userspace_mem.userspace_addr = (unsigned long)info.kvm_userspace_mem.userspace_addr;
+		printk(KERN_ALERT "Value of userspace mem in kernel --> %llu\n",kvm_userspace_mem.userspace_addr);
+		r = vfs_ioctl(vm_file, KVM_SET_USER_MEMORY_REGION, (unsigned long)&kvm_userspace_mem);
 		vcpu_fd = vfs_ioctl(vm_file, KVM_CREATE_VCPU, 0);
 		info.vm_fd = vm_fd;
 		info.vcpu_fd = vcpu_fd;
