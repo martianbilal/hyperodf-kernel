@@ -131,6 +131,13 @@ static int rvt_query_device(struct ib_device *ibdev,
 	return 0;
 }
 
+static int rvt_get_numa_node(struct ib_device *ibdev)
+{
+	struct rvt_dev_info *rdi = ib_to_rvt(ibdev);
+
+	return rdi->dparms.node;
+}
+
 static int rvt_modify_device(struct ib_device *device,
 			     int device_modify_mask,
 			     struct ib_device_modify *device_modify)
@@ -144,22 +151,19 @@ static int rvt_modify_device(struct ib_device *device,
 }
 
 /**
- * rvt_query_port: Passes the query port call to the driver
+ * rvt_query_port - Passes the query port call to the driver
  * @ibdev: Verbs IB dev
  * @port_num: port number, 1 based from ib core
  * @props: structure to hold returned properties
  *
  * Return: 0 on success
  */
-static int rvt_query_port(struct ib_device *ibdev, u8 port_num,
+static int rvt_query_port(struct ib_device *ibdev, u32 port_num,
 			  struct ib_port_attr *props)
 {
 	struct rvt_dev_info *rdi = ib_to_rvt(ibdev);
 	struct rvt_ibport *rvp;
-	int port_index = ibport_num_to_idx(ibdev, port_num);
-
-	if (port_index < 0)
-		return -EINVAL;
+	u32 port_index = ibport_num_to_idx(ibdev, port_num);
 
 	rvp = rdi->ports[port_index];
 	/* props being zeroed by the caller, avoid zeroing it here */
@@ -178,7 +182,7 @@ static int rvt_query_port(struct ib_device *ibdev, u8 port_num,
 }
 
 /**
- * rvt_modify_port
+ * rvt_modify_port - modify port
  * @ibdev: Verbs IB dev
  * @port_num: Port number, 1 based from ib core
  * @port_modify_mask: How to change the port
@@ -186,16 +190,13 @@ static int rvt_query_port(struct ib_device *ibdev, u8 port_num,
  *
  * Return: 0 on success
  */
-static int rvt_modify_port(struct ib_device *ibdev, u8 port_num,
+static int rvt_modify_port(struct ib_device *ibdev, u32 port_num,
 			   int port_modify_mask, struct ib_port_modify *props)
 {
 	struct rvt_dev_info *rdi = ib_to_rvt(ibdev);
 	struct rvt_ibport *rvp;
 	int ret = 0;
-	int port_index = ibport_num_to_idx(ibdev, port_num);
-
-	if (port_index < 0)
-		return -EINVAL;
+	u32 port_index = ibport_num_to_idx(ibdev, port_num);
 
 	rvp = rdi->ports[port_index];
 	if (port_modify_mask & IB_PORT_OPA_MASK_CHG) {
@@ -225,7 +226,7 @@ static int rvt_modify_port(struct ib_device *ibdev, u8 port_num,
  *
  * Return: 0 on failure pkey otherwise
  */
-static int rvt_query_pkey(struct ib_device *ibdev, u8 port_num, u16 index,
+static int rvt_query_pkey(struct ib_device *ibdev, u32 port_num, u16 index,
 			  u16 *pkey)
 {
 	/*
@@ -235,11 +236,9 @@ static int rvt_query_pkey(struct ib_device *ibdev, u8 port_num, u16 index,
 	 * no way to protect against that anyway.
 	 */
 	struct rvt_dev_info *rdi = ib_to_rvt(ibdev);
-	int port_index;
+	u32 port_index;
 
 	port_index = ibport_num_to_idx(ibdev, port_num);
-	if (port_index < 0)
-		return -EINVAL;
 
 	if (index >= rvt_get_npkeys(rdi))
 		return -EINVAL;
@@ -257,12 +256,12 @@ static int rvt_query_pkey(struct ib_device *ibdev, u8 port_num, u16 index,
  *
  * Return: 0 on success
  */
-static int rvt_query_gid(struct ib_device *ibdev, u8 port_num,
+static int rvt_query_gid(struct ib_device *ibdev, u32 port_num,
 			 int guid_index, union ib_gid *gid)
 {
 	struct rvt_dev_info *rdi;
 	struct rvt_ibport *rvp;
-	int port_index;
+	u32 port_index;
 
 	/*
 	 * Driver is responsible for updating the guid table. Which will be used
@@ -270,8 +269,6 @@ static int rvt_query_gid(struct ib_device *ibdev, u8 port_num,
 	 * is being done.
 	 */
 	port_index = ibport_num_to_idx(ibdev, port_num);
-	if (port_index < 0)
-		return -EINVAL;
 
 	rdi = ib_to_rvt(ibdev);
 	rvp = rdi->ports[port_index];
@@ -301,16 +298,12 @@ static void rvt_dealloc_ucontext(struct ib_ucontext *context)
 	return;
 }
 
-static int rvt_get_port_immutable(struct ib_device *ibdev, u8 port_num,
+static int rvt_get_port_immutable(struct ib_device *ibdev, u32 port_num,
 				  struct ib_port_immutable *immutable)
 {
 	struct rvt_dev_info *rdi = ib_to_rvt(ibdev);
 	struct ib_port_attr attr;
-	int err, port_index;
-
-	port_index = ibport_num_to_idx(ibdev, port_num);
-	if (port_index < 0)
-		return -EINVAL;
+	int err;
 
 	immutable->core_cap_flags = rdi->dparms.core_cap_flags;
 
@@ -394,6 +387,7 @@ static const struct ib_device_ops rvt_dev_ops = {
 	.destroy_srq = rvt_destroy_srq,
 	.detach_mcast = rvt_detach_mcast,
 	.get_dma_mr = rvt_get_dma_mr,
+	.get_numa_node = rvt_get_numa_node,
 	.get_port_immutable = rvt_get_port_immutable,
 	.map_mr_sg = rvt_map_mr_sg,
 	.mmap = rvt_mmap,
@@ -420,6 +414,7 @@ static const struct ib_device_ops rvt_dev_ops = {
 	INIT_RDMA_OBJ_SIZE(ib_ah, rvt_ah, ibah),
 	INIT_RDMA_OBJ_SIZE(ib_cq, rvt_cq, ibcq),
 	INIT_RDMA_OBJ_SIZE(ib_pd, rvt_pd, ibpd),
+	INIT_RDMA_OBJ_SIZE(ib_qp, rvt_qp, ibqp),
 	INIT_RDMA_OBJ_SIZE(ib_srq, rvt_srq, ibsrq),
 	INIT_RDMA_OBJ_SIZE(ib_ucontext, rvt_ucontext, ibucontext),
 };
@@ -432,7 +427,7 @@ static noinline int check_support(struct rvt_dev_info *rdi, int verb)
 		 * These functions are not part of verbs specifically but are
 		 * required for rdmavt to function.
 		 */
-		if ((!rdi->ibdev.ops.init_port) ||
+		if ((!rdi->ibdev.ops.port_groups) ||
 		    (!rdi->driver_f.get_pci_dev))
 			return -EINVAL;
 		break;

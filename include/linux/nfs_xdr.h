@@ -152,6 +152,8 @@ struct nfs_fsinfo {
 	__u32			layouttype[NFS_MAX_LAYOUT_TYPES]; /* supported pnfs layout driver */
 	__u32			blksize; /* preferred pnfs io block size */
 	__u32			clone_blksize; /* granularity of a CLONE operation */
+	enum nfs4_change_attr_type
+				change_attr_type; /* Info about change attr */
 	__u32			xattr_support; /* User xattrs supported */
 };
 
@@ -275,6 +277,7 @@ struct nfs4_layoutget {
 	struct nfs4_layoutget_args args;
 	struct nfs4_layoutget_res res;
 	const struct cred *cred;
+	struct pnfs_layout_hdr *lo;
 	gfp_t gfp_flags;
 };
 

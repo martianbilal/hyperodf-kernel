@@ -18,10 +18,10 @@
 
 	chosen { };
 
-	memory {
+	memory@80000000 {
 		device_type = "memory";
 		/* We expect the bootloader to fill in the reg */
-		reg = <0 0 0 0>;
+		reg = <0x0 0x80000000 0x0 0x0>;
 	};
 
 	reserved-memory {
@@ -1397,6 +1397,8 @@
 			power-domains = <&rpmpd MSM8998_VDDCX>,
 					<&rpmpd MSM8998_VDDMX>;
 			power-domain-names = "cx", "mx";
+
+			status = "disabled";
 
 			mba {
 				memory-region = <&mba_mem>;

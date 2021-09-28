@@ -35,6 +35,17 @@ config PRINTK_CALLER
 	  no option to enable/disable at the kernel command line parameter or
 	  sysfs interface.
 
+config STACKTRACE_BUILD_ID
+	bool "Show build ID information in stacktraces"
+	depends on PRINTK
+	help
+	  Selecting this option adds build ID information for symbols in
+	  stacktraces printed with the printk format '%p[SR]b'.
+
+	  This option is intended for distros where debuginfo is not easily
+	  accessible but can be downloaded given the build ID of the vmlinux or
+	  kernel module where the function is located.
+
 config CONSOLE_LOGLEVEL_DEFAULT
 	int "Default console loglevel (1-15)"
 	range 1 15
@@ -75,6 +86,20 @@ config MESSAGE_LOGLEVEL_DEFAULT
 	  Note: This does not affect what message level gets printed on the console
 	  by default. To change that, use loglevel=<x> in the kernel bootargs,
 	  or pick a different CONSOLE_LOGLEVEL_DEFAULT configuration value.
+
+config DEBUG_SYNCHRO_TEST
+	tristate "Synchronisation primitive testing module"
+	depends on DEBUG_KERNEL
+	default n
+	help
+	  This option provides a kernel module that can thrash the sleepable
+	  synchronisation primitives (mutexes and semaphores).
+
+	  You should say N or M here. Whilst the module can be built in, it's
+	  not recommended as it requires module parameters supplying to get it
+	  to do anything.
+
+	  See Documentation/synchro-test.txt.
 
 config BOOT_PRINTK_DELAY
 	bool "Delay each boot printk message by N milliseconds"
@@ -284,8 +309,7 @@ config DEBUG_INFO_DWARF4
 
 config DEBUG_INFO_DWARF5
 	bool "Generate DWARF Version 5 debuginfo"
-	depends on GCC_VERSION >= 50000 || CC_IS_CLANG
-	depends on CC_IS_GCC || $(success,$(srctree)/scripts/test_dwarf5_support.sh $(CC) $(CLANG_FLAGS))
+	depends on GCC_VERSION >= 50000 || (CC_IS_CLANG && (AS_IS_LLVM || (AS_IS_GNU && AS_VERSION >= 23502)))
 	depends on !DEBUG_INFO_BTF
 	help
 	  Generate DWARF v5 debug info. Requires binutils 2.35.2, gcc 5.0+ (gcc
@@ -336,7 +360,7 @@ config FRAME_WARN
 	int "Warn for stack frames larger than"
 	range 0 8192
 	default 2048 if GCC_PLUGIN_LATENT_ENTROPY
-	default 1280 if (!64BIT && PARISC)
+	default 1536 if (!64BIT && PARISC)
 	default 1024 if (!64BIT && !PARISC)
 	default 2048 if 64BIT
 	help
@@ -355,6 +379,7 @@ config STRIP_ASM_SYMS
 config READABLE_ASM
 	bool "Generate readable assembler code"
 	depends on DEBUG_KERNEL
+	depends on CC_IS_GCC
 	help
 	  Disable some compiler optimizations that tend to generate human unreadable
 	  assembler output. This may make the kernel slightly slower, but it helps
@@ -373,6 +398,7 @@ config HEADERS_INSTALL
 
 config DEBUG_SECTION_MISMATCH
 	bool "Enable full Section mismatch analysis"
+	depends on CC_IS_GCC
 	help
 	  The section mismatch analysis checks if there are illegal
 	  references from one section to another section.
@@ -401,8 +427,8 @@ config SECTION_MISMATCH_WARN_ONLY
 
 	  If unsure, say Y.
 
-config DEBUG_FORCE_FUNCTION_ALIGN_32B
-	bool "Force all function address 32B aligned" if EXPERT
+config DEBUG_FORCE_FUNCTION_ALIGN_64B
+	bool "Force all function address 64B aligned" if EXPERT
 	help
 	  There are cases that a commit from one domain changes the function
 	  address alignment of other domains, and cause magic performance
@@ -448,6 +474,16 @@ config VMLINUX_VALIDATION
 	bool
 	depends on STACK_VALIDATION && DEBUG_ENTRY && !PARAVIRT
 	default y
+
+config VMLINUX_MAP
+	bool "Generate vmlinux.map file when linking"
+	depends on EXPERT
+	help
+	  Selecting this option will pass "-Map=vmlinux.map" to ld
+	  when linking vmlinux. That file can be useful for verifying
+	  and debugging magic section games, and for seeing which
+	  pieces of code get eliminated with
+	  CONFIG_LD_DEAD_CODE_DATA_ELIMINATION.
 
 config DEBUG_FORCE_WEAK_PER_CPU
 	bool "Force weak per-cpu definitions"
@@ -1042,7 +1078,6 @@ config HARDLOCKUP_DETECTOR
 	depends on HAVE_HARDLOCKUP_DETECTOR_PERF || HAVE_HARDLOCKUP_DETECTOR_ARCH
 	select LOCKUP_DETECTOR
 	select HARDLOCKUP_DETECTOR_PERF if HAVE_HARDLOCKUP_DETECTOR_PERF
-	select HARDLOCKUP_DETECTOR_ARCH if HAVE_HARDLOCKUP_DETECTOR_ARCH
 	help
 	  Say Y here to enable the kernel to act as a watchdog to detect
 	  hard lockups.
@@ -1215,7 +1250,7 @@ config PROVE_LOCKING
 	depends on DEBUG_KERNEL && LOCK_DEBUGGING_SUPPORT
 	select LOCKDEP
 	select DEBUG_SPINLOCK
-	select DEBUG_MUTEXES
+	select DEBUG_MUTEXES if !PREEMPT_RT
 	select DEBUG_RT_MUTEXES if RT_MUTEXES
 	select DEBUG_RWSEMS
 	select DEBUG_WW_MUTEX_SLOWPATH
@@ -1270,7 +1305,7 @@ config PROVE_RAW_LOCK_NESTING
 	 option expect lockdep splats until these problems have been fully
 	 addressed which is work in progress. This config switch allows to
 	 identify and analyze these problems. It will be removed and the
-	 check permanentely enabled once the main issues have been fixed.
+	 check permanently enabled once the main issues have been fixed.
 
 	 If unsure, select N.
 
@@ -1279,7 +1314,7 @@ config LOCK_STAT
 	depends on DEBUG_KERNEL && LOCK_DEBUGGING_SUPPORT
 	select LOCKDEP
 	select DEBUG_SPINLOCK
-	select DEBUG_MUTEXES
+	select DEBUG_MUTEXES if !PREEMPT_RT
 	select DEBUG_RT_MUTEXES if RT_MUTEXES
 	select DEBUG_LOCK_ALLOC
 	default n
@@ -1315,7 +1350,7 @@ config DEBUG_SPINLOCK
 
 config DEBUG_MUTEXES
 	bool "Mutex debugging: basic checks"
-	depends on DEBUG_KERNEL
+	depends on DEBUG_KERNEL && !PREEMPT_RT
 	help
 	 This feature allows mutex semantics violations to be detected and
 	 reported.
@@ -1325,7 +1360,8 @@ config DEBUG_WW_MUTEX_SLOWPATH
 	depends on DEBUG_KERNEL && LOCK_DEBUGGING_SUPPORT
 	select DEBUG_LOCK_ALLOC
 	select DEBUG_SPINLOCK
-	select DEBUG_MUTEXES
+	select DEBUG_MUTEXES if !PREEMPT_RT
+	select DEBUG_RT_MUTEXES if PREEMPT_RT
 	help
 	 This feature enables slowpath testing for w/w mutex users by
 	 injecting additional -EDEADLK wound/backoff cases. Together with
@@ -1348,7 +1384,7 @@ config DEBUG_LOCK_ALLOC
 	bool "Lock debugging: detect incorrect freeing of live locks"
 	depends on DEBUG_KERNEL && LOCK_DEBUGGING_SUPPORT
 	select DEBUG_SPINLOCK
-	select DEBUG_MUTEXES
+	select DEBUG_MUTEXES if !PREEMPT_RT
 	select DEBUG_RT_MUTEXES if RT_MUTEXES
 	select LOCKDEP
 	help
@@ -1363,12 +1399,51 @@ config LOCKDEP
 	bool
 	depends on DEBUG_KERNEL && LOCK_DEBUGGING_SUPPORT
 	select STACKTRACE
-	depends on FRAME_POINTER || MIPS || PPC || S390 || MICROBLAZE || ARM || ARC || X86
 	select KALLSYMS
 	select KALLSYMS_ALL
 
 config LOCKDEP_SMALL
 	bool
+
+config LOCKDEP_BITS
+	int "Bitsize for MAX_LOCKDEP_ENTRIES"
+	depends on LOCKDEP && !LOCKDEP_SMALL
+	range 10 30
+	default 15
+	help
+	  Try increasing this value if you hit "BUG: MAX_LOCKDEP_ENTRIES too low!" message.
+
+config LOCKDEP_CHAINS_BITS
+	int "Bitsize for MAX_LOCKDEP_CHAINS"
+	depends on LOCKDEP && !LOCKDEP_SMALL
+	range 10 30
+	default 16
+	help
+	  Try increasing this value if you hit "BUG: MAX_LOCKDEP_CHAINS too low!" message.
+
+config LOCKDEP_STACK_TRACE_BITS
+	int "Bitsize for MAX_STACK_TRACE_ENTRIES"
+	depends on LOCKDEP && !LOCKDEP_SMALL
+	range 10 30
+	default 19
+	help
+	  Try increasing this value if you hit "BUG: MAX_STACK_TRACE_ENTRIES too low!" message.
+
+config LOCKDEP_STACK_TRACE_HASH_BITS
+	int "Bitsize for STACK_TRACE_HASH_SIZE"
+	depends on LOCKDEP && !LOCKDEP_SMALL
+	range 10 30
+	default 14
+	help
+	  Try increasing this value if you need large MAX_STACK_TRACE_ENTRIES.
+
+config LOCKDEP_CIRCULAR_QUEUE_BITS
+	int "Bitsize for elements in circular_queue struct"
+	depends on LOCKDEP
+	range 10 30
+	default 12
+	help
+	  Try increasing this value if you hit "lockdep bfs error:-1" warning due to __cq_enqueue() failure.
 
 config DEBUG_LOCKDEP
 	bool "Lock dependency engine debugging"
@@ -1397,7 +1472,7 @@ config DEBUG_LOCKING_API_SELFTESTS
 	  Say Y here if you want the kernel to run a short self-test during
 	  bootup. The self-test checks whether common types of locking bugs
 	  are detected by debugging mechanisms or not. (if you disable
-	  lock debugging then those bugs wont be detected of course.)
+	  lock debugging then those bugs won't be detected of course.)
 	  The following locking APIs are covered: spinlocks, rwlocks,
 	  mutexes and rwsems.
 
@@ -1670,7 +1745,6 @@ config LATENCYTOP
 	select KALLSYMS_ALL
 	select STACKTRACE
 	select SCHEDSTATS
-	select SCHED_DEBUG
 	help
 	  Enable this option if you want to use the LatencyTOP tool
 	  to find out which userspace is blocking on what kernel operations.
@@ -1748,6 +1822,12 @@ config IO_STRICT_DEVMEM
 	  If in doubt, say Y.
 
 menu "$(SRCARCH) Debugging"
+
+config DEBUG_AID_FOR_SYZBOT
+       bool "Additional debug code for syzbot"
+       default n
+       help
+         This option is intended for testing by syzbot.
 
 source "arch/$(SRCARCH)/Kconfig.debug"
 
@@ -1878,7 +1958,7 @@ config FAIL_IO_TIMEOUT
 	  thus exercising the error handling.
 
 	  Only works with drivers that use the generic timeout handling,
-	  for others it wont do anything.
+	  for others it won't do anything.
 
 config FAIL_FUTEX
 	bool "Fault-injection capability for futexes"
@@ -1912,6 +1992,13 @@ config FAIL_MMC_REQUEST
 	  useful to test the error handling in the mmc block device
 	  and to test how the mmc host driver handles retries from
 	  the block device.
+
+config FAIL_SUNRPC
+	bool "Fault-injection capability for SunRPC"
+	depends on FAULT_INJECTION_DEBUG_FS && SUNRPC_DEBUG
+	help
+	  Provide fault-injection capability for SunRPC and
+	  its consumers.
 
 config FAULT_INJECTION_STACKTRACE_FILTER
 	bool "stacktrace filter for fault-injection capabilities"
@@ -1999,8 +2086,9 @@ config LKDTM
 	Documentation/fault-injection/provoke-crashes.rst
 
 config TEST_LIST_SORT
-	tristate "Linked list sorting test"
-	depends on DEBUG_KERNEL || m
+	tristate "Linked list sorting test" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
 	help
 	  Enable this to turn on 'list_sort()' function test. This test is
 	  executed only once during system boot (so affects only boot time),
@@ -2019,10 +2107,21 @@ config TEST_MIN_HEAP
 	  If unsure, say N.
 
 config TEST_SORT
-	tristate "Array-based sort test"
-	depends on DEBUG_KERNEL || m
+	tristate "Array-based sort test" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
 	help
 	  This option enables the self-test function of 'sort()' at boot,
+	  or at module load time.
+
+	  If unsure, say N.
+
+config TEST_DIV64
+	tristate "64bit/32bit division and modulo test"
+	depends on DEBUG_KERNEL || m
+	help
+	  Enable this to turn on 'do_div()' function test. This test is
+	  executed only once during system boot (so affects only boot time),
 	  or at module load time.
 
 	  If unsure, say N.
@@ -2111,6 +2210,9 @@ config ASYNC_RAID6_TEST
 config TEST_HEXDUMP
 	tristate "Test functions located in the hexdump module at runtime"
 
+config STRING_SELFTEST
+	tristate "Test string functions at runtime"
+
 config TEST_STRING_HELPERS
 	tristate "Test functions located in the string_helpers module at runtime"
 
@@ -2122,6 +2224,9 @@ config TEST_KSTRTOX
 
 config TEST_PRINTF
 	tristate "Test printf() family of functions at runtime"
+
+config TEST_SCANF
+	tristate "Test scanf() family of functions at runtime"
 
 config TEST_BITMAP
 	tristate "Test bitmap_*() family of functions at runtime"
@@ -2371,6 +2476,40 @@ config BITS_TEST
 
 	  If unsure, say N.
 
+config SLUB_KUNIT_TEST
+	tristate "KUnit test for SLUB cache error detection" if !KUNIT_ALL_TESTS
+	depends on SLUB_DEBUG && KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  This builds SLUB allocator unit test.
+	  Tests SLUB cache debugging functionality.
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config RATIONAL_KUNIT_TEST
+	tristate "KUnit test for rational.c" if !KUNIT_ALL_TESTS
+	depends on KUNIT && RATIONAL
+	default KUNIT_ALL_TESTS
+	help
+	  This builds the rational math unit test.
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+config MEMCPY_KUNIT_TEST
+	tristate "Test memcpy(), memmove(), and memset() functions at runtime" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Builds unit tests for memcpy(), memmove(), and memset() functions.
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
 config TEST_UDELAY
 	tristate "udelay test driver"
 	help
@@ -2513,13 +2652,32 @@ config TEST_FPU
 
 	  If unsure, say N.
 
+config TEST_CLOCKSOURCE_WATCHDOG
+	tristate "Test clocksource watchdog in kernel space"
+	depends on CLOCKSOURCE_WATCHDOG
+	help
+	  Enable this option to create a kernel module that will trigger
+	  a test of the clocksource watchdog.  This module may be loaded
+	  via modprobe or insmod in which case it will run upon being
+	  loaded, or it may be built in, in which case it will run
+	  shortly after boot.
+
+	  If unsure, say N.
+
 endif # RUNTIME_TESTING_MENU
+
+config ARCH_USE_MEMTEST
+	bool
+	help
+	  An architecture should select this when it uses early_memtest()
+	  during boot process.
 
 config MEMTEST
 	bool "Memtest"
+	depends on ARCH_USE_MEMTEST
 	help
 	  This option adds a kernel parameter 'memtest', which allows memtest
-	  to be set.
+	  to be set and executed.
 	        memtest=0, mean disabled; -- default
 	        memtest=1, mean do 1 test pattern;
 	        ...
@@ -2536,6 +2694,150 @@ config HYPERV_TESTING
 	  Select this option to enable Hyper-V vmbus testing.
 
 endmenu # "Kernel Testing and Coverage"
+
+menu "Rust hacking"
+
+config RUST_DEBUG_ASSERTIONS
+	bool "Debug assertions"
+	default n
+	depends on RUST
+	help
+	  Enables rustc's `-Cdebug-assertions` codegen option.
+
+	  This flag lets you turn `cfg(debug_assertions)` conditional
+	  compilation on or off. This can be used to enable extra debugging
+	  code in development but not in production. For example, it controls
+	  the behavior of the standard library's `debug_assert!` macro.
+
+	  Note that this will apply to all Rust code, including `core`.
+
+	  If unsure, say N.
+
+config RUST_OVERFLOW_CHECKS
+	bool "Overflow checks"
+	default y
+	depends on RUST
+	help
+	  Enables rustc's `-Coverflow-checks` codegen option.
+
+	  This flag allows you to control the behavior of runtime integer
+	  overflow. When overflow-checks are enabled, a panic will occur
+	  on overflow.
+
+	  Note that this will apply to all Rust code, including `core`.
+
+	  If unsure, say Y.
+
+choice
+	prompt "Optimization level"
+	default RUST_OPT_LEVEL_SIMILAR_AS_CHOSEN_FOR_C
+	depends on RUST
+	help
+	  Controls rustc's `-Copt-level` codegen option.
+
+	  This flag controls the optimization level.
+
+	  If unsure, say "Similar as chosen for C".
+
+config RUST_OPT_LEVEL_SIMILAR_AS_CHOSEN_FOR_C
+	bool "Similar as chosen for C"
+	help
+	  This choice will pick a similar optimization level as chosen in
+	  the "Compiler optimization level" for C:
+
+	      -O2 is currently mapped to -Copt-level=2
+	      -O3 is currently mapped to -Copt-level=3
+	      -Os is currently mapped to -Copt-level=z
+
+	  The mapping may change over time to follow the intended semantics
+	  of the choice for C as sensibly as possible.
+
+	  This is the default.
+
+config RUST_OPT_LEVEL_0
+	bool "No optimizations (-Copt-level=0)"
+	help
+	  Not recommended for most purposes. It may come in handy for debugging
+	  suspected optimizer bugs, unexpected undefined behavior, etc.
+
+	  Note that this level will *not* enable debug assertions nor overflow
+	  checks on its own (like it happens when interacting with rustc
+	  directly). Use the corresponding configuration options to control
+	  that instead, orthogonally.
+
+	  Note this level may cause excessive stack usage, which can lead to stack
+	  overflow and subsequent crashes.
+
+config RUST_OPT_LEVEL_1
+	bool "Basic optimizations (-Copt-level=1)"
+	help
+	  Useful for debugging without getting too lost, but without
+	  the overhead and boilerplate of no optimizations at all.
+
+	  Note this level may cause excessive stack usage, which can lead to stack
+	  overflow and subsequent crashes.
+
+config RUST_OPT_LEVEL_2
+	bool "Some optimizations (-Copt-level=2)"
+	help
+	  The sensible choice in most cases.
+
+config RUST_OPT_LEVEL_3
+	bool "All optimizations (-Copt-level=3)"
+	help
+	  Yet more performance (hopefully).
+
+config RUST_OPT_LEVEL_S
+	bool "Optimize for size (-Copt-level=s)"
+	help
+	  Smaller kernel, ideally without too much performance loss.
+
+config RUST_OPT_LEVEL_Z
+	bool "Optimize for size, no loop vectorization (-Copt-level=z)"
+	help
+	  Like the previous level, but also turn off loop vectorization.
+
+endchoice
+
+choice
+	prompt "Build-time assertions"
+	default RUST_BUILD_ASSERT_ALLOW if RUST_OPT_LEVEL_0
+	default RUST_BUILD_ASSERT_DENY if !RUST_OPT_LEVEL_0
+	depends on RUST
+	help
+	  Controls how are `build_error!` and `build_assert!` handled during build.
+
+	  If calls to them exist in the binary, it may indicate a violated invariant
+	  or that the optimizer failed to verify the invariant during compilation.
+	  You can choose to abort compilation or ignore them during build and let the
+	  check be carried to runtime.
+
+	  If optimizations are turned off, you cannot select "Deny".
+
+	  If unsure, say "Deny".
+
+config RUST_BUILD_ASSERT_ALLOW
+	bool "Allow"
+	help
+	  Unoptimized calls to `build_error!` will be converted to `panic!`
+	  and checked at runtime.
+
+config RUST_BUILD_ASSERT_WARN
+	bool "Warn"
+	help
+	  Unoptimized calls to `build_error!` will be converted to `panic!`
+	  and checked at runtime, but warnings will be generated when building.
+
+config RUST_BUILD_ASSERT_DENY
+	bool "Deny"
+	depends on !RUST_OPT_LEVEL_0
+	help
+	  Unoptimized calls to `build_error!` will abort compilation.
+
+endchoice
+
+
+endmenu # "Rust"
 
 source "Documentation/Kconfig"
 

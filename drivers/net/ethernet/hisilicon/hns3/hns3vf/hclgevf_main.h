@@ -6,6 +6,7 @@
 #include <linux/fs.h>
 #include <linux/if_vlan.h>
 #include <linux/types.h>
+#include <net/devlink.h>
 #include "hclge_mbx.h"
 #include "hclgevf_cmd.h"
 #include "hnae3.h"
@@ -47,6 +48,7 @@
 
 /* bar registers for common func */
 #define HCLGEVF_GRO_EN_REG			0x28000
+#define HCLGEVF_RXD_ADV_LAYOUT_EN_REG		0x28008
 
 /* bar registers for rcb */
 #define HCLGEVF_RING_RX_ADDR_L_REG		0x80000
@@ -152,6 +154,7 @@ enum hclgevf_states {
 	HCLGEVF_STATE_LINK_UPDATING,
 	HCLGEVF_STATE_PROMISC_CHANGED,
 	HCLGEVF_STATE_RST_FAIL,
+	HCLGEVF_STATE_PF_PUSH_LINK_STATUS,
 };
 
 struct hclgevf_mac {
@@ -176,9 +179,9 @@ struct hclgevf_hw {
 
 /* TQP stats */
 struct hlcgevf_tqp_stats {
-	/* query_tqp_tx_queue_statistics ,opcode id:  0x0B03 */
+	/* query_tqp_tx_queue_statistics, opcode id: 0x0B03 */
 	u64 rcb_tx_ring_pktnum_rcd; /* 32bit */
-	/* query_tqp_rx_queue_statistics ,opcode id:  0x0B13 */
+	/* query_tqp_rx_queue_statistics, opcode id: 0x0B13 */
 	u64 rcb_rx_ring_pktnum_rcd; /* 32bit */
 };
 
@@ -192,7 +195,6 @@ struct hclgevf_tqp {
 };
 
 struct hclgevf_cfg {
-	u8 vmdq_vport_num;
 	u8 tc_num;
 	u16 tqp_desc_num;
 	u16 rx_buf_len;
@@ -284,6 +286,7 @@ struct hclgevf_dev {
 	struct semaphore reset_sem;	/* protect reset process */
 
 	u32 fw_version;
+	u16 mbx_api_version;
 	u16 num_tqps;		/* num task queue pairs of this VF */
 
 	u16 alloc_rss_size;	/* allocated RSS task queue */
@@ -328,6 +331,8 @@ struct hclgevf_dev {
 	u32 flag;
 	unsigned long serv_processed_cnt;
 	unsigned long last_serv_processed;
+
+	struct devlink *devlink;
 };
 
 static inline bool hclgevf_is_reset_pending(struct hclgevf_dev *hdev)

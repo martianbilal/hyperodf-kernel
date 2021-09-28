@@ -89,6 +89,8 @@ struct tx_bd_ext {
 	#define TX_BD_CFA_META_KEY_VLAN                         (1 << 28)
 };
 
+#define BNXT_TX_PTP_IS_SET(lflags) ((lflags) & cpu_to_le32(TX_BD_FLAGS_STAMP))
+
 struct rx_bd {
 	__le32 rx_bd_len_flags_type;
 	#define RX_BD_TYPE					(0x3f << 0)
@@ -159,6 +161,7 @@ struct rx_cmp {
 	#define RX_CMP_FLAGS_RSS_VALID				(1 << 10)
 	#define RX_CMP_FLAGS_UNUSED				(1 << 11)
 	 #define RX_CMP_FLAGS_ITYPES_SHIFT			 12
+	 #define RX_CMP_FLAGS_ITYPES_MASK			 0xf000
 	 #define RX_CMP_FLAGS_ITYPE_UNKNOWN			 (0 << 12)
 	 #define RX_CMP_FLAGS_ITYPE_IP				 (1 << 12)
 	 #define RX_CMP_FLAGS_ITYPE_TCP				 (2 << 12)
@@ -240,7 +243,7 @@ struct rx_cmp_ext {
 	#define RX_CMPL_CFA_CODE_MASK				(0xffff << 16)
 	 #define RX_CMPL_CFA_CODE_SFT				 16
 
-	__le32 rx_cmp_unused3;
+	__le32 rx_cmp_timestamp;
 };
 
 #define RX_CMP_L2_ERRORS						\
@@ -493,6 +496,16 @@ struct rx_tpa_end_cmp_ext {
 	!!((data1) &							\
 	   ASYNC_EVENT_CMPL_ERROR_RECOVERY_EVENT_DATA1_FLAGS_RECOVERY_ENABLED)
 
+#define BNXT_EVENT_ERROR_REPORT_TYPE(data1)				\
+	(((data1) &							\
+	  ASYNC_EVENT_CMPL_ERROR_REPORT_BASE_EVENT_DATA1_ERROR_TYPE_MASK) >>\
+	 ASYNC_EVENT_CMPL_ERROR_REPORT_BASE_EVENT_DATA1_ERROR_TYPE_SFT)
+
+#define BNXT_EVENT_INVALID_SIGNAL_DATA(data2)				\
+	(((data2) &							\
+	  ASYNC_EVENT_CMPL_ERROR_REPORT_INVALID_SIGNAL_EVENT_DATA2_PIN_ID_MASK) >>\
+	 ASYNC_EVENT_CMPL_ERROR_REPORT_INVALID_SIGNAL_EVENT_DATA2_PIN_ID_SFT)
+
 struct nqe_cn {
 	__le16	type;
 	#define NQ_CN_TYPE_MASK           0x3fUL
@@ -583,15 +596,17 @@ struct nqe_cn {
 #define MAX_TPA_SEGS_P5	0x3f
 
 #if (BNXT_PAGE_SHIFT == 16)
-#define MAX_RX_PAGES	1
+#define MAX_RX_PAGES_AGG_ENA	1
+#define MAX_RX_PAGES	4
 #define MAX_RX_AGG_PAGES	4
 #define MAX_TX_PAGES	1
-#define MAX_CP_PAGES	8
+#define MAX_CP_PAGES	16
 #else
-#define MAX_RX_PAGES	8
+#define MAX_RX_PAGES_AGG_ENA	8
+#define MAX_RX_PAGES	32
 #define MAX_RX_AGG_PAGES	32
 #define MAX_TX_PAGES	8
-#define MAX_CP_PAGES	64
+#define MAX_CP_PAGES	128
 #endif
 
 #define RX_DESC_CNT (BNXT_PAGE_SIZE / sizeof(struct rx_bd))
@@ -609,6 +624,7 @@ struct nqe_cn {
 #define HW_CMPD_RING_SIZE (sizeof(struct tx_cmp) * CP_DESC_CNT)
 
 #define BNXT_MAX_RX_DESC_CNT		(RX_DESC_CNT * MAX_RX_PAGES - 1)
+#define BNXT_MAX_RX_DESC_CNT_JUM_ENA	(RX_DESC_CNT * MAX_RX_PAGES_AGG_ENA - 1)
 #define BNXT_MAX_RX_JUM_DESC_CNT	(RX_DESC_CNT * MAX_RX_AGG_PAGES - 1)
 #define BNXT_MAX_TX_DESC_CNT		(TX_DESC_CNT * MAX_TX_PAGES - 1)
 
@@ -670,6 +686,10 @@ struct nqe_cn {
 
 #define HWRM_MIN_TIMEOUT		25
 #define HWRM_MAX_TIMEOUT		40
+
+#define HWRM_WAIT_MUST_ABORT(bp, req)					\
+	(le16_to_cpu((req)->req_type) != HWRM_VER_GET &&		\
+	 !bnxt_is_fw_healthy(bp))
 
 #define HWRM_TOTAL_TIMEOUT(n)	(((n) <= HWRM_SHORT_TIMEOUT_COUNTER) ?	\
 	((n) * HWRM_SHORT_MIN_TIMEOUT) :				\
@@ -779,6 +799,7 @@ struct bnxt_tx_ring_info {
 	u16			tx_prod;
 	u16			tx_cons;
 	u16			txq_index;
+	u8			kick_pending;
 	struct bnxt_db_info	tx_db;
 
 	struct tx_bd		*tx_desc_ring[MAX_TX_PAGES];
@@ -955,11 +976,11 @@ struct bnxt_cp_ring_info {
 	struct dim		dim;
 
 	union {
-		struct tx_cmp	*cp_desc_ring[MAX_CP_PAGES];
-		struct nqe_cn	*nq_desc_ring[MAX_CP_PAGES];
+		struct tx_cmp	**cp_desc_ring;
+		struct nqe_cn	**nq_desc_ring;
 	};
 
-	dma_addr_t		cp_desc_mapping[MAX_CP_PAGES];
+	dma_addr_t		*cp_desc_mapping;
 
 	struct bnxt_stats_mem	stats;
 	u32			hw_stats_ctx_id;
@@ -1337,9 +1358,6 @@ struct bnxt_led_info {
 
 struct bnxt_test_info {
 	u8 offline_mask;
-	u8 flags;
-#define BNXT_TEST_FL_EXT_LPBK		0x1
-#define BNXT_TEST_FL_AN_PHY_LPBK	0x2
 	u16 timeout;
 	char string[BNXT_MAX_TEST][ETH_GSTRING_LEN];
 };
@@ -1360,6 +1378,9 @@ struct bnxt_test_info {
 
 #define BNXT_GRC_REG_CHIP_NUM			0x48
 #define BNXT_GRC_REG_BASE			0x260000
+
+#define BNXT_TS_REG_TIMESYNC_TS0_LOWER		0x640180c
+#define BNXT_TS_REG_TIMESYNC_TS0_UPPER		0x6401810
 
 #define BNXT_GRC_BASE_MASK			0xfffff000
 #define BNXT_GRC_OFFSET_MASK			0x00000ffc
@@ -1570,6 +1591,7 @@ struct bnxt_fw_reporter_ctx {
 #define BNXT_FW_STATUS_HEALTH_MSK	0xffff
 #define BNXT_FW_STATUS_HEALTHY		0x8000
 #define BNXT_FW_STATUS_SHUTDOWN		0x100000
+#define BNXT_FW_STATUS_RECOVERING	0x400000
 
 #define BNXT_FW_IS_HEALTHY(sts)		(((sts) & BNXT_FW_STATUS_HEALTH_MSK) ==\
 					 BNXT_FW_STATUS_HEALTHY)
@@ -1579,6 +1601,9 @@ struct bnxt_fw_reporter_ctx {
 
 #define BNXT_FW_IS_ERR(sts)		(((sts) & BNXT_FW_STATUS_HEALTH_MSK) > \
 					 BNXT_FW_STATUS_HEALTHY)
+
+#define BNXT_FW_IS_RECOVERING(sts)	(BNXT_FW_IS_ERR(sts) &&		       \
+					 ((sts) & BNXT_FW_STATUS_RECOVERING))
 
 #define BNXT_FW_RETRY			5
 #define BNXT_FW_IF_RETRY		10
@@ -1695,7 +1720,6 @@ struct bnxt {
 	#define BNXT_FLAG_SHARED_RINGS	0x200
 	#define BNXT_FLAG_PORT_STATS	0x400
 	#define BNXT_FLAG_UDP_RSS_CAP	0x800
-	#define BNXT_FLAG_EEE_CAP	0x1000
 	#define BNXT_FLAG_NEW_RSS_CAP	0x2000
 	#define BNXT_FLAG_WOL_CAP	0x4000
 	#define BNXT_FLAG_ROCEV1_CAP	0x8000
@@ -1722,8 +1746,10 @@ struct bnxt {
 #define BNXT_NPAR(bp)		((bp)->port_partition_type)
 #define BNXT_MH(bp)		((bp)->flags & BNXT_FLAG_MULTI_HOST)
 #define BNXT_SINGLE_PF(bp)	(BNXT_PF(bp) && !BNXT_NPAR(bp) && !BNXT_MH(bp))
+#define BNXT_SH_PORT_CFG_OK(bp)	(BNXT_PF(bp) &&				\
+				 ((bp)->phy_flags & BNXT_PHY_FL_SHARED_PORT_CFG))
 #define BNXT_PHY_CFG_ABLE(bp)	((BNXT_SINGLE_PF(bp) ||			\
-				  ((bp)->fw_cap & BNXT_FW_CAP_SHARED_PORT_CFG)) && \
+				  BNXT_SH_PORT_CFG_OK(bp)) &&		\
 				 (bp)->link_info.phy_state == BNXT_PHY_STATE_ENABLED)
 #define BNXT_CHIP_TYPE_NITRO_A0(bp) ((bp)->flags & BNXT_FLAG_CHIP_NITRO_A0)
 #define BNXT_RX_PAGE_MODE(bp)	((bp)->flags & BNXT_FLAG_RX_PAGE_MODE)
@@ -1755,7 +1781,6 @@ struct bnxt {
 	(BNXT_CHIP_P4(bp) || BNXT_CHIP_P5(bp))
 
 	struct bnxt_en_dev	*edev;
-	struct bnxt_en_dev *	(*ulp_probe)(struct net_device *);
 
 	struct bnxt_napi	**bnapi;
 
@@ -1873,11 +1898,10 @@ struct bnxt {
 	#define BNXT_FW_CAP_EXT_STATS_SUPPORTED		0x00040000
 	#define BNXT_FW_CAP_ERR_RECOVER_RELOAD		0x00100000
 	#define BNXT_FW_CAP_HOT_RESET			0x00200000
-	#define BNXT_FW_CAP_SHARED_PORT_CFG		0x00400000
 	#define BNXT_FW_CAP_VLAN_RX_STRIP		0x01000000
 	#define BNXT_FW_CAP_VLAN_TX_INSERT		0x02000000
 	#define BNXT_FW_CAP_EXT_HW_STATS_SUPPORTED	0x04000000
-	#define BNXT_FW_CAP_PORT_STATS_NO_RESET		0x10000000
+	#define BNXT_FW_CAP_PTP_PPS			0x10000000
 	#define BNXT_FW_CAP_RING_MONITOR		0x40000000
 
 #define BNXT_NEW_RM(bp)		((bp)->fw_cap & BNXT_FW_CAP_NEW_RM)
@@ -1920,6 +1944,8 @@ struct bnxt {
 
 	u16			vxlan_fw_dst_port_id;
 	u16			nge_fw_dst_port_id;
+	__be16			vxlan_port;
+	__be16			nge_port;
 	u8			port_partition_type;
 	u8			port_count;
 	u16			br_mode;
@@ -2012,6 +2038,17 @@ struct bnxt {
 	u32			lpi_tmr_lo;
 	u32			lpi_tmr_hi;
 
+	/* copied from flags in hwrm_port_phy_qcaps_output */
+	u8			phy_flags;
+#define BNXT_PHY_FL_EEE_CAP		PORT_PHY_QCAPS_RESP_FLAGS_EEE_SUPPORTED
+#define BNXT_PHY_FL_EXT_LPBK		PORT_PHY_QCAPS_RESP_FLAGS_EXTERNAL_LPBK_SUPPORTED
+#define BNXT_PHY_FL_AN_PHY_LPBK		PORT_PHY_QCAPS_RESP_FLAGS_AUTONEG_LPBK_SUPPORTED
+#define BNXT_PHY_FL_SHARED_PORT_CFG	PORT_PHY_QCAPS_RESP_FLAGS_SHARED_PHY_CFG_SUPPORTED
+#define BNXT_PHY_FL_PORT_STATS_NO_RESET	PORT_PHY_QCAPS_RESP_FLAGS_CUMULATIVE_COUNTERS_ON_RESET
+#define BNXT_PHY_FL_NO_PHY_LPBK		PORT_PHY_QCAPS_RESP_FLAGS_LOCAL_LPBK_NOT_SUPPORTED
+#define BNXT_PHY_FL_FW_MANAGED_LKDN	PORT_PHY_QCAPS_RESP_FLAGS_FW_MANAGED_LINK_DOWN
+#define BNXT_PHY_FL_NO_FCS		PORT_PHY_QCAPS_RESP_FLAGS_NO_FCS
+
 	u8			num_tests;
 	struct bnxt_test_info	*test_info;
 
@@ -2025,6 +2062,8 @@ struct bnxt {
 #define BNXT_DUMP_CRASH		1
 
 	struct bpf_prog		*xdp_prog;
+
+	struct bnxt_ptp_cfg	*ptp_cfg;
 
 	/* devlink interface and vf-rep structs */
 	struct devlink		*dl;
@@ -2238,6 +2277,7 @@ int bnxt_hwrm_set_link_setting(struct bnxt *, bool, bool);
 int bnxt_hwrm_alloc_wol_fltr(struct bnxt *bp);
 int bnxt_hwrm_free_wol_fltr(struct bnxt *bp);
 int bnxt_hwrm_func_resc_qcaps(struct bnxt *bp, bool all);
+bool bnxt_is_fw_healthy(struct bnxt *bp);
 int bnxt_hwrm_fw_set_time(struct bnxt *);
 int bnxt_open_nic(struct bnxt *, bool, bool);
 int bnxt_half_open_nic(struct bnxt *bp);

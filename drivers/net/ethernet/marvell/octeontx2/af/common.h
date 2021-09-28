@@ -146,10 +146,7 @@ enum nix_scheduler {
 #define TXSCH_RR_QTM_MAX		((1 << 24) - 1)
 #define TXSCH_TL1_DFLT_RR_QTM		TXSCH_RR_QTM_MAX
 #define TXSCH_TL1_DFLT_RR_PRIO		(0x1ull)
-#define MAX_SCHED_WEIGHT		0xFF
-#define DFLT_RR_WEIGHT			71
-#define DFLT_RR_QTM	((DFLT_RR_WEIGHT * TXSCH_RR_QTM_MAX) \
-			 / MAX_SCHED_WEIGHT)
+#define CN10K_MAX_DWRR_WEIGHT          16384 /* Weight is 14bit on CN10K */
 
 /* Min/Max packet sizes, excluding FCS */
 #define	NIC_HW_MIN_FRS			40
@@ -196,6 +193,11 @@ enum nix_scheduler {
 #define NIX_CHAN_SDP_CH_START		(0x700ull)
 
 #define SDP_CHANNELS			256
+
+/* The mask is to extract lower 10-bits of channel number
+ * which CPT will pass to X2P.
+ */
+#define NIX_CHAN_CPT_X2P_MASK          (0x3ffull)
 
 /* NIX LSO format indices.
  * As of now TSO is the only one using, so statically assigning indices.

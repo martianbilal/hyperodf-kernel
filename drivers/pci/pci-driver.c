@@ -440,7 +440,7 @@ static int pci_device_probe(struct device *dev)
 	return error;
 }
 
-static int pci_device_remove(struct device *dev)
+static void pci_device_remove(struct device *dev)
 {
 	struct pci_dev *pci_dev = to_pci_dev(dev);
 	struct pci_driver *drv = pci_dev->driver;
@@ -476,7 +476,6 @@ static int pci_device_remove(struct device *dev)
 	 */
 
 	pci_dev_put(pci_dev);
-	return 0;
 }
 
 static void pci_device_shutdown(struct device *dev)
@@ -1385,6 +1384,7 @@ int __pci_register_driver(struct pci_driver *drv, struct module *owner,
 	drv->driver.owner = owner;
 	drv->driver.mod_name = mod_name;
 	drv->driver.groups = drv->groups;
+	drv->driver.dev_groups = drv->dev_groups;
 
 	spin_lock_init(&drv->dynids.lock);
 	INIT_LIST_HEAD(&drv->dynids.list);

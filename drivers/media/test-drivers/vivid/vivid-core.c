@@ -177,6 +177,15 @@ MODULE_PARM_DESC(cache_hints, " user-space cache hints, default is 0.\n"
 			     "\t\t    0 == forbid\n"
 			     "\t\t    1 == allow");
 
+static unsigned int supports_requests[VIVID_MAX_DEVS] = {
+	[0 ... (VIVID_MAX_DEVS - 1)] = 1
+};
+module_param_array(supports_requests, uint, NULL, 0444);
+MODULE_PARM_DESC(supports_requests, " support for requests, default is 1.\n"
+			     "\t\t    0 == no support\n"
+			     "\t\t    1 == supports requests\n"
+			     "\t\t    2 == requires requests");
+
 static struct vivid_dev *vivid_devs[VIVID_MAX_DEVS];
 
 const struct v4l2_rect vivid_min_rect = {
@@ -656,6 +665,46 @@ static const struct v4l2_file_operations vivid_radio_fops = {
 	.unlocked_ioctl = video_ioctl2,
 };
 
+static int vidioc_reqbufs(struct file *file, void *priv,
+			  struct v4l2_requestbuffers *p)
+{
+	struct video_device *vdev = video_devdata(file);
+	int r;
+
+	/*
+	 * Sliced and raw VBI capture share the same queue so we must
+	 * change the type.
+	 */
+	if (p->type == V4L2_BUF_TYPE_SLICED_VBI_CAPTURE ||
+	    p->type == V4L2_BUF_TYPE_VBI_CAPTURE) {
+		r = vb2_queue_change_type(vdev->queue, p->type);
+		if (r)
+			return r;
+	}
+
+	return vb2_ioctl_reqbufs(file, priv, p);
+}
+
+static int vidioc_create_bufs(struct file *file, void *priv,
+			      struct v4l2_create_buffers *p)
+{
+	struct video_device *vdev = video_devdata(file);
+	int r;
+
+	/*
+	 * Sliced and raw VBI capture share the same queue so we must
+	 * change the type.
+	 */
+	if (p->format.type == V4L2_BUF_TYPE_SLICED_VBI_CAPTURE ||
+	    p->format.type == V4L2_BUF_TYPE_VBI_CAPTURE) {
+		r = vb2_queue_change_type(vdev->queue, p->format.type);
+		if (r)
+			return r;
+	}
+
+	return vb2_ioctl_create_bufs(file, priv, p);
+}
+
 static const struct v4l2_ioctl_ops vivid_ioctl_ops = {
 	.vidioc_querycap		= vidioc_querycap,
 
@@ -717,8 +766,8 @@ static const struct v4l2_ioctl_ops vivid_ioctl_ops = {
 	.vidioc_g_fbuf			= vidioc_g_fbuf,
 	.vidioc_s_fbuf			= vidioc_s_fbuf,
 
-	.vidioc_reqbufs			= vb2_ioctl_reqbufs,
-	.vidioc_create_bufs		= vb2_ioctl_create_bufs,
+	.vidioc_reqbufs			= vidioc_reqbufs,
+	.vidioc_create_bufs		= vidioc_create_bufs,
 	.vidioc_prepare_buf		= vb2_ioctl_prepare_buf,
 	.vidioc_querybuf		= vb2_ioctl_querybuf,
 	.vidioc_qbuf			= vb2_ioctl_qbuf,
@@ -843,10 +892,11 @@ static int vivid_create_queue(struct vivid_dev *dev,
 	q->mem_ops = allocators[dev->inst] == 1 ? &vb2_dma_contig_memops :
 						  &vb2_vmalloc_memops;
 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-	q->min_buffers_needed = min_buffers_needed;
+	q->min_buffers_needed = supports_requests[dev->inst] ? 0 : min_buffers_needed;
 	q->lock = &dev->mutex;
 	q->dev = dev->v4l2_dev.dev;
-	q->supports_requests = true;
+	q->supports_requests = supports_requests[dev->inst];
+	q->requires_requests = supports_requests[dev->inst] >= 2;
 	q->allow_cache_hints = (cache_hints[dev->inst] == 1);
 
 	return vb2_queue_init(q);

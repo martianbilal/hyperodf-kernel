@@ -1389,7 +1389,7 @@ static void qlge_categorize_rx_err(struct qlge_adapter *qdev, u8 rx_err,
 	}
 }
 
-/**
+/*
  * qlge_update_mac_hdr_len - helper routine to update the mac header length
  * based on vlan tags if present
  */
@@ -2235,7 +2235,7 @@ static void qlge_vlan_mode(struct net_device *ndev, netdev_features_t features)
 	}
 }
 
-/**
+/*
  * qlge_update_hw_vlan_features - helper routine to reinitialize the adapter
  * based on the features to enable/disable hardware vlan accel
  */
@@ -2796,12 +2796,8 @@ static int qlge_init_bq(struct qlge_bq *bq)
 
 	bq->base = dma_alloc_coherent(&qdev->pdev->dev, QLGE_BQ_SIZE,
 				      &bq->base_dma, GFP_ATOMIC);
-	if (!bq->base) {
-		netif_err(qdev, ifup, qdev->ndev,
-			  "ring %u %s allocation failed.\n", rx_ring->cq_id,
-			  bq_type_name[bq->type]);
+	if (!bq->base)
 		return -ENOMEM;
-	}
 
 	bq->queue = kmalloc_array(QLGE_BQ_LEN, sizeof(struct qlge_bq_desc),
 				  GFP_KERNEL);
@@ -3815,8 +3811,7 @@ static int qlge_adapter_down(struct qlge_adapter *qdev)
 
 	qlge_tx_ring_clean(qdev);
 
-	/* Call netif_napi_del() from common point.
-	*/
+	/* Call netif_napi_del() from common point. */
 	for (i = 0; i < qdev->rss_ring_count; i++)
 		netif_napi_del(&qdev->rx_ring[i].napi);
 
@@ -4552,7 +4547,8 @@ static int qlge_probe(struct pci_dev *pdev,
 	static int cards_found;
 	int err;
 
-	devlink = devlink_alloc(&qlge_devlink_ops, sizeof(struct qlge_adapter));
+	devlink = devlink_alloc(&qlge_devlink_ops, sizeof(struct qlge_adapter),
+				&pdev->dev);
 	if (!devlink)
 		return -ENOMEM;
 
@@ -4618,11 +4614,15 @@ static int qlge_probe(struct pci_dev *pdev,
 		goto netdev_free;
 	}
 
-	err = devlink_register(devlink, &pdev->dev);
+	err = devlink_register(devlink);
 	if (err)
 		goto netdev_free;
 
-	qlge_health_create_reporters(qdev);
+	err = qlge_health_create_reporters(qdev);
+
+	if (err)
+		goto devlink_unregister;
+
 	/* Start up the timer to trigger EEH if
 	 * the bus goes dead
 	 */
@@ -4634,6 +4634,8 @@ static int qlge_probe(struct pci_dev *pdev,
 	cards_found++;
 	return 0;
 
+devlink_unregister:
+	devlink_unregister(devlink);
 netdev_free:
 	free_netdev(ndev);
 devlink_free:

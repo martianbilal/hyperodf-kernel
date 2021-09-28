@@ -56,7 +56,7 @@ struct vfio_pci_device;
 struct vfio_pci_region;
 
 struct vfio_pci_regops {
-	size_t	(*rw)(struct vfio_pci_device *vdev, char __user *buf,
+	ssize_t	(*rw)(struct vfio_pci_device *vdev, char __user *buf,
 		      size_t count, loff_t *ppos, bool iswrite);
 	void	(*release)(struct vfio_pci_device *vdev,
 			   struct vfio_pci_region *region);
@@ -83,11 +83,6 @@ struct vfio_pci_dummy_resource {
 	struct list_head	res_next;
 };
 
-struct vfio_pci_reflck {
-	struct kref		kref;
-	struct mutex		lock;
-};
-
 struct vfio_pci_vf_token {
 	struct mutex		lock;
 	uuid_t			uuid;
@@ -100,6 +95,7 @@ struct vfio_pci_mmap_vma {
 };
 
 struct vfio_pci_device {
+	struct vfio_device	vdev;
 	struct pci_dev		*pdev;
 	void __iomem		*barmap[PCI_STD_NUM_BARS];
 	bool			bar_mmap_supported[PCI_STD_NUM_BARS];
@@ -129,8 +125,6 @@ struct vfio_pci_device {
 	bool			needs_pm_restore;
 	struct pci_saved_state	*pci_saved_state;
 	struct pci_saved_state	*pm_save;
-	struct vfio_pci_reflck	*reflck;
-	int			refcnt;
 	int			ioeventfds_nr;
 	struct eventfd_ctx	*err_trigger;
 	struct eventfd_ctx	*req_trigger;
@@ -195,20 +189,6 @@ extern void vfio_pci_memory_unlock_and_restore(struct vfio_pci_device *vdev,
 extern int vfio_pci_igd_init(struct vfio_pci_device *vdev);
 #else
 static inline int vfio_pci_igd_init(struct vfio_pci_device *vdev)
-{
-	return -ENODEV;
-}
-#endif
-#ifdef CONFIG_VFIO_PCI_NVLINK2
-extern int vfio_pci_nvdia_v100_nvlink2_init(struct vfio_pci_device *vdev);
-extern int vfio_pci_ibm_npu2_init(struct vfio_pci_device *vdev);
-#else
-static inline int vfio_pci_nvdia_v100_nvlink2_init(struct vfio_pci_device *vdev)
-{
-	return -ENODEV;
-}
-
-static inline int vfio_pci_ibm_npu2_init(struct vfio_pci_device *vdev)
 {
 	return -ENODEV;
 }

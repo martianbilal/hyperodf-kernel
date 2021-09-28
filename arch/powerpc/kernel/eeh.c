@@ -21,9 +21,9 @@
 #include <linux/spinlock.h>
 #include <linux/export.h>
 #include <linux/of.h>
+#include <linux/debugfs.h>
 
 #include <linux/atomic.h>
-#include <asm/debugfs.h>
 #include <asm/eeh.h>
 #include <asm/eeh_event.h>
 #include <asm/io.h>
@@ -346,28 +346,7 @@ void eeh_slot_error_detail(struct eeh_pe *pe, int severity)
  */
 static inline unsigned long eeh_token_to_phys(unsigned long token)
 {
-	pte_t *ptep;
-	unsigned long pa;
-	int hugepage_shift;
-
-	/*
-	 * We won't find hugepages here(this is iomem). Hence we are not
-	 * worried about _PAGE_SPLITTING/collapse. Also we will not hit
-	 * page table free, because of init_mm.
-	 */
-	ptep = find_init_mm_pte(token, &hugepage_shift);
-	if (!ptep)
-		return token;
-
-	pa = pte_pfn(*ptep);
-
-	/* On radix we can do hugepage mappings for io, so handle that */
-	if (!hugepage_shift)
-		hugepage_shift = PAGE_SHIFT;
-
-	pa <<= PAGE_SHIFT;
-	pa |= token & ((1ul << hugepage_shift) - 1);
-	return pa;
+	return ppc_find_vmap_phys(token);
 }
 
 /*
@@ -776,7 +755,7 @@ int pcibios_set_pcie_reset_state(struct pci_dev *dev, enum pcie_reset_state stat
 	default:
 		eeh_pe_state_clear(pe, EEH_PE_ISOLATED | EEH_PE_CFG_BLOCKED, true);
 		return -EINVAL;
-	};
+	}
 
 	return 0;
 }
@@ -1565,6 +1544,7 @@ int eeh_pe_inject_err(struct eeh_pe *pe, int type, int func,
 }
 EXPORT_SYMBOL_GPL(eeh_pe_inject_err);
 
+#ifdef CONFIG_PROC_FS
 static int proc_eeh_show(struct seq_file *m, void *v)
 {
 	if (!eeh_enabled()) {
@@ -1591,6 +1571,7 @@ static int proc_eeh_show(struct seq_file *m, void *v)
 
 	return 0;
 }
+#endif /* CONFIG_PROC_FS */
 
 #ifdef CONFIG_DEBUG_FS
 
@@ -1920,24 +1901,24 @@ static int __init eeh_init_proc(void)
 		proc_create_single("powerpc/eeh", 0, NULL, proc_eeh_show);
 #ifdef CONFIG_DEBUG_FS
 		debugfs_create_file_unsafe("eeh_enable", 0600,
-					   powerpc_debugfs_root, NULL,
+					   arch_debugfs_dir, NULL,
 					   &eeh_enable_dbgfs_ops);
 		debugfs_create_u32("eeh_max_freezes", 0600,
-				powerpc_debugfs_root, &eeh_max_freezes);
+				arch_debugfs_dir, &eeh_max_freezes);
 		debugfs_create_bool("eeh_disable_recovery", 0600,
-				powerpc_debugfs_root,
+				arch_debugfs_dir,
 				&eeh_debugfs_no_recover);
 		debugfs_create_file_unsafe("eeh_dev_check", 0600,
-				powerpc_debugfs_root, NULL,
+				arch_debugfs_dir, NULL,
 				&eeh_dev_check_fops);
 		debugfs_create_file_unsafe("eeh_dev_break", 0600,
-				powerpc_debugfs_root, NULL,
+				arch_debugfs_dir, NULL,
 				&eeh_dev_break_fops);
 		debugfs_create_file_unsafe("eeh_force_recover", 0600,
-				powerpc_debugfs_root, NULL,
+				arch_debugfs_dir, NULL,
 				&eeh_force_recover_fops);
 		debugfs_create_file_unsafe("eeh_dev_can_recover", 0600,
-				powerpc_debugfs_root, NULL,
+				arch_debugfs_dir, NULL,
 				&eeh_dev_can_recover_fops);
 		eeh_cache_debugfs_init();
 #endif

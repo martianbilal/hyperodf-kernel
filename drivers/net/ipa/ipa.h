@@ -28,27 +28,19 @@ struct ipa_smp2p;
 struct ipa_interrupt;
 
 /**
- * enum ipa_flag - IPA state flags
- * @IPA_FLAG_RESUMED:	Whether resume from suspend has been signaled
- * @IPA_FLAG_COUNT:	Number of defined IPA flags
- */
-enum ipa_flag {
-	IPA_FLAG_RESUMED,
-	IPA_FLAG_COUNT,		/* Last; not a flag */
-};
-
-/**
  * struct ipa - IPA information
  * @gsi:		Embedded GSI structure
- * @flags:		Boolean state flags
  * @version:		IPA hardware version
  * @pdev:		Platform device
  * @completion:		Used to signal pipeline clear transfer complete
+ * @nb:			Notifier block used for remoteproc SSR
+ * @notifier:		Remoteproc SSR notifier
  * @smp2p:		SMP2P information
  * @clock:		IPA clocking information
  * @table_addr:		DMA address of filter/route table content
  * @table_virt:		Virtual address of filter/route table content
  * @interrupt:		IPA Interrupt information
+ * @uc_clocked:		true if clock is active by proxy for microcontroller
  * @uc_loaded:		true after microcontroller has reported it's ready
  * @reg_addr:		DMA address used for IPA register access
  * @reg_virt:		Virtual address used for IPA register access
@@ -59,13 +51,12 @@ enum ipa_flag {
  * @mem_count:		Number of entries in the mem array
  * @mem:		Array of IPA-local memory region descriptors
  * @imem_iova:		I/O virtual address of IPA region in IMEM
- * @imem_size;		Size of IMEM region
+ * @imem_size:		Size of IMEM region
  * @smem_iova:		I/O virtual address of IPA region in SMEM
- * @smem_size;		Size of SMEM region
+ * @smem_size:		Size of SMEM region
  * @zero_addr:		DMA address of preallocated zero-filled memory
  * @zero_virt:		Virtual address of preallocated zero-filled memory
  * @zero_size:		Size (bytes) of preallocated zero-filled memory
- * @wakeup_source:	Wakeup source information
  * @available:		Bit mask indicating endpoints hardware supports
  * @filter_map:		Bit mask indicating endpoints that support filtering
  * @initialized:	Bit mask indicating endpoints initialized
@@ -81,7 +72,6 @@ enum ipa_flag {
  */
 struct ipa {
 	struct gsi gsi;
-	DECLARE_BITMAP(flags, IPA_FLAG_COUNT);
 	enum ipa_version version;
 	struct platform_device *pdev;
 	struct completion completion;
@@ -94,6 +84,7 @@ struct ipa {
 	__le64 *table_virt;
 
 	struct ipa_interrupt *interrupt;
+	bool uc_clocked;
 	bool uc_loaded;
 
 	dma_addr_t reg_addr;

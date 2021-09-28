@@ -217,6 +217,214 @@ int trace_event_get_offsets(struct trace_event_call *call)
 	return tail->offset + tail->size;
 }
 
+/*
+ * Check if the referenced field is an array and return true,
+ * as arrays are OK to dereference.
+ */
+static bool test_field(const char *fmt, struct trace_event_call *call)
+{
+	struct trace_event_fields *field = call->class->fields_array;
+	const char *array_descriptor;
+	const char *p = fmt;
+	int len;
+
+	if (!(len = str_has_prefix(fmt, "REC->")))
+		return false;
+	fmt += len;
+	for (p = fmt; *p; p++) {
+		if (!isalnum(*p) && *p != '_')
+			break;
+	}
+	len = p - fmt;
+
+	for (; field->type; field++) {
+		if (strncmp(field->name, fmt, len) ||
+		    field->name[len])
+			continue;
+		array_descriptor = strchr(field->type, '[');
+		/* This is an array and is OK to dereference. */
+		return array_descriptor != NULL;
+	}
+	return false;
+}
+
+/*
+ * Examine the print fmt of the event looking for unsafe dereference
+ * pointers using %p* that could be recorded in the trace event and
+ * much later referenced after the pointer was freed. Dereferencing
+ * pointers are OK, if it is dereferenced into the event itself.
+ */
+static void test_event_printk(struct trace_event_call *call)
+{
+	u64 dereference_flags = 0;
+	bool first = true;
+	const char *fmt, *c, *r, *a;
+	int parens = 0;
+	char in_quote = 0;
+	int start_arg = 0;
+	int arg = 0;
+	int i;
+
+	fmt = call->print_fmt;
+
+	if (!fmt)
+		return;
+
+	for (i = 0; fmt[i]; i++) {
+		switch (fmt[i]) {
+		case '\\':
+			i++;
+			if (!fmt[i])
+				return;
+			continue;
+		case '"':
+		case '\'':
+			/*
+			 * The print fmt starts with a string that
+			 * is processed first to find %p* usage,
+			 * then after the first string, the print fmt
+			 * contains arguments that are used to check
+			 * if the dereferenced %p* usage is safe.
+			 */
+			if (first) {
+				if (fmt[i] == '\'')
+					continue;
+				if (in_quote) {
+					arg = 0;
+					first = false;
+					/*
+					 * If there was no %p* uses
+					 * the fmt is OK.
+					 */
+					if (!dereference_flags)
+						return;
+				}
+			}
+			if (in_quote) {
+				if (in_quote == fmt[i])
+					in_quote = 0;
+			} else {
+				in_quote = fmt[i];
+			}
+			continue;
+		case '%':
+			if (!first || !in_quote)
+				continue;
+			i++;
+			if (!fmt[i])
+				return;
+			switch (fmt[i]) {
+			case '%':
+				continue;
+			case 'p':
+				/* Find dereferencing fields */
+				switch (fmt[i + 1]) {
+				case 'B': case 'R': case 'r':
+				case 'b': case 'M': case 'm':
+				case 'I': case 'i': case 'E':
+				case 'U': case 'V': case 'N':
+				case 'a': case 'd': case 'D':
+				case 'g': case 't': case 'C':
+				case 'O': case 'f':
+					if (WARN_ONCE(arg == 63,
+						      "Too many args for event: %s",
+						      trace_event_name(call)))
+						return;
+					dereference_flags |= 1ULL << arg;
+				}
+				break;
+			default:
+			{
+				bool star = false;
+				int j;
+
+				/* Increment arg if %*s exists. */
+				for (j = 0; fmt[i + j]; j++) {
+					if (isdigit(fmt[i + j]) ||
+					    fmt[i + j] == '.')
+						continue;
+					if (fmt[i + j] == '*') {
+						star = true;
+						continue;
+					}
+					if ((fmt[i + j] == 's') && star)
+						arg++;
+					break;
+				}
+				break;
+			} /* default */
+
+			} /* switch */
+			arg++;
+			continue;
+		case '(':
+			if (in_quote)
+				continue;
+			parens++;
+			continue;
+		case ')':
+			if (in_quote)
+				continue;
+			parens--;
+			if (WARN_ONCE(parens < 0,
+				      "Paren mismatch for event: %s\narg='%s'\n%*s",
+				      trace_event_name(call),
+				      fmt + start_arg,
+				      (i - start_arg) + 5, "^"))
+				return;
+			continue;
+		case ',':
+			if (in_quote || parens)
+				continue;
+			i++;
+			while (isspace(fmt[i]))
+				i++;
+			start_arg = i;
+			if (!(dereference_flags & (1ULL << arg)))
+				goto next_arg;
+
+			/* Find the REC-> in the argument */
+			c = strchr(fmt + i, ',');
+			r = strstr(fmt + i, "REC->");
+			if (r && (!c || r < c)) {
+				/*
+				 * Addresses of events on the buffer,
+				 * or an array on the buffer is
+				 * OK to dereference.
+				 * There's ways to fool this, but
+				 * this is to catch common mistakes,
+				 * not malicious code.
+				 */
+				a = strchr(fmt + i, '&');
+				if ((a && (a < r)) || test_field(r, call))
+					dereference_flags &= ~(1ULL << arg);
+			}
+		next_arg:
+			i--;
+			arg++;
+		}
+	}
+
+	/*
+	 * If you triggered the below warning, the trace event reported
+	 * uses an unsafe dereference pointer %p*. As the data stored
+	 * at the trace event time may no longer exist when the trace
+	 * event is printed, dereferencing to the original source is
+	 * unsafe. The source of the dereference must be copied into the
+	 * event itself, and the dereference must access the copy instead.
+	 */
+	if (WARN_ON_ONCE(dereference_flags)) {
+		arg = 1;
+		while (!(dereference_flags & 1)) {
+			dereference_flags >>= 1;
+			arg++;
+		}
+		pr_warn("event %s has unsafe dereference of argument %d\n",
+			trace_event_name(call), arg);
+		pr_warn("print_fmt: %s\n", fmt);
+	}
+}
+
 int trace_event_raw_init(struct trace_event_call *call)
 {
 	int id;
@@ -224,6 +432,8 @@ int trace_event_raw_init(struct trace_event_call *call)
 	id = register_trace_event(&call->event);
 	if (!id)
 		return -ENODEV;
+
+	test_event_printk(call);
 
 	return 0;
 }
@@ -2315,7 +2525,10 @@ __register_event(struct trace_event_call *call, struct module *mod)
 		return ret;
 
 	list_add(&call->list, &ftrace_events);
-	call->mod = mod;
+	if (call->flags & TRACE_EVENT_FL_DYNAMIC)
+		atomic_set(&call->refcnt, 0);
+	else
+		call->module = mod;
 
 	return 0;
 }
@@ -2436,7 +2649,7 @@ void trace_event_eval_update(struct trace_eval_map **map, int len)
 		}
 
 		/*
-		 * Since calls are grouped by systems, the likelyhood that the
+		 * Since calls are grouped by systems, the likelihood that the
 		 * next call in the iteration belongs to the same system as the
 		 * previous call is high. As an optimization, we skip searching
 		 * for a map[] that matches the call's system if the last call
@@ -2496,7 +2709,7 @@ __trace_add_new_event(struct trace_event_call *call, struct trace_array *tr)
 }
 
 /*
- * Just create a decriptor for early init. A descriptor is required
+ * Just create a descriptor for early init. A descriptor is required
  * for enabling events at boot. We want to enable events before
  * the filesystem is initialized.
  */
@@ -2629,7 +2842,9 @@ static void trace_module_remove_events(struct module *mod)
 
 	down_write(&trace_event_sem);
 	list_for_each_entry_safe(call, p, &ftrace_events, list) {
-		if (call->mod == mod)
+		if ((call->flags & TRACE_EVENT_FL_DYNAMIC) || !call->module)
+			continue;
+		if (call->module == mod)
 			__trace_remove_event_call(call);
 	}
 	up_write(&trace_event_sem);
@@ -2772,7 +2987,7 @@ struct trace_event_file *trace_get_event_file(const char *instance,
 	}
 
 	/* Don't let event modules unload while in use */
-	ret = try_module_get(file->event_call->mod);
+	ret = trace_event_try_get_ref(file->event_call);
 	if (!ret) {
 		trace_array_put(tr);
 		ret = -EBUSY;
@@ -2802,7 +3017,7 @@ EXPORT_SYMBOL_GPL(trace_get_event_file);
 void trace_put_event_file(struct trace_event_file *file)
 {
 	mutex_lock(&event_mutex);
-	module_put(file->event_call->mod);
+	trace_event_put_ref(file->event_call);
 	mutex_unlock(&event_mutex);
 
 	trace_array_put(file->tr);
@@ -2937,7 +3152,7 @@ static int free_probe_data(void *data)
 	if (!edata->ref) {
 		/* Remove the SOFT_MODE flag */
 		__ftrace_event_enable_disable(edata->file, 0, 1);
-		module_put(edata->file->event_call->mod);
+		trace_event_put_ref(edata->file->event_call);
 		kfree(edata);
 	}
 	return 0;
@@ -3070,7 +3285,7 @@ event_enable_func(struct trace_array *tr, struct ftrace_hash *hash,
 
  out_reg:
 	/* Don't let event modules unload while probe registered */
-	ret = try_module_get(file->event_call->mod);
+	ret = trace_event_try_get_ref(file->event_call);
 	if (!ret) {
 		ret = -EBUSY;
 		goto out_free;
@@ -3100,7 +3315,7 @@ event_enable_func(struct trace_array *tr, struct ftrace_hash *hash,
  out_disable:
 	__ftrace_event_enable_disable(file, 0, 1);
  out_put:
-	module_put(file->event_call->mod);
+	trace_event_put_ref(file->event_call);
  out_free:
 	kfree(data);
 	goto out;
@@ -3166,7 +3381,8 @@ void __trace_early_add_events(struct trace_array *tr)
 
 	list_for_each_entry(call, &ftrace_events, list) {
 		/* Early boot up should not have any modules loaded */
-		if (WARN_ON_ONCE(call->mod))
+		if (!(call->flags & TRACE_EVENT_FL_DYNAMIC) &&
+		    WARN_ON_ONCE(call->module))
 			continue;
 
 		ret = __trace_early_add_new_event(call, tr);

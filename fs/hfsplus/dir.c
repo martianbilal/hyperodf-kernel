@@ -73,9 +73,9 @@ again:
 			goto fail;
 		}
 		cnid = be32_to_cpu(entry.file.id);
-		if (entry.file.user_info.fdType ==
+		if (entry.file.info.user.fdType ==
 				cpu_to_be32(HFSP_HARDLINK_TYPE) &&
-				entry.file.user_info.fdCreator ==
+				entry.file.info.user.fdCreator ==
 				cpu_to_be32(HFSP_HFSPLUS_CREATOR) &&
 				HFSPLUS_SB(sb)->hidden_dir &&
 				(entry.file.create_date ==
@@ -569,6 +569,8 @@ const struct inode_operations hfsplus_dir_inode_operations = {
 	.rename			= hfsplus_rename,
 	.getattr		= hfsplus_getattr,
 	.listxattr		= hfsplus_listxattr,
+	.fileattr_get		= hfsplus_fileattr_get,
+	.fileattr_set		= hfsplus_fileattr_set,
 };
 
 const struct file_operations hfsplus_dir_operations = {

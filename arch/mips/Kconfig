@@ -4,19 +4,24 @@ config MIPS
 	default y
 	select ARCH_32BIT_OFF_T if !64BIT
 	select ARCH_BINFMT_ELF_STATE if MIPS_FP_SUPPORT
+	select ARCH_HAS_DEBUG_VIRTUAL if !64BIT
 	select ARCH_HAS_FORTIFY_SOURCE
 	select ARCH_HAS_KCOV
 	select ARCH_HAS_NON_OVERLAPPING_ADDRESS_SPACE if !EVA
 	select ARCH_HAS_PTE_SPECIAL if !(32BIT && CPU_HAS_RIXI)
+	select ARCH_HAS_STRNCPY_FROM_USER
+	select ARCH_HAS_STRNLEN_USER
 	select ARCH_HAS_TICK_BROADCAST if GENERIC_CLOCKEVENTS_BROADCAST
 	select ARCH_HAS_UBSAN_SANITIZE_ALL
 	select ARCH_HAS_GCOV_PROFILE_ALL
-	select ARCH_KEEP_MEMBLOCK if DEBUG_KERNEL
+	select ARCH_KEEP_MEMBLOCK
 	select ARCH_SUPPORTS_UPROBES
 	select ARCH_USE_BUILTIN_BSWAP
 	select ARCH_USE_CMPXCHG_LOCKREF if 64BIT
+	select ARCH_USE_MEMTEST
 	select ARCH_USE_QUEUED_RWLOCKS
 	select ARCH_USE_QUEUED_SPINLOCKS
+	select ARCH_SUPPORTS_HUGETLBFS if CPU_SUPPORTS_HUGEPAGES
 	select ARCH_WANT_DEFAULT_TOPDOWN_MMAP_LAYOUT if MMU
 	select ARCH_WANT_IPC_PARSE_VERSION
 	select ARCH_WANT_LD_ORPHAN_WARN
@@ -67,7 +72,6 @@ config MIPS
 	select HAVE_FUNCTION_TRACER
 	select HAVE_GCC_PLUGINS
 	select HAVE_GENERIC_VDSO
-	select HAVE_IDE
 	select HAVE_IOREMAP_PROT
 	select HAVE_IRQ_EXIT_ON_IRQ_STACK
 	select HAVE_IRQ_TIME_ACCOUNTING
@@ -92,8 +96,8 @@ config MIPS
 	select PERF_USE_VMALLOC
 	select PCI_MSI_ARCH_FALLBACKS if PCI_MSI
 	select RTC_LIB
-	select SET_FS
 	select SYSCTL_EXCEPTION_TRACE
+	select TRACE_IRQFLAGS_SUPPORT
 	select VIRT_TO_BUS
 	select ARCH_HAS_ELFCORE_COMPAT
 
@@ -109,6 +113,7 @@ config MACH_INGENIC
 	select SYS_SUPPORTS_LITTLE_ENDIAN
 	select SYS_SUPPORTS_ZBOOT
 	select DMA_NONCOHERENT
+	select ARCH_HAS_SYNC_DMA_FOR_CPU
 	select IRQ_MIPS_CPU
 	select PINCTRL
 	select GPIOLIB
@@ -198,6 +203,7 @@ config MIPS_ALCHEMY
 config AR7
 	bool "Texas Instruments AR7"
 	select BOOT_ELF32
+	select COMMON_CLK
 	select DMA_NONCOHERENT
 	select CEVT_R4K
 	select CSRC_R4K
@@ -212,7 +218,6 @@ config AR7
 	select SYS_SUPPORTS_ZBOOT_UART16550
 	select GPIOLIB
 	select VLYNQ
-	select HAVE_LEGACY_CLK
 	help
 	  Support for the Texas Instruments AR7 System-on-a-Chip
 	  family: TNETD7100, 7200 and 7300.
@@ -329,7 +334,6 @@ config BCM63XX
 	select SWAP_IO_SPACE
 	select GPIOLIB
 	select MIPS_L1_CACHE_SHIFT_4
-	select CLKDEV_LOOKUP
 	select HAVE_LEGACY_CLK
 	help
 	  Support for BCM63XX based boards
@@ -425,6 +429,8 @@ config MACH_INGENIC_SOC
 	select MIPS_GENERIC
 	select MACH_INGENIC
 	select SYS_SUPPORTS_ZBOOT_UART16550
+	select CPU_SUPPORTS_CPUFREQ
+	select MIPS_EXTERNAL_TIMER
 
 config LANTIQ
 	bool "Lantiq based platforms"
@@ -443,7 +449,6 @@ config LANTIQ
 	select GPIOLIB
 	select SWAP_IO_SPACE
 	select BOOT_RAW
-	select CLKDEV_LOOKUP
 	select HAVE_LEGACY_CLK
 	select USE_OF
 	select PINCTRL
@@ -508,35 +513,6 @@ config MACH_LOONGSON64
 	  GS264/GS464/GS464E/GS464V microarchitecture (except old Loongson-2E
 	  and Loongson-2F which will be removed), developed by the Institute
 	  of Computing Technology (ICT), Chinese Academy of Sciences (CAS).
-
-config MACH_PISTACHIO
-	bool "IMG Pistachio SoC based boards"
-	select BOOT_ELF32
-	select BOOT_RAW
-	select CEVT_R4K
-	select CLKSRC_MIPS_GIC
-	select COMMON_CLK
-	select CSRC_R4K
-	select DMA_NONCOHERENT
-	select GPIOLIB
-	select IRQ_MIPS_CPU
-	select MFD_SYSCON
-	select MIPS_CPU_SCACHE
-	select MIPS_GIC
-	select PINCTRL
-	select REGULATOR
-	select SYS_HAS_CPU_MIPS32_R2
-	select SYS_SUPPORTS_32BIT_KERNEL
-	select SYS_SUPPORTS_LITTLE_ENDIAN
-	select SYS_SUPPORTS_MIPS_CPS
-	select SYS_SUPPORTS_MULTITHREADING
-	select SYS_SUPPORTS_RELOCATABLE
-	select SYS_SUPPORTS_ZBOOT
-	select SYS_HAS_EARLY_PRINTK
-	select USE_GENERIC_EARLY_PRINTK_8250
-	select USE_OF
-	help
-	  This enables support for the IMG Pistachio SoC platform.
 
 config MIPS_MALTA
 	bool "MIPS Malta board"
@@ -627,6 +603,7 @@ config MACH_NINTENDO64
 config RALINK
 	bool "Ralink based machines"
 	select CEVT_R4K
+	select COMMON_CLK
 	select CSRC_R4K
 	select BOOT_RAW
 	select DMA_NONCOHERENT
@@ -639,7 +616,6 @@ config RALINK
 	select SYS_SUPPORTS_MIPS16
 	select SYS_SUPPORTS_ZBOOT
 	select SYS_HAS_EARLY_PRINTK
-	select CLKDEV_LOOKUP
 	select ARCH_HAS_RESET_CONTROLLER
 	select RESET_CONTROLLER
 
@@ -713,6 +689,7 @@ config SGI_IP27
 	select ARC_CMDLINE_ONLY
 	select BOOT_ELF64
 	select DEFAULT_SGI_PARTITION
+	select FORCE_PCI
 	select SYS_HAS_EARLY_PRINTK
 	select HAVE_PCI
 	select IRQ_MIPS_CPU
@@ -775,6 +752,7 @@ config SGI_IP30
 	select BOOT_ELF64
 	select CEVT_R4K
 	select CSRC_R4K
+	select FORCE_PCI
 	select SYNC_R4K if SMP
 	select ZONE_DMA32
 	select HAVE_PCI
@@ -991,7 +969,6 @@ config CAVIUM_OCTEON_SOC
 	select HAVE_PLAT_FW_INIT_CMDLINE
 	select HAVE_PLAT_MEMCPY
 	select ZONE_DMA32
-	select HOLES_IN_ZONE
 	select GPIOLIB
 	select USE_OF
 	select ARCH_SPARSEMEM_ENABLE
@@ -999,6 +976,7 @@ config CAVIUM_OCTEON_SOC
 	select NR_CPUS_DEFAULT_64
 	select MIPS_NR_CPU_NR_MAP_1024
 	select BUILTIN_DTB
+	select MTD
 	select MTD_COMPLEX_MAPPINGS
 	select SWIOTLB
 	select SYS_SUPPORTS_RELOCATABLE
@@ -1082,7 +1060,6 @@ source "arch/mips/ingenic/Kconfig"
 source "arch/mips/jazz/Kconfig"
 source "arch/mips/lantiq/Kconfig"
 source "arch/mips/pic32/Kconfig"
-source "arch/mips/pistachio/Kconfig"
 source "arch/mips/ralink/Kconfig"
 source "arch/mips/sgi-ip27/Kconfig"
 source "arch/mips/sibyte/Kconfig"
@@ -1227,9 +1204,6 @@ config HAVE_PLAT_MEMCPY
 config ISA_DMA_API
 	bool
 
-config HOLES_IN_ZONE
-	bool
-
 config SYS_SUPPORTS_RELOCATABLE
 	bool
 	help
@@ -1281,11 +1255,6 @@ config SYS_SUPPORTS_BIG_ENDIAN
 
 config SYS_SUPPORTS_LITTLE_ENDIAN
 	bool
-
-config SYS_SUPPORTS_HUGETLBFS
-	bool
-	depends on CPU_SUPPORTS_HUGEPAGES
-	default y
 
 config MIPS_HUGE_TLB_SUPPORT
 	def_bool HUGETLB_PAGE || TRANSPARENT_HUGEPAGE
@@ -2119,7 +2088,7 @@ config CPU_MIPS32
 config CPU_MIPS64
 	bool
 	default y if CPU_MIPS64_R1 || CPU_MIPS64_R2 || CPU_MIPS64_R5 || \
-		     CPU_MIPS64_R6
+		     CPU_MIPS64_R6 || CPU_LOONGSON64 || CPU_CAVIUM_OCTEON
 
 #
 # These indicate the revision of the architecture
@@ -2186,7 +2155,8 @@ config CPU_SUPPORTS_HUGEPAGES
 	depends on !(32BIT && (ARCH_PHYS_ADDR_T_64BIT || EVA))
 config MIPS_PGD_C0_CONTEXT
 	bool
-	default y if 64BIT && (CPU_MIPSR2 || CPU_MIPSR6) && !CPU_XLP
+	depends on 64BIT
+	default y if (CPU_MIPSR2 || CPU_MIPSR6) && !CPU_XLP
 
 #
 # Set to y for ptrace access to watch registers.
@@ -2219,23 +2189,6 @@ config 64BIT
 	  Select this option if you want to build a 64-bit kernel.
 
 endchoice
-
-config KVM_GUEST
-	bool "KVM Guest Kernel"
-	depends on CPU_MIPS32_R2
-	depends on !64BIT && BROKEN_ON_SMP
-	help
-	  Select this option if building a guest kernel for KVM (Trap & Emulate)
-	  mode.
-
-config KVM_GUEST_TIMER_FREQ
-	int "Count/Compare Timer Frequency (MHz)"
-	depends on KVM_GUEST
-	default 100
-	help
-	  Set this to non-zero if building a guest kernel for KVM to skip RTC
-	  emulation when determining guest CPU Frequency. Instead, the guest's
-	  timer frequency is specified directly.
 
 config MIPS_VA_BITS_48
 	bool "48 bits virtual memory"
@@ -2882,7 +2835,7 @@ config RANDOMIZE_BASE_MAX_OFFSET
 config NODES_SHIFT
 	int
 	default "6"
-	depends on NEED_MULTIPLE_NODES
+	depends on NUMA
 
 config HW_PERF_EVENTS
 	bool "Enable hardware performance counter support for perf events"
@@ -3292,13 +3245,6 @@ config I8253
 	select CLKSRC_I8253
 	select CLKEVT_I8253
 	select MIPS_EXTERNAL_TIMER
-
-config ZONE_DMA
-	bool
-
-config ZONE_DMA32
-	bool
-
 endmenu
 
 config TRAD_SIGNALS

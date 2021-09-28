@@ -132,7 +132,7 @@ static u16 mlx5e_qid_from_qos(struct mlx5e_channels *chs, u16 qid)
 	 */
 	bool is_ptp = MLX5E_GET_PFLAG(&chs->params, MLX5E_PFLAG_TX_PORT_TS);
 
-	return (chs->params.num_channels + is_ptp) * chs->params.num_tc + qid;
+	return (chs->params.num_channels + is_ptp) * mlx5e_get_dcb_num_tc(&chs->params) + qid;
 }
 
 int mlx5e_get_txq_by_classid(struct mlx5e_priv *priv, u16 classid)
@@ -232,8 +232,8 @@ static int mlx5e_open_qos_sq(struct mlx5e_priv *priv, struct mlx5e_channels *chs
 
 	memset(&param_sq, 0, sizeof(param_sq));
 	memset(&param_cq, 0, sizeof(param_cq));
-	mlx5e_build_sq_param(priv, params, &param_sq);
-	mlx5e_build_tx_cq_param(priv, params, &param_cq);
+	mlx5e_build_sq_param(priv->mdev, params, &param_sq);
+	mlx5e_build_tx_cq_param(priv->mdev, params, &param_cq);
 	err = mlx5e_open_cq(priv, params->tx_cq_moderation, &param_cq, &ccp, &sq->cq);
 	if (err)
 		goto err_free_sq;

@@ -1,7 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* -*- mode: c; c-basic-offset: 8; -*-
- * vim: noexpandtab sw=8 ts=8 sts=0:
- *
+/*
  * xattr.h
  *
  * Copyright (C) 2004, 2008 Oracle.  All rights reserved.
@@ -85,6 +83,7 @@ int ocfs2_reflink_xattrs(struct inode *old_inode,
 			 struct buffer_head *new_bh,
 			 bool preserve_security);
 int ocfs2_init_security_and_acl(struct inode *dir,
+				struct buffer_head *dir_bh,
 				struct inode *inode,
 				const struct qstr *qstr);
 #endif /* OCFS2_XATTR_H */

@@ -276,7 +276,7 @@ static void mcp251x_clean(struct net_device *net)
 		net->stats.tx_errors++;
 	dev_kfree_skb(priv->tx_skb);
 	if (priv->tx_len)
-		can_free_echo_skb(priv->net, 0);
+		can_free_echo_skb(priv->net, 0, NULL);
 	priv->tx_skb = NULL;
 	priv->tx_len = 0;
 }
@@ -1330,7 +1330,7 @@ static int mcp251x_can_probe(struct spi_device *spi)
 	priv->can.ctrlmode_supported = CAN_CTRLMODE_3_SAMPLES |
 		CAN_CTRLMODE_LOOPBACK | CAN_CTRLMODE_LISTENONLY;
 	if (match)
-		priv->model = (enum mcp251x_model)match;
+		priv->model = (enum mcp251x_model)(uintptr_t)match;
 	else
 		priv->model = spi_get_device_id(spi)->driver_data;
 	priv->net = net;

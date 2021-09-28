@@ -1421,9 +1421,19 @@ int vb2_core_qbuf(struct vb2_queue *q, unsigned int index, void *pb,
 static void vb2_req_queue(struct media_request_object *obj)
 {
 	struct vb2_buffer *vb = container_of(obj, struct vb2_buffer, req_obj);
+	int err;
 
 	mutex_lock(vb->vb2_queue->lock);
-	vb2_core_qbuf(vb->vb2_queue, vb->index, NULL, NULL);
+	/*
+	 * There is no method to propagate an error from vb2_core_qbuf(),
+	 * so if this returns a non-0 value, then WARN.
+	 *
+	 * The only exception is -EIO which is returned if q->error is
+	 * set. We just ignore that, and expect this will be caught the
+	 * next time vb2_req_prepare() is called.
+	 */
+	err = vb2_core_qbuf(vb->vb2_queue, vb->index, NULL, NULL);
+	WARN_ON_ONCE(err && err != -EIO);
 	mutex_unlock(vb->vb2_queue->lock);
 }
 
@@ -1573,6 +1583,7 @@ int vb2_core_qbuf(struct vb2_queue *q, unsigned int index, void *pb,
 		  struct media_request *req)
 {
 	struct vb2_buffer *vb;
+	enum vb2_buffer_state orig_state;
 	int ret;
 
 	if (q->error) {
@@ -1673,6 +1684,7 @@ int vb2_core_qbuf(struct vb2_queue *q, unsigned int index, void *pb,
 	 * Add to the queued buffers list, a buffer will stay on it until
 	 * dequeued in dqbuf.
 	 */
+	orig_state = vb->state;
 	list_add_tail(&vb->queued_entry, &q->queued_list);
 	q->queued_count++;
 	q->waiting_for_buffers = false;
@@ -1703,8 +1715,17 @@ int vb2_core_qbuf(struct vb2_queue *q, unsigned int index, void *pb,
 	if (q->streaming && !q->start_streaming_called &&
 	    q->queued_count >= q->min_buffers_needed) {
 		ret = vb2_start_streaming(q);
-		if (ret)
+		if (ret) {
+			/*
+			 * Since vb2_core_qbuf will return with an error,
+			 * we should return it to state DEQUEUED since
+			 * the error indicates that the buffer wasn't queued.
+			 */
+			list_del(&vb->queued_entry);
+			q->queued_count--;
+			vb->state = orig_state;
 			return ret;
+		}
 	}
 
 	dprintk(q, 2, "qbuf of buffer %d succeeded\n", vb->index);
@@ -2329,6 +2350,17 @@ int vb2_core_queue_init(struct vb2_queue *q)
 		return -EINVAL;
 
 	if (WARN_ON(q->requires_requests && !q->supports_requests))
+		return -EINVAL;
+
+	/*
+	 * This combination is not allowed since a non-zero value of
+	 * q->min_buffers_needed can cause vb2_core_qbuf() to fail if
+	 * it has to call start_streaming(), and the Request API expects
+	 * that queueing a request (and thus queueing a buffer contained
+	 * in that request) will always succeed. There is no method of
+	 * propagating an error back to userspace.
+	 */
+	if (WARN_ON(q->supports_requests && q->min_buffers_needed))
 		return -EINVAL;
 
 	INIT_LIST_HEAD(&q->queued_list);

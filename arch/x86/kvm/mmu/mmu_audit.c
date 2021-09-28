@@ -70,7 +70,7 @@ static void mmu_spte_walk(struct kvm_vcpu *vcpu, inspect_spte_fn fn)
 	for (i = 0; i < 4; ++i) {
 		hpa_t root = vcpu->arch.mmu->pae_root[i];
 
-		if (root && VALID_PAGE(root)) {
+		if (IS_VALID_PAE_ROOT(root)) {
 			root &= PT64_BASE_ADDR_MASK;
 			sp = to_shadow_page(root);
 			__mmu_spte_walk(vcpu, sp, fn, 2);
@@ -147,7 +147,7 @@ static void inspect_spte_has_rmap(struct kvm *kvm, u64 *sptep)
 		return;
 	}
 
-	rmap_head = __gfn_to_rmap(gfn, rev_sp->role.level, slot);
+	rmap_head = gfn_to_rmap(gfn, rev_sp->role.level, slot);
 	if (!rmap_head->val) {
 		if (!__ratelimit(&ratelimit_state))
 			return;
@@ -200,7 +200,7 @@ static void audit_write_protection(struct kvm *kvm, struct kvm_mmu_page *sp)
 
 	slots = kvm_memslots_for_spte_role(kvm, sp->role);
 	slot = __gfn_to_memslot(slots, sp->gfn);
-	rmap_head = __gfn_to_rmap(sp->gfn, PG_LEVEL_4K, slot);
+	rmap_head = gfn_to_rmap(sp->gfn, PG_LEVEL_4K, slot);
 
 	for_each_rmap_spte(rmap_head, &iter, sptep) {
 		if (is_writable_pte(*sptep))

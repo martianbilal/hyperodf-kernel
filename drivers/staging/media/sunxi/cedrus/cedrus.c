@@ -31,13 +31,19 @@
 static const struct cedrus_control cedrus_controls[] = {
 	{
 		.cfg = {
-			.id	= V4L2_CID_MPEG_VIDEO_MPEG2_SLICE_PARAMS,
+			.id	= V4L2_CID_STATELESS_MPEG2_SEQUENCE,
 		},
 		.codec		= CEDRUS_CODEC_MPEG2,
 	},
 	{
 		.cfg = {
-			.id	= V4L2_CID_MPEG_VIDEO_MPEG2_QUANTIZATION,
+			.id	= V4L2_CID_STATELESS_MPEG2_PICTURE,
+		},
+		.codec		= CEDRUS_CODEC_MPEG2,
+	},
+	{
+		.cfg = {
+			.id	= V4L2_CID_STATELESS_MPEG2_QUANTISATION,
 		},
 		.codec		= CEDRUS_CODEC_MPEG2,
 	},
@@ -131,6 +137,12 @@ static const struct cedrus_control cedrus_controls[] = {
 	},
 	{
 		.cfg = {
+			.id	= V4L2_CID_MPEG_VIDEO_HEVC_SCALING_MATRIX,
+		},
+		.codec		= CEDRUS_CODEC_H265,
+	},
+	{
+		.cfg = {
 			.id	= V4L2_CID_MPEG_VIDEO_HEVC_DECODE_MODE,
 			.max	= V4L2_MPEG_VIDEO_HEVC_DECODE_MODE_SLICE_BASED,
 			.def	= V4L2_MPEG_VIDEO_HEVC_DECODE_MODE_SLICE_BASED,
@@ -147,9 +159,15 @@ static const struct cedrus_control cedrus_controls[] = {
 	},
 	{
 		.cfg = {
-			.id		= V4L2_CID_MPEG_VIDEO_VP8_FRAME_HEADER,
+			.id	= V4L2_CID_STATELESS_VP8_FRAME,
 		},
 		.codec		= CEDRUS_CODEC_VP8,
+	},
+	{
+		.cfg = {
+			.id = V4L2_CID_MPEG_VIDEO_HEVC_DECODE_PARAMS,
+		},
+		.codec		= CEDRUS_CODEC_H265,
 	},
 };
 
@@ -270,7 +288,7 @@ static int cedrus_open(struct file *file)
 		ret = PTR_ERR(ctx->fh.m2m_ctx);
 		goto err_ctrls;
 	}
-	ctx->dst_fmt.pixelformat = V4L2_PIX_FMT_SUNXI_TILED_NV12;
+	ctx->dst_fmt.pixelformat = V4L2_PIX_FMT_NV12_32L32;
 	cedrus_prepare_format(&ctx->dst_fmt);
 	ctx->src_fmt.pixelformat = V4L2_PIX_FMT_MPEG2_SLICE;
 	/*

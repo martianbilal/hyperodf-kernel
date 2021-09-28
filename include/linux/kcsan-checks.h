@@ -1,4 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * KCSAN access checks and modifiers. These can be used to explicitly check
+ * uninstrumented accesses, or change KCSAN checking behaviour of accesses.
+ *
+ * Copyright (C) 2019, Google LLC.
+ */
 
 #ifndef _LINUX_KCSAN_CHECKS_H
 #define _LINUX_KCSAN_CHECKS_H
@@ -94,9 +100,12 @@ void kcsan_set_access_mask(unsigned long mask);
 /* Scoped access information. */
 struct kcsan_scoped_access {
 	struct list_head list;
+	/* Access information. */
 	const volatile void *ptr;
 	size_t size;
 	int type;
+	/* Location where scoped access was set up. */
+	unsigned long ip;
 };
 /*
  * Automatically call kcsan_end_scoped_access() when kcsan_scoped_access goes

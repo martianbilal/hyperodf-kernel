@@ -430,9 +430,26 @@ static ssize_t pimpampom_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(pimpampom);
 
+static ssize_t dev_busid_show(struct device *dev,
+			      struct device_attribute *attr,
+			      char *buf)
+{
+	struct subchannel *sch = to_subchannel(dev);
+	struct pmcw *pmcw = &sch->schib.pmcw;
+
+	if ((pmcw->st == SUBCHANNEL_TYPE_IO ||
+	     pmcw->st == SUBCHANNEL_TYPE_MSG) && pmcw->dnv)
+		return sysfs_emit(buf, "0.%x.%04x\n", sch->schid.ssid,
+				  pmcw->dev);
+	else
+		return sysfs_emit(buf, "none\n");
+}
+static DEVICE_ATTR_RO(dev_busid);
+
 static struct attribute *io_subchannel_type_attrs[] = {
 	&dev_attr_chpids.attr,
 	&dev_attr_pimpampom.attr,
+	&dev_attr_dev_busid.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(io_subchannel_type);
@@ -651,15 +668,13 @@ static void css_sch_todo(struct work_struct *work)
 }
 
 static struct idset *slow_subchannel_set;
-static spinlock_t slow_subchannel_lock;
-static wait_queue_head_t css_eval_wq;
+static DEFINE_SPINLOCK(slow_subchannel_lock);
+static DECLARE_WAIT_QUEUE_HEAD(css_eval_wq);
 static atomic_t css_eval_scheduled;
 
 static int __init slow_subchannel_init(void)
 {
-	spin_lock_init(&slow_subchannel_lock);
 	atomic_set(&css_eval_scheduled, 0);
-	init_waitqueue_head(&css_eval_wq);
 	slow_subchannel_set = idset_sch_new();
 	if (!slow_subchannel_set) {
 		CIO_MSG_EVENT(0, "could not allocate slow subchannel set\n");
@@ -888,6 +903,18 @@ static ssize_t real_cssid_show(struct device *dev, struct device_attribute *a,
 }
 static DEVICE_ATTR_RO(real_cssid);
 
+static ssize_t rescan_store(struct device *dev, struct device_attribute *a,
+			    const char *buf, size_t count)
+{
+	CIO_TRACE_EVENT(4, "usr-rescan");
+
+	css_schedule_eval_all();
+	css_complete_work();
+
+	return count;
+}
+static DEVICE_ATTR_WO(rescan);
+
 static ssize_t cm_enable_show(struct device *dev, struct device_attribute *a,
 			      char *buf)
 {
@@ -934,6 +961,7 @@ static umode_t cm_enable_mode(struct kobject *kobj, struct attribute *attr,
 
 static struct attribute *cssdev_attrs[] = {
 	&dev_attr_real_cssid.attr,
+	&dev_attr_rescan.attr,
 	NULL,
 };
 
@@ -1373,15 +1401,14 @@ static int css_probe(struct device *dev)
 	return ret;
 }
 
-static int css_remove(struct device *dev)
+static void css_remove(struct device *dev)
 {
 	struct subchannel *sch;
-	int ret;
 
 	sch = to_subchannel(dev);
-	ret = sch->driver->remove ? sch->driver->remove(sch) : 0;
+	if (sch->driver->remove)
+		sch->driver->remove(sch);
 	sch->driver = NULL;
-	return ret;
 }
 
 static void css_shutdown(struct device *dev)

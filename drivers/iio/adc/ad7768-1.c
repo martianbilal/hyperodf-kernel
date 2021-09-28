@@ -614,7 +614,6 @@ static int ad7768_probe(struct spi_device *spi)
 
 	st->mclk_freq = clk_get_rate(st->mclk);
 
-	spi_set_drvdata(spi, indio_dev);
 	mutex_init(&st->lock);
 
 	indio_dev->channels = ad7768_channels;
@@ -630,12 +629,12 @@ static int ad7768_probe(struct spi_device *spi)
 	}
 
 	st->trig = devm_iio_trigger_alloc(&spi->dev, "%s-dev%d",
-					  indio_dev->name, indio_dev->id);
+					  indio_dev->name,
+					  iio_device_id(indio_dev));
 	if (!st->trig)
 		return -ENOMEM;
 
 	st->trig->ops = &ad7768_trigger_ops;
-	st->trig->dev.parent = &spi->dev;
 	iio_trigger_set_drvdata(st->trig, indio_dev);
 	ret = devm_iio_trigger_register(&spi->dev, st->trig);
 	if (ret)

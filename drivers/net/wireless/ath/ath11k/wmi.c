@@ -5235,7 +5235,7 @@ ath11k_wmi_pull_pdev_stats_tx(const struct wmi_pdev_stats_tx *src,
 	dst->hw_reaped = src->hw_reaped;
 	dst->underrun = src->underrun;
 	dst->tx_abort = src->tx_abort;
-	dst->mpdus_requed = src->mpdus_requed;
+	dst->mpdus_requeued = src->mpdus_requeued;
 	dst->tx_ko = src->tx_ko;
 	dst->data_rc = src->data_rc;
 	dst->self_triggers = src->self_triggers;
@@ -5505,7 +5505,7 @@ ath11k_wmi_fw_pdev_tx_stats_fill(const struct ath11k_fw_stats_pdev *pdev,
 	len += scnprintf(buf + len, buf_len - len, "%30s %10d\n",
 			 "PPDUs cleaned", pdev->tx_abort);
 	len += scnprintf(buf + len, buf_len - len, "%30s %10d\n",
-			 "MPDUs requed", pdev->mpdus_requed);
+			 "MPDUs requeued", pdev->mpdus_requeued);
 	len += scnprintf(buf + len, buf_len - len, "%30s %10u\n",
 			 "Excessive retries", pdev->tx_ko);
 	len += scnprintf(buf + len, buf_len - len, "%30s %10u\n",
@@ -6171,10 +6171,8 @@ static void ath11k_mgmt_rx_event(struct ath11k_base *ab, struct sk_buff *skb)
 		}
 	}
 
-	/* TODO: Pending handle beacon implementation
-	 *if (ieee80211_is_beacon(hdr->frame_control))
-	 *	ath11k_mac_handle_beacon(ar, skb);
-	 */
+	if (ieee80211_is_beacon(hdr->frame_control))
+		ath11k_mac_handle_beacon(ar, skb);
 
 	ath11k_dbg(ab, ATH11K_DBG_MGMT,
 		   "event mgmt rx skb %pK len %d ftype %02x stype %02x\n",
@@ -6393,10 +6391,7 @@ static void ath11k_roam_event(struct ath11k_base *ab, struct sk_buff *skb)
 
 	switch (roam_ev.reason) {
 	case WMI_ROAM_REASON_BEACON_MISS:
-		/* TODO: Pending beacon miss and connection_loss_work
-		 * implementation
-		 * ath11k_mac_handle_beacon_miss(ar, vdev_id);
-		 */
+		ath11k_mac_handle_beacon_miss(ar, roam_ev.vdev_id);
 		break;
 	case WMI_ROAM_REASON_BETTER_AP:
 	case WMI_ROAM_REASON_LOW_RSSI:

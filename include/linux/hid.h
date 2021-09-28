@@ -102,6 +102,7 @@ struct hid_item {
 #define HID_COLLECTION_PHYSICAL		0
 #define HID_COLLECTION_APPLICATION	1
 #define HID_COLLECTION_LOGICAL		2
+#define HID_COLLECTION_NAMED_ARRAY	4
 
 /*
  * HID report descriptor global item tags
@@ -153,6 +154,7 @@ struct hid_item {
 #define HID_UP_CONSUMER		0x000c0000
 #define HID_UP_DIGITIZER	0x000d0000
 #define HID_UP_PID		0x000f0000
+#define HID_UP_BATTERY		0x00850000
 #define HID_UP_HPVENDOR         0xff7f0000
 #define HID_UP_HPVENDOR2        0xff010000
 #define HID_UP_MSVENDOR		0xff000000
@@ -298,6 +300,8 @@ struct hid_item {
 #define HID_DG_BARRELSWITCH2	0x000d005a
 #define HID_DG_TOOLSERIALNUMBER	0x000d005b
 #define HID_DG_LATENCYMODE	0x000d0060
+
+#define HID_BAT_ABSOLUTESTATEOFCHARGE	0x00850065
 
 #define HID_VD_ASUS_CUSTOM_MEDIA_KEYS	0xff310076
 /*
@@ -797,6 +801,7 @@ struct hid_driver {
  * @raw_request: send raw report request to device (e.g. feature report)
  * @output_report: send output report to device
  * @idle: send idle request to device
+ * @may_wakeup: return if device may act as a wakeup source during system-suspend
  */
 struct hid_ll_driver {
 	int (*start)(struct hid_device *hdev);
@@ -821,6 +826,7 @@ struct hid_ll_driver {
 	int (*output_report) (struct hid_device *hdev, __u8 *buf, size_t len);
 
 	int (*idle)(struct hid_device *hdev, int report, int idle, int reqtype);
+	bool (*may_wakeup)(struct hid_device *hdev);
 };
 
 extern struct hid_ll_driver i2c_hid_ll_driver;
@@ -1144,6 +1150,22 @@ static inline int hid_hw_idle(struct hid_device *hdev, int report, int idle,
 		return hdev->ll_driver->idle(hdev, report, idle, reqtype);
 
 	return 0;
+}
+
+/**
+ * hid_may_wakeup - return if the hid device may act as a wakeup source during system-suspend
+ *
+ * @hdev: hid device
+ */
+static inline bool hid_hw_may_wakeup(struct hid_device *hdev)
+{
+	if (hdev->ll_driver->may_wakeup)
+		return hdev->ll_driver->may_wakeup(hdev);
+
+	if (hdev->dev.parent)
+		return device_may_wakeup(hdev->dev.parent);
+
+	return false;
 }
 
 /**

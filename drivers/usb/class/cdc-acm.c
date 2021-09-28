@@ -838,7 +838,7 @@ static int acm_tty_write(struct tty_struct *tty,
 	return count;
 }
 
-static int acm_tty_write_room(struct tty_struct *tty)
+static unsigned int acm_tty_write_room(struct tty_struct *tty)
 {
 	struct acm *acm = tty->driver_data;
 	/*
@@ -848,7 +848,7 @@ static int acm_tty_write_room(struct tty_struct *tty)
 	return acm_wb_is_avail(acm) ? acm->writesize : 0;
 }
 
-static int acm_tty_chars_in_buffer(struct tty_struct *tty)
+static unsigned int acm_tty_chars_in_buffer(struct tty_struct *tty)
 {
 	struct acm *acm = tty->driver_data;
 	/*
@@ -1056,21 +1056,8 @@ static void acm_tty_set_termios(struct tty_struct *tty,
 	newline.bParityType = termios->c_cflag & PARENB ?
 				(termios->c_cflag & PARODD ? 1 : 2) +
 				(termios->c_cflag & CMSPAR ? 2 : 0) : 0;
-	switch (termios->c_cflag & CSIZE) {
-	case CS5:
-		newline.bDataBits = 5;
-		break;
-	case CS6:
-		newline.bDataBits = 6;
-		break;
-	case CS7:
-		newline.bDataBits = 7;
-		break;
-	case CS8:
-	default:
-		newline.bDataBits = 8;
-		break;
-	}
+	newline.bDataBits = tty_get_char_size(termios->c_cflag);
+
 	/* FIXME: Needs to clear unsupported bits in the termios */
 	acm->clocal = ((termios->c_cflag & CLOCAL) != 0);
 
@@ -1913,9 +1900,17 @@ static const struct usb_device_id acm_ids[] = {
 #endif
 
 #if IS_ENABLED(CONFIG_USB_SERIAL_XR)
-	{ USB_DEVICE(0x04e2, 0x1410),   /* Ignore XR21V141X USB to Serial converter */
-	.driver_info = IGNORE_DEVICE,
-	},
+	{ USB_DEVICE(0x04e2, 0x1400), .driver_info = IGNORE_DEVICE },
+	{ USB_DEVICE(0x04e2, 0x1401), .driver_info = IGNORE_DEVICE },
+	{ USB_DEVICE(0x04e2, 0x1402), .driver_info = IGNORE_DEVICE },
+	{ USB_DEVICE(0x04e2, 0x1403), .driver_info = IGNORE_DEVICE },
+	{ USB_DEVICE(0x04e2, 0x1410), .driver_info = IGNORE_DEVICE },
+	{ USB_DEVICE(0x04e2, 0x1411), .driver_info = IGNORE_DEVICE },
+	{ USB_DEVICE(0x04e2, 0x1412), .driver_info = IGNORE_DEVICE },
+	{ USB_DEVICE(0x04e2, 0x1414), .driver_info = IGNORE_DEVICE },
+	{ USB_DEVICE(0x04e2, 0x1420), .driver_info = IGNORE_DEVICE },
+	{ USB_DEVICE(0x04e2, 0x1422), .driver_info = IGNORE_DEVICE },
+	{ USB_DEVICE(0x04e2, 0x1424), .driver_info = IGNORE_DEVICE },
 #endif
 
 	/*Samsung phone in firmware update mode */
@@ -1948,6 +1943,11 @@ static const struct usb_device_id acm_ids[] = {
 
 	/* Exclude Goodix Fingerprint Reader */
 	{ USB_DEVICE(0x27c6, 0x5395),
+	.driver_info = IGNORE_DEVICE,
+	},
+
+	/* Exclude Heimann Sensor GmbH USB appset demo */
+	{ USB_DEVICE(0x32a7, 0x0000),
 	.driver_info = IGNORE_DEVICE,
 	},
 
@@ -2027,16 +2027,16 @@ static const struct tty_operations acm_ops = {
 static int __init acm_init(void)
 {
 	int retval;
-	acm_tty_driver = alloc_tty_driver(ACM_TTY_MINORS);
-	if (!acm_tty_driver)
-		return -ENOMEM;
+	acm_tty_driver = tty_alloc_driver(ACM_TTY_MINORS, TTY_DRIVER_REAL_RAW |
+			TTY_DRIVER_DYNAMIC_DEV);
+	if (IS_ERR(acm_tty_driver))
+		return PTR_ERR(acm_tty_driver);
 	acm_tty_driver->driver_name = "acm",
 	acm_tty_driver->name = "ttyACM",
 	acm_tty_driver->major = ACM_TTY_MAJOR,
 	acm_tty_driver->minor_start = 0,
 	acm_tty_driver->type = TTY_DRIVER_TYPE_SERIAL,
 	acm_tty_driver->subtype = SERIAL_TYPE_NORMAL,
-	acm_tty_driver->flags = TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV;
 	acm_tty_driver->init_termios = tty_std_termios;
 	acm_tty_driver->init_termios.c_cflag = B9600 | CS8 | CREAD |
 								HUPCL | CLOCAL;
@@ -2044,14 +2044,14 @@ static int __init acm_init(void)
 
 	retval = tty_register_driver(acm_tty_driver);
 	if (retval) {
-		put_tty_driver(acm_tty_driver);
+		tty_driver_kref_put(acm_tty_driver);
 		return retval;
 	}
 
 	retval = usb_register(&acm_driver);
 	if (retval) {
 		tty_unregister_driver(acm_tty_driver);
-		put_tty_driver(acm_tty_driver);
+		tty_driver_kref_put(acm_tty_driver);
 		return retval;
 	}
 
@@ -2064,7 +2064,7 @@ static void __exit acm_exit(void)
 {
 	usb_deregister(&acm_driver);
 	tty_unregister_driver(acm_tty_driver);
-	put_tty_driver(acm_tty_driver);
+	tty_driver_kref_put(acm_tty_driver);
 	idr_destroy(&acm_minors);
 }
 

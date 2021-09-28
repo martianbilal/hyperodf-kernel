@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2017-2020 Broadcom. All Rights Reserved. The term *
+ * Copyright (C) 2017-2021 Broadcom. All Rights Reserved. The term *
  * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.  *
  * Copyright (C) 2004-2016 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
@@ -98,6 +98,7 @@ static struct scsi_transport_template *lpfc_transport_template = NULL;
 static struct scsi_transport_template *lpfc_vport_transport_template = NULL;
 static DEFINE_IDR(lpfc_hba_index);
 #define LPFC_NVMET_BUF_POST 254
+static int lpfc_vmid_res_alloc(struct lpfc_hba *phba, struct lpfc_vport *vport);
 
 /**
  * lpfc_config_port_prep - Perform lpfc initialization prior to config port
@@ -254,13 +255,13 @@ lpfc_config_port_prep(struct lpfc_hba *phba)
 		if (mb->un.varDmp.word_cnt == 0)
 			break;
 
-		i =  mb->un.varDmp.word_cnt * sizeof(uint32_t);
-		if (offset + i >  DMP_VPD_SIZE)
-			i =  DMP_VPD_SIZE - offset;
+		if (mb->un.varDmp.word_cnt > DMP_VPD_SIZE - offset)
+			mb->un.varDmp.word_cnt = DMP_VPD_SIZE - offset;
 		lpfc_sli_pcimem_bcopy(((uint8_t *)mb) + DMP_RSP_OFFSET,
-				      lpfc_vpd_data  + offset, i);
-		offset += i;
-	} while (offset < DMP_VPD_SIZE);
+				      lpfc_vpd_data + offset,
+				      mb->un.varDmp.word_cnt);
+		offset += mb->un.varDmp.word_cnt;
+	} while (mb->un.varDmp.word_cnt && offset < DMP_VPD_SIZE);
 
 	lpfc_parse_vpd(phba, lpfc_vpd_data, offset);
 
@@ -1043,12 +1044,11 @@ lpfc_hba_down_post_s4(struct lpfc_hba *phba)
 	 * driver is unloading or reposted if the driver is restarting
 	 * the port.
 	 */
-	spin_lock_irq(&phba->hbalock);  /* required for lpfc_els_sgl_list and */
-					/* scsl_buf_list */
+
 	/* sgl_list_lock required because worker thread uses this
 	 * list.
 	 */
-	spin_lock(&phba->sli4_hba.sgl_list_lock);
+	spin_lock_irq(&phba->sli4_hba.sgl_list_lock);
 	list_for_each_entry(sglq_entry,
 		&phba->sli4_hba.lpfc_abts_els_sgl_list, list)
 		sglq_entry->state = SGL_FREED;
@@ -1057,11 +1057,12 @@ lpfc_hba_down_post_s4(struct lpfc_hba *phba)
 			&phba->sli4_hba.lpfc_els_sgl_list);
 
 
-	spin_unlock(&phba->sli4_hba.sgl_list_lock);
+	spin_unlock_irq(&phba->sli4_hba.sgl_list_lock);
 
 	/* abts_xxxx_buf_list_lock required because worker thread uses this
 	 * list.
 	 */
+	spin_lock_irq(&phba->hbalock);
 	cnt = 0;
 	for (idx = 0; idx < phba->cfg_hdw_queue; idx++) {
 		qp = &phba->sli4_hba.hdwq[idx];
@@ -1851,6 +1852,7 @@ lpfc_sli4_port_sta_fn_reset(struct lpfc_hba *phba, int mbx_action,
 {
 	int rc;
 	uint32_t intr_mode;
+	LPFC_MBOXQ_t *mboxq;
 
 	if (bf_get(lpfc_sli_intf_if_type, &phba->sli4_hba.sli_intf) >=
 	    LPFC_SLI_INTF_IF_TYPE_2) {
@@ -1870,11 +1872,19 @@ lpfc_sli4_port_sta_fn_reset(struct lpfc_hba *phba, int mbx_action,
 				"Recovery...\n");
 
 	/* If we are no wait, the HBA has been reset and is not
-	 * functional, thus we should clear LPFC_SLI_ACTIVE flag.
+	 * functional, thus we should clear
+	 * (LPFC_SLI_ACTIVE | LPFC_SLI_MBOX_ACTIVE) flags.
 	 */
 	if (mbx_action == LPFC_MBX_NO_WAIT) {
 		spin_lock_irq(&phba->hbalock);
 		phba->sli.sli_flag &= ~LPFC_SLI_ACTIVE;
+		if (phba->sli.mbox_active) {
+			mboxq = phba->sli.mbox_active;
+			mboxq->u.mb.mbxStatus = MBX_NOT_FINISHED;
+			__lpfc_mbox_cmpl_put(phba, mboxq);
+			phba->sli.sli_flag &= ~LPFC_SLI_MBOX_ACTIVE;
+			phba->sli.mbox_active = NULL;
+		}
 		spin_unlock_irq(&phba->hbalock);
 	}
 
@@ -2589,6 +2599,9 @@ lpfc_get_hba_model_desc(struct lpfc_hba *phba, uint8_t *mdp, uint8_t *descp)
 	case PCI_DEVICE_ID_LANCER_G7_FC:
 		m = (typeof(m)){"LPe36000", "PCIe", "Fibre Channel Adapter"};
 		break;
+	case PCI_DEVICE_ID_LANCER_G7P_FC:
+		m = (typeof(m)){"LPe38000", "PCIe", "Fibre Channel Adapter"};
+		break;
 	case PCI_DEVICE_ID_SKYHAWK:
 	case PCI_DEVICE_ID_SKYHAWK_VF:
 		oneConnect = 1;
@@ -2887,6 +2900,10 @@ lpfc_cleanup(struct lpfc_vport *vport)
 
 	if (phba->link_state > LPFC_LINK_DOWN)
 		lpfc_port_link_failure(vport);
+
+	/* Clean up VMID resources */
+	if (lpfc_is_vmid_enabled(phba))
+		lpfc_vmid_vport_cleanup(vport);
 
 	list_for_each_entry_safe(ndlp, next_ndlp, &vport->fc_nodes, nlp_listp) {
 		if (vport->port_type != LPFC_PHYSICAL_PORT &&
@@ -3532,17 +3549,12 @@ lpfc_offline_prep(struct lpfc_hba *phba, int mbx_action)
 			list_for_each_entry_safe(ndlp, next_ndlp,
 						 &vports[i]->fc_nodes,
 						 nlp_listp) {
-				if (ndlp->nlp_state == NLP_STE_UNUSED_NODE) {
-					/* Driver must assume RPI is invalid for
-					 * any unused or inactive node.
-					 */
-					ndlp->nlp_rpi = LPFC_RPI_ALLOC_ERROR;
-					continue;
-				}
 
 				spin_lock_irq(&ndlp->lock);
 				ndlp->nlp_flag &= ~NLP_NPR_ADISC;
 				spin_unlock_irq(&ndlp->lock);
+
+				lpfc_unreg_rpi(vports[i], ndlp);
 				/*
 				 * Whenever an SLI4 port goes offline, free the
 				 * RPI. Get a new RPI when the adapter port
@@ -3552,13 +3564,12 @@ lpfc_offline_prep(struct lpfc_hba *phba, int mbx_action)
 					lpfc_printf_vlog(vports[i], KERN_INFO,
 						 LOG_NODE | LOG_DISCOVERY,
 						 "0011 Free RPI x%x on "
-						 "ndlp: %p did x%x\n",
+						 "ndlp: x%px did x%x\n",
 						 ndlp->nlp_rpi, ndlp,
 						 ndlp->nlp_DID);
 					lpfc_sli4_free_rpi(phba, ndlp->nlp_rpi);
 					ndlp->nlp_rpi = LPFC_RPI_ALLOC_ERROR;
 				}
-				lpfc_unreg_rpi(vports[i], ndlp);
 
 				if (ndlp->nlp_type & NLP_FABRIC) {
 					lpfc_disc_state_machine(vports[i], ndlp,
@@ -3804,12 +3815,10 @@ lpfc_sli4_els_sgl_update(struct lpfc_hba *phba)
 			sglq_entry->state = SGL_FREED;
 			list_add_tail(&sglq_entry->list, &els_sgl_list);
 		}
-		spin_lock_irq(&phba->hbalock);
-		spin_lock(&phba->sli4_hba.sgl_list_lock);
+		spin_lock_irq(&phba->sli4_hba.sgl_list_lock);
 		list_splice_init(&els_sgl_list,
 				 &phba->sli4_hba.lpfc_els_sgl_list);
-		spin_unlock(&phba->sli4_hba.sgl_list_lock);
-		spin_unlock_irq(&phba->hbalock);
+		spin_unlock_irq(&phba->sli4_hba.sgl_list_lock);
 	} else if (els_xri_cnt < phba->sli4_hba.els_xri_cnt) {
 		/* els xri-sgl shrinked */
 		xri_cnt = phba->sli4_hba.els_xri_cnt - els_xri_cnt;
@@ -3817,8 +3826,7 @@ lpfc_sli4_els_sgl_update(struct lpfc_hba *phba)
 				"3158 ELS xri-sgl count decreased from "
 				"%d to %d\n", phba->sli4_hba.els_xri_cnt,
 				els_xri_cnt);
-		spin_lock_irq(&phba->hbalock);
-		spin_lock(&phba->sli4_hba.sgl_list_lock);
+		spin_lock_irq(&phba->sli4_hba.sgl_list_lock);
 		list_splice_init(&phba->sli4_hba.lpfc_els_sgl_list,
 				 &els_sgl_list);
 		/* release extra els sgls from list */
@@ -3833,8 +3841,7 @@ lpfc_sli4_els_sgl_update(struct lpfc_hba *phba)
 		}
 		list_splice_init(&els_sgl_list,
 				 &phba->sli4_hba.lpfc_els_sgl_list);
-		spin_unlock(&phba->sli4_hba.sgl_list_lock);
-		spin_unlock_irq(&phba->hbalock);
+		spin_unlock_irq(&phba->sli4_hba.sgl_list_lock);
 	} else
 		lpfc_printf_log(phba, KERN_INFO, LOG_SLI,
 				"3163 ELS xri-sgl count unchanged: %d\n",
@@ -4319,6 +4326,55 @@ lpfc_get_wwpn(struct lpfc_hba *phba)
 }
 
 /**
+ * lpfc_vmid_res_alloc - Allocates resources for VMID
+ * @phba: pointer to lpfc hba data structure.
+ * @vport: pointer to vport data structure
+ *
+ * This routine allocated the resources needed for the VMID.
+ *
+ * Return codes
+ *	0 on Success
+ *	Non-0 on Failure
+ */
+static int
+lpfc_vmid_res_alloc(struct lpfc_hba *phba, struct lpfc_vport *vport)
+{
+	/* VMID feature is supported only on SLI4 */
+	if (phba->sli_rev == LPFC_SLI_REV3) {
+		phba->cfg_vmid_app_header = 0;
+		phba->cfg_vmid_priority_tagging = 0;
+	}
+
+	if (lpfc_is_vmid_enabled(phba)) {
+		vport->vmid =
+		    kcalloc(phba->cfg_max_vmid, sizeof(struct lpfc_vmid),
+			    GFP_KERNEL);
+		if (!vport->vmid)
+			return -ENOMEM;
+
+		rwlock_init(&vport->vmid_lock);
+
+		/* Set the VMID parameters for the vport */
+		vport->vmid_priority_tagging = phba->cfg_vmid_priority_tagging;
+		vport->vmid_inactivity_timeout =
+		    phba->cfg_vmid_inactivity_timeout;
+		vport->max_vmid = phba->cfg_max_vmid;
+		vport->cur_vmid_cnt = 0;
+
+		vport->vmid_priority_range = bitmap_zalloc
+			(LPFC_VMID_MAX_PRIORITY_RANGE, GFP_KERNEL);
+
+		if (!vport->vmid_priority_range) {
+			kfree(vport->vmid);
+			return -ENOMEM;
+		}
+
+		hash_init(vport->hash_table);
+	}
+	return 0;
+}
+
+/**
  * lpfc_create_port - Create an FC port
  * @phba: pointer to lpfc hba data structure.
  * @instance: a unique integer ID to this FC port.
@@ -4470,6 +4526,12 @@ lpfc_create_port(struct lpfc_hba *phba, int instance, struct device *dev)
 			vport->port_type, shost->sg_tablesize,
 			phba->cfg_scsi_seg_cnt, phba->cfg_sg_seg_cnt);
 
+	/* Allocate the resources for VMID */
+	rc = lpfc_vmid_res_alloc(phba, vport);
+
+	if (rc)
+		goto out;
+
 	/* Initialize all internally managed lists. */
 	INIT_LIST_HEAD(&vport->fc_nodes);
 	INIT_LIST_HEAD(&vport->rcv_buffer_list);
@@ -4494,6 +4556,8 @@ lpfc_create_port(struct lpfc_hba *phba, int instance, struct device *dev)
 	return vport;
 
 out_put_shost:
+	kfree(vport->vmid);
+	bitmap_free(vport->vmid_priority_range);
 	scsi_host_put(shost);
 out:
 	return NULL;
@@ -4615,6 +4679,8 @@ static void lpfc_host_supported_speeds_set(struct Scsi_Host *shost)
 	if (phba->hba_flag & HBA_FCOE_MODE)
 		return;
 
+	if (phba->lmt & LMT_256Gb)
+		fc_host_supported_speeds(shost) |= FC_PORTSPEED_256GBIT;
 	if (phba->lmt & LMT_128Gb)
 		fc_host_supported_speeds(shost) |= FC_PORTSPEED_128GBIT;
 	if (phba->lmt & LMT_64Gb)
@@ -4790,6 +4856,42 @@ lpfc_sli4_fcf_redisc_wait_tmo(struct timer_list *t)
 			"2776 FCF rediscover quiescent timer expired\n");
 	/* wake up worker thread */
 	lpfc_worker_wake_up(phba);
+}
+
+/**
+ * lpfc_vmid_poll - VMID timeout detection
+ * @t: Timer context used to obtain the pointer to lpfc hba data structure.
+ *
+ * This routine is invoked when there is no I/O on by a VM for the specified
+ * amount of time. When this situation is detected, the VMID has to be
+ * deregistered from the switch and all the local resources freed. The VMID
+ * will be reassigned to the VM once the I/O begins.
+ **/
+static void
+lpfc_vmid_poll(struct timer_list *t)
+{
+	struct lpfc_hba *phba = from_timer(phba, t, inactive_vmid_poll);
+	u32 wake_up = 0;
+
+	/* check if there is a need to issue QFPA */
+	if (phba->pport->vmid_priority_tagging) {
+		wake_up = 1;
+		phba->pport->work_port_events |= WORKER_CHECK_VMID_ISSUE_QFPA;
+	}
+
+	/* Is the vmid inactivity timer enabled */
+	if (phba->pport->vmid_inactivity_timeout ||
+	    phba->pport->load_flag & FC_DEREGISTER_ALL_APP_ID) {
+		wake_up = 1;
+		phba->pport->work_port_events |= WORKER_CHECK_INACTIVE_VMID;
+	}
+
+	if (wake_up)
+		lpfc_worker_wake_up(phba);
+
+	/* restart the timer for the next iteration */
+	mod_timer(&phba->inactive_vmid_poll, jiffies + msecs_to_jiffies(1000 *
+							LPFC_VMID_TIMER));
 }
 
 /**
@@ -4986,6 +5088,9 @@ lpfc_sli4_port_speed_parse(struct lpfc_hba *phba, uint32_t evt_code,
 			break;
 		case LPFC_FC_LA_SPEED_128G:
 			port_speed = 128000;
+			break;
+		case LPFC_FC_LA_SPEED_256G:
+			port_speed = 256000;
 			break;
 		default:
 			port_speed = 0;
@@ -6640,6 +6745,10 @@ lpfc_sli4_driver_resource_setup(struct lpfc_hba *phba)
 	phba->hbqs[LPFC_ELS_HBQ].hbq_alloc_buffer = lpfc_sli4_rb_alloc;
 	phba->hbqs[LPFC_ELS_HBQ].hbq_free_buffer = lpfc_sli4_rb_free;
 
+	/* for VMID idle timeout if VMID is enabled */
+	if (lpfc_is_vmid_enabled(phba))
+		timer_setup(&phba->inactive_vmid_poll, lpfc_vmid_poll, 0);
+
 	/*
 	 * Initialize the SLI Layer to run with lpfc SLI4 HBAs.
 	 */
@@ -7360,11 +7469,9 @@ lpfc_free_els_sgl_list(struct lpfc_hba *phba)
 	LIST_HEAD(sglq_list);
 
 	/* Retrieve all els sgls from driver list */
-	spin_lock_irq(&phba->hbalock);
-	spin_lock(&phba->sli4_hba.sgl_list_lock);
+	spin_lock_irq(&phba->sli4_hba.sgl_list_lock);
 	list_splice_init(&phba->sli4_hba.lpfc_els_sgl_list, &sglq_list);
-	spin_unlock(&phba->sli4_hba.sgl_list_lock);
-	spin_unlock_irq(&phba->hbalock);
+	spin_unlock_irq(&phba->sli4_hba.sgl_list_lock);
 
 	/* Now free the sgl list */
 	lpfc_free_sgl_list(phba, &sglq_list);
@@ -8448,9 +8555,12 @@ lpfc_map_topology(struct lpfc_hba *phba, struct lpfc_mbx_read_config *rd_config)
 	}
 	/* FW supports persistent topology - override module parameter value */
 	phba->hba_flag |= HBA_PERSISTENT_TOPO;
-	switch (phba->pcidev->device) {
-	case PCI_DEVICE_ID_LANCER_G7_FC:
-	case PCI_DEVICE_ID_LANCER_G6_FC:
+
+	/* if ASIC_GEN_NUM >= 0xC) */
+	if ((bf_get(lpfc_sli_intf_if_type, &phba->sli4_hba.sli_intf) ==
+		    LPFC_SLI_INTF_IF_TYPE_6) ||
+	    (bf_get(lpfc_sli_intf_sli_family, &phba->sli4_hba.sli_intf) ==
+		    LPFC_SLI_INTF_FAMILY_G6)) {
 		if (!tf) {
 			phba->cfg_topology = ((pt == LINK_FLAGS_LOOP)
 					? FLAGS_TOPOLOGY_MODE_LOOP
@@ -8458,8 +8568,7 @@ lpfc_map_topology(struct lpfc_hba *phba, struct lpfc_mbx_read_config *rd_config)
 		} else {
 			phba->hba_flag &= ~HBA_PERSISTENT_TOPO;
 		}
-		break;
-	default:	/* G5 */
+	} else { /* G5 */
 		if (tf) {
 			/* If topology failover set - pt is '0' or '1' */
 			phba->cfg_topology = (pt ? FLAGS_TOPOLOGY_MODE_PT_LOOP :
@@ -8469,7 +8578,6 @@ lpfc_map_topology(struct lpfc_hba *phba, struct lpfc_mbx_read_config *rd_config)
 					? FLAGS_TOPOLOGY_MODE_PT_PT
 					: FLAGS_TOPOLOGY_MODE_LOOP);
 		}
-		break;
 	}
 	if (phba->hba_flag & HBA_PERSISTENT_TOPO) {
 		lpfc_printf_log(phba, KERN_INFO, LOG_SLI,
@@ -12152,7 +12260,6 @@ lpfc_get_sli4_parameters(struct lpfc_hba *phba, LPFC_MBOXQ_t *mboxq)
 					bf_get(cfg_xib, mbx_sli4_parameters),
 					phba->cfg_enable_fc4_type);
 fcponly:
-			phba->nvme_support = 0;
 			phba->nvmet_support = 0;
 			phba->cfg_nvmet_mrq = 0;
 			phba->cfg_nvme_seg_cnt = 0;
@@ -12170,9 +12277,10 @@ fcponly:
 	if (phba->cfg_enable_fc4_type & LPFC_ENABLE_NVME)
 		phba->cfg_sg_seg_cnt = LPFC_MAX_NVME_SEG_CNT;
 
-	/* Only embed PBDE for if_type 6, PBDE support requires xib be set */
-	if ((bf_get(lpfc_sli_intf_if_type, &phba->sli4_hba.sli_intf) !=
-	    LPFC_SLI_INTF_IF_TYPE_6) || (!bf_get(cfg_xib, mbx_sli4_parameters)))
+	/* Enable embedded Payload BDE if support is indicated */
+	if (bf_get(cfg_pbde, mbx_sli4_parameters))
+		phba->cfg_enable_pbde = 1;
+	else
 		phba->cfg_enable_pbde = 0;
 
 	/*
@@ -12210,7 +12318,7 @@ fcponly:
 			"6422 XIB %d PBDE %d: FCP %d NVME %d %d %d\n",
 			bf_get(cfg_xib, mbx_sli4_parameters),
 			phba->cfg_enable_pbde,
-			phba->fcp_embed_io, phba->nvme_support,
+			phba->fcp_embed_io, sli4_params->nvme,
 			phba->cfg_nvme_embed_cmd, phba->cfg_suppress_rsp);
 
 	if ((bf_get(lpfc_sli_intf_if_type, &phba->sli4_hba.sli_intf) ==
@@ -12889,7 +12997,9 @@ lpfc_log_write_firmware_error(struct lpfc_hba *phba, uint32_t offset,
 	const struct firmware *fw)
 {
 	int rc;
+	u8 sli_family;
 
+	sli_family = bf_get(lpfc_sli_intf_sli_family, &phba->sli4_hba.sli_intf);
 	/* Three cases:  (1) FW was not supported on the detected adapter.
 	 * (2) FW update has been locked out administratively.
 	 * (3) Some other error during FW update.
@@ -12897,10 +13007,12 @@ lpfc_log_write_firmware_error(struct lpfc_hba *phba, uint32_t offset,
 	 * for admin diagnosis.
 	 */
 	if (offset == ADD_STATUS_FW_NOT_SUPPORTED ||
-	    (phba->pcidev->device == PCI_DEVICE_ID_LANCER_G6_FC &&
+	    (sli_family == LPFC_SLI_INTF_FAMILY_G6 &&
 	     magic_number != MAGIC_NUMBER_G6) ||
-	    (phba->pcidev->device == PCI_DEVICE_ID_LANCER_G7_FC &&
-	     magic_number != MAGIC_NUMBER_G7)) {
+	    (sli_family == LPFC_SLI_INTF_FAMILY_G7 &&
+	     magic_number != MAGIC_NUMBER_G7) ||
+	    (sli_family == LPFC_SLI_INTF_FAMILY_G7P &&
+	     magic_number != MAGIC_NUMBER_G7P)) {
 		lpfc_printf_log(phba, KERN_ERR, LOG_TRACE_EVENT,
 				"3030 This firmware version is not supported on"
 				" this HBA model. Device:%x Magic:%x Type:%x "
@@ -13057,7 +13169,7 @@ lpfc_sli4_request_firmware_update(struct lpfc_hba *phba, uint8_t fw_upgrade)
 	snprintf(file_name, ELX_MODEL_NAME_SIZE, "%s.grp", phba->ModelName);
 
 	if (fw_upgrade == INT_FW_UPGRADE) {
-		ret = request_firmware_nowait(THIS_MODULE, FW_ACTION_HOTPLUG,
+		ret = request_firmware_nowait(THIS_MODULE, FW_ACTION_UEVENT,
 					file_name, &phba->pcidev->dev,
 					GFP_KERNEL, (void *)phba,
 					lpfc_write_firmware);
@@ -13103,6 +13215,8 @@ lpfc_pci_probe_one_s4(struct pci_dev *pdev, const struct pci_device_id *pid)
 	phba = lpfc_hba_alloc(pdev);
 	if (!phba)
 		return -ENOMEM;
+
+	INIT_LIST_HEAD(&phba->poll_list);
 
 	/* Perform generic PCI device enabling operation */
 	error = lpfc_enable_pci_dev(phba);
@@ -13238,7 +13352,6 @@ lpfc_pci_probe_one_s4(struct pci_dev *pdev, const struct pci_device_id *pid)
 	/* Enable RAS FW log support */
 	lpfc_sli4_ras_setup(phba);
 
-	INIT_LIST_HEAD(&phba->poll_list);
 	timer_setup(&phba->cpuhp_poll_timer, lpfc_sli4_poll_hbtimer, 0);
 	cpuhp_state_add_instance_nocalls(lpfc_cpuhp_state, &phba->cpuhp);
 
@@ -13951,17 +14064,18 @@ lpfc_sli4_oas_verify(struct lpfc_hba *phba)
 void
 lpfc_sli4_ras_init(struct lpfc_hba *phba)
 {
-	switch (phba->pcidev->device) {
-	case PCI_DEVICE_ID_LANCER_G6_FC:
-	case PCI_DEVICE_ID_LANCER_G7_FC:
+	/* if ASIC_GEN_NUM >= 0xC) */
+	if ((bf_get(lpfc_sli_intf_if_type, &phba->sli4_hba.sli_intf) ==
+		    LPFC_SLI_INTF_IF_TYPE_6) ||
+	    (bf_get(lpfc_sli_intf_sli_family, &phba->sli4_hba.sli_intf) ==
+		    LPFC_SLI_INTF_FAMILY_G6)) {
 		phba->ras_fwlog.ras_hwsupport = true;
 		if (phba->cfg_ras_fwlog_func == PCI_FUNC(phba->pcidev->devfn) &&
 		    phba->cfg_ras_fwlog_buffsize)
 			phba->ras_fwlog.ras_enabled = true;
 		else
 			phba->ras_fwlog.ras_enabled = false;
-		break;
-	default:
+	} else {
 		phba->ras_fwlog.ras_hwsupport = false;
 	}
 }
@@ -14074,8 +14188,9 @@ void lpfc_dmp_dbg(struct lpfc_hba *phba)
 	unsigned int temp_idx;
 	int i;
 	int j = 0;
-	unsigned long rem_nsec;
-	struct lpfc_vport **vports;
+	unsigned long rem_nsec, iflags;
+	bool log_verbose = false;
+	struct lpfc_vport *port_iterator;
 
 	/* Don't dump messages if we explicitly set log_verbose for the
 	 * physical port or any vport.
@@ -14083,16 +14198,24 @@ void lpfc_dmp_dbg(struct lpfc_hba *phba)
 	if (phba->cfg_log_verbose)
 		return;
 
-	vports = lpfc_create_vport_work_array(phba);
-	if (vports != NULL) {
-		for (i = 0; i <= phba->max_vpi && vports[i] != NULL; i++) {
-			if (vports[i]->cfg_log_verbose) {
-				lpfc_destroy_vport_work_array(phba, vports);
+	spin_lock_irqsave(&phba->port_list_lock, iflags);
+	list_for_each_entry(port_iterator, &phba->port_list, listentry) {
+		if (port_iterator->load_flag & FC_UNLOADING)
+			continue;
+		if (scsi_host_get(lpfc_shost_from_vport(port_iterator))) {
+			if (port_iterator->cfg_log_verbose)
+				log_verbose = true;
+
+			scsi_host_put(lpfc_shost_from_vport(port_iterator));
+
+			if (log_verbose) {
+				spin_unlock_irqrestore(&phba->port_list_lock,
+						       iflags);
 				return;
 			}
 		}
 	}
-	lpfc_destroy_vport_work_array(phba, vports);
+	spin_unlock_irqrestore(&phba->port_list_lock, iflags);
 
 	if (atomic_cmpxchg(&phba->dbg_log_dmping, 0, 1) != 0)
 		return;

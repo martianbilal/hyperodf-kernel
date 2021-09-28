@@ -6,7 +6,7 @@
 	Copyright (C) 2000, 2001 David S. Miller (davem@redhat.com) [sungem.c]
 	Copyright 2001 Manfred Spraul				    [natsemi.c]
 	Copyright 1999-2001 by Donald Becker.			    [natsemi.c]
-       	Written 1997-2001 by Donald Becker.			    [8139too.c]
+	Written 1997-2001 by Donald Becker.			    [8139too.c]
 	Copyright 1998-2001 by Jes Sorensen, <jes@trained-monkey.org>. [acenic.c]
 
 	This software may be used and distributed according to the terms of
@@ -947,8 +947,8 @@ static struct net_device_stats *cp_get_stats(struct net_device *dev)
 
 	/* The chip only need report frame silently dropped. */
 	spin_lock_irqsave(&cp->lock, flags);
- 	if (netif_running(dev) && netif_device_present(dev))
- 		__cp_get_stats(cp);
+	if (netif_running(dev) && netif_device_present(dev))
+		__cp_get_stats(cp);
 	spin_unlock_irqrestore(&cp->lock, flags);
 
 	return &dev->stats;
@@ -1869,7 +1869,7 @@ static const struct net_device_ops cp_netdev_ops = {
 	.ndo_set_mac_address 	= cp_set_mac_address,
 	.ndo_set_rx_mode	= cp_set_rx_mode,
 	.ndo_get_stats		= cp_get_stats,
-	.ndo_do_ioctl		= cp_ioctl,
+	.ndo_eth_ioctl		= cp_ioctl,
 	.ndo_start_xmit		= cp_start_xmit,
 	.ndo_tx_timeout		= cp_tx_timeout,
 	.ndo_set_features	= cp_set_features,

@@ -25,10 +25,10 @@
 
 	chosen { };
 
-	memory {
+	memory@80000000 {
 		device_type = "memory";
 		/* We expect the bootloader to fill in the reg */
-		reg = <0 0 0 0>;
+		reg = <0 0x80000000 0 0>;
 	};
 
 	reserved-memory {
@@ -489,6 +489,26 @@
 				 <&rpmcc RPM_SMD_SNOC_A_CLK>;
 		};
 
+		stm: stm@802000 {
+			compatible = "arm,coresight-stm", "arm,primecell";
+			reg = <0x00802000 0x1000>,
+			      <0x09280000 0x180000>;
+			reg-names = "stm-base", "stm-stimulus-base";
+
+			clocks = <&rpmcc RPM_QDSS_CLK>, <&rpmcc RPM_QDSS_A_CLK>;
+			clock-names = "apb_pclk", "atclk";
+
+			status = "disabled";
+
+			out-ports {
+				port {
+					stm_out: endpoint {
+						remote-endpoint = <&funnel0_in7>;
+					};
+				};
+			};
+		};
+
 		/* System CTIs */
 		/* CTI 0 - TMC connections */
 		cti0: cti@810000 {
@@ -560,6 +580,13 @@
 					reg = <4>;
 					funnel0_in4: endpoint {
 						remote-endpoint = <&funnel1_out>;
+					};
+				};
+
+				port@7 {
+					reg = <7>;
+					funnel0_in7: endpoint {
+						remote-endpoint = <&stm_out>;
 					};
 				};
 			};
@@ -1766,7 +1793,9 @@
 			compatible = "qcom,msm-qgic2";
 			interrupt-controller;
 			#interrupt-cells = <3>;
-			reg = <0x0b000000 0x1000>, <0x0b002000 0x1000>;
+			reg = <0x0b000000 0x1000>, <0x0b002000 0x2000>,
+			      <0x0b001000 0x1000>, <0x0b004000 0x2000>;
+			interrupts = <GIC_PPI 0 (GIC_CPU_MASK_SIMPLE(4) | IRQ_TYPE_LEVEL_HIGH)>;
 		};
 
 		apcs: mailbox@b011000 {

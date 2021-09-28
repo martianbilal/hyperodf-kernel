@@ -296,11 +296,11 @@ static int apply_replay_entry(struct ubifs_info *c, struct replay_entry *r)
  * @b: second replay entry
  *
  * This is a comparios function for 'list_sort()' which compares 2 replay
- * entries @a and @b by comparing their sequence numer.  Returns %1 if @a has
+ * entries @a and @b by comparing their sequence number.  Returns %1 if @a has
  * greater sequence number and %-1 otherwise.
  */
-static int replay_entries_cmp(void *priv, struct list_head *a,
-			      struct list_head *b)
+static int replay_entries_cmp(void *priv, const struct list_head *a,
+			      const struct list_head *b)
 {
 	struct ubifs_info *c = priv;
 	struct replay_entry *ra, *rb;

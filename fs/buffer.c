@@ -589,31 +589,6 @@ void mark_buffer_dirty_inode(struct buffer_head *bh, struct inode *inode)
 EXPORT_SYMBOL(mark_buffer_dirty_inode);
 
 /*
- * Mark the page dirty, and set it dirty in the page cache, and mark the inode
- * dirty.
- *
- * If warn is true, then emit a warning if the page is not uptodate and has
- * not been truncated.
- *
- * The caller must hold lock_page_memcg().
- */
-void __set_page_dirty(struct page *page, struct address_space *mapping,
-			     int warn)
-{
-	unsigned long flags;
-
-	xa_lock_irqsave(&mapping->i_pages, flags);
-	if (page->mapping) {	/* Race with truncate? */
-		WARN_ON_ONCE(warn && !PageUptodate(page));
-		account_page_dirtied(page, mapping);
-		__xa_set_mark(&mapping->i_pages, page_index(page),
-				PAGECACHE_TAG_DIRTY);
-	}
-	xa_unlock_irqrestore(&mapping->i_pages, flags);
-}
-EXPORT_SYMBOL_GPL(__set_page_dirty);
-
-/*
  * Add a page to the dirty page list.
  *
  * It is a sad fact of life that this function is called from several places
@@ -981,10 +956,20 @@ grow_dev_page(struct block_device *bdev, sector_t block,
 			end_block = init_page_buffers(page, bdev,
 						(sector_t)index << sizebits,
 						size);
+#ifdef CONFIG_DEBUG_AID_FOR_SYZBOT
+			current->getblk_executed |= 0x01;
+#endif
 			goto done;
 		}
-		if (!try_to_free_buffers(page))
+		if (!try_to_free_buffers(page)) {
+#ifdef CONFIG_DEBUG_AID_FOR_SYZBOT
+			current->getblk_executed |= 0x02;
+#endif
 			goto failed;
+		}
+#ifdef CONFIG_DEBUG_AID_FOR_SYZBOT
+		current->getblk_executed |= 0x04;
+#endif
 	}
 
 	/*
@@ -1004,6 +989,9 @@ grow_dev_page(struct block_device *bdev, sector_t block,
 	spin_unlock(&inode->i_mapping->private_lock);
 done:
 	ret = (block < end_block) ? 1 : -ENXIO;
+#ifdef CONFIG_DEBUG_AID_FOR_SYZBOT
+	current->getblk_executed |= 0x08;
+#endif
 failed:
 	unlock_page(page);
 	put_page(page);
@@ -1020,11 +1008,7 @@ grow_buffers(struct block_device *bdev, sector_t block, int size, gfp_t gfp)
 	pgoff_t index;
 	int sizebits;
 
-	sizebits = -1;
-	do {
-		sizebits++;
-	} while ((size << sizebits) < PAGE_SIZE);
-
+	sizebits = PAGE_SHIFT - __ffs(size);
 	index = block >> sizebits;
 
 	/*
@@ -1059,6 +1043,12 @@ __getblk_slow(struct block_device *bdev, sector_t block,
 		return NULL;
 	}
 
+#ifdef CONFIG_DEBUG_AID_FOR_SYZBOT
+	current->getblk_stamp = jiffies;
+	current->getblk_executed = 0;
+	current->getblk_bh_count = 0;
+	current->getblk_bh_state = 0;
+#endif
 	for (;;) {
 		struct buffer_head *bh;
 		int ret;
@@ -1070,6 +1060,24 @@ __getblk_slow(struct block_device *bdev, sector_t block,
 		ret = grow_buffers(bdev, block, size, gfp);
 		if (ret < 0)
 			return NULL;
+
+#ifdef CONFIG_DEBUG_AID_FOR_SYZBOT
+		if (!time_after(jiffies, current->getblk_stamp + 3 * HZ))
+			continue;
+		printk(KERN_ERR "%s(%u): getblk(): executed=%x bh_count=%d bh_state=%lx bdev_super_blocksize=%ld size=%u bdev_super_blocksize_bits=%d bdev_inode_blkbits=%d\n",
+		       current->comm, current->pid, current->getblk_executed,
+		       current->getblk_bh_count, current->getblk_bh_state,
+		       IS_ERR_OR_NULL(bdev->bd_super) ? -1L :
+		       bdev->bd_super->s_blocksize, size,
+		       IS_ERR_OR_NULL(bdev->bd_super) ? -1 :
+		       bdev->bd_super->s_blocksize_bits,
+		       IS_ERR_OR_NULL(bdev->bd_inode) ? -1 :
+		       bdev->bd_inode->i_blkbits);
+		current->getblk_executed = 0;
+		current->getblk_bh_count = 0;
+		current->getblk_bh_state = 0;
+		current->getblk_stamp = jiffies;
+#endif
 	}
 }
 
@@ -1264,6 +1272,15 @@ static void bh_lru_install(struct buffer_head *bh)
 	int i;
 
 	check_irqs_on();
+	/*
+	 * the refcount of buffer_head in bh_lru prevents dropping the
+	 * attached page(i.e., try_to_free_buffers) so it could cause
+	 * failing page migration.
+	 * Skip putting upcoming bh into bh_lru until migration is done.
+	 */
+	if (lru_cache_disabled())
+		return;
+
 	bh_lru_lock();
 
 	b = this_cpu_ptr(&bh_lrus);
@@ -1404,6 +1421,15 @@ __bread_gfp(struct block_device *bdev, sector_t block,
 }
 EXPORT_SYMBOL(__bread_gfp);
 
+static void __invalidate_bh_lrus(struct bh_lru *b)
+{
+	int i;
+
+	for (i = 0; i < BH_LRU_SIZE; i++) {
+		brelse(b->bhs[i]);
+		b->bhs[i] = NULL;
+	}
+}
 /*
  * invalidate_bh_lrus() is called rarely - but not only at unmount.
  * This doesn't race because it runs in each cpu either in irq
@@ -1412,16 +1438,12 @@ EXPORT_SYMBOL(__bread_gfp);
 static void invalidate_bh_lru(void *arg)
 {
 	struct bh_lru *b = &get_cpu_var(bh_lrus);
-	int i;
 
-	for (i = 0; i < BH_LRU_SIZE; i++) {
-		brelse(b->bhs[i]);
-		b->bhs[i] = NULL;
-	}
+	__invalidate_bh_lrus(b);
 	put_cpu_var(bh_lrus);
 }
 
-static bool has_bh_in_lru(int cpu, void *dummy)
+bool has_bh_in_lru(int cpu, void *dummy)
 {
 	struct bh_lru *b = per_cpu_ptr(&bh_lrus, cpu);
 	int i;
@@ -1439,6 +1461,16 @@ void invalidate_bh_lrus(void)
 	on_each_cpu_cond(has_bh_in_lru, invalidate_bh_lru, NULL, 1);
 }
 EXPORT_SYMBOL_GPL(invalidate_bh_lrus);
+
+void invalidate_bh_lrus_cpu(int cpu)
+{
+	struct bh_lru *b;
+
+	bh_lru_lock();
+	b = per_cpu_ptr(&bh_lrus, cpu);
+	__invalidate_bh_lrus(b);
+	bh_lru_unlock();
+}
 
 void set_bh_page(struct buffer_head *bh,
 		struct page *page, unsigned long offset)
@@ -1917,7 +1949,7 @@ EXPORT_SYMBOL(page_zero_new_buffers);
 
 static void
 iomap_to_bh(struct inode *inode, sector_t block, struct buffer_head *bh,
-		struct iomap *iomap)
+		const struct iomap *iomap)
 {
 	loff_t offset = block << inode->i_blkbits;
 
@@ -1971,7 +2003,7 @@ iomap_to_bh(struct inode *inode, sector_t block, struct buffer_head *bh,
 }
 
 int __block_write_begin_int(struct page *page, loff_t pos, unsigned len,
-		get_block_t *get_block, struct iomap *iomap)
+		get_block_t *get_block, const struct iomap *iomap)
 {
 	unsigned from = pos & (PAGE_SIZE - 1);
 	unsigned to = from + len;
@@ -3192,6 +3224,11 @@ EXPORT_SYMBOL(sync_dirty_buffer);
  */
 static inline int buffer_busy(struct buffer_head *bh)
 {
+#ifdef CONFIG_DEBUG_AID_FOR_SYZBOT
+	current->getblk_executed |= 0x80;
+	current->getblk_bh_count = atomic_read(&bh->b_count);
+	current->getblk_bh_state = bh->b_state;
+#endif
 	return atomic_read(&bh->b_count) |
 		(bh->b_state & ((1 << BH_Dirty) | (1 << BH_Lock)));
 }
@@ -3230,11 +3267,18 @@ int try_to_free_buffers(struct page *page)
 	int ret = 0;
 
 	BUG_ON(!PageLocked(page));
-	if (PageWriteback(page))
+	if (PageWriteback(page)) {
+#ifdef CONFIG_DEBUG_AID_FOR_SYZBOT
+		current->getblk_executed |= 0x10;
+#endif
 		return 0;
+	}
 
 	if (mapping == NULL) {		/* can this still happen? */
 		ret = drop_buffers(page, &buffers_to_free);
+#ifdef CONFIG_DEBUG_AID_FOR_SYZBOT
+		current->getblk_executed |= 0x20;
+#endif
 		goto out;
 	}
 
@@ -3258,6 +3302,9 @@ int try_to_free_buffers(struct page *page)
 	if (ret)
 		cancel_dirty_page(page);
 	spin_unlock(&mapping->private_lock);
+#ifdef CONFIG_DEBUG_AID_FOR_SYZBOT
+	current->getblk_executed |= 0x40;
+#endif
 out:
 	if (buffers_to_free) {
 		struct buffer_head *bh = buffers_to_free;

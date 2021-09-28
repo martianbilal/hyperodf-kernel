@@ -25,9 +25,6 @@
 		i2c3 = &i2c3;
 		i2c4 = &i2c4;
 		i2c5 = &i2c5;
-		mmc0 = &sdmmc;
-		mmc1 = &sdio0;
-		mmc2 = &emmc;
 		serial0 = &uart0;
 		serial1 = &uart1;
 		serial2 = &uart2;
@@ -561,7 +558,6 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&pwm0_pin>;
 		clocks = <&cru PCLK_PWM1>;
-		clock-names = "pwm";
 		status = "disabled";
 	};
 
@@ -572,7 +568,6 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&pwm1_pin>;
 		clocks = <&cru PCLK_PWM1>;
-		clock-names = "pwm";
 		status = "disabled";
 	};
 
@@ -581,7 +576,6 @@
 		reg = <0x0 0xff680020 0x0 0x10>;
 		#pwm-cells = <3>;
 		clocks = <&cru PCLK_PWM1>;
-		clock-names = "pwm";
 		status = "disabled";
 	};
 
@@ -592,7 +586,6 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&pwm3_pin>;
 		clocks = <&cru PCLK_PWM1>;
-		clock-names = "pwm";
 		status = "disabled";
 	};
 
@@ -667,10 +660,12 @@
 		status = "disabled";
 	};
 
-	timer@ff810000 {
+	timer0: timer@ff810000 {
 		compatible = "rockchip,rk3368-timer", "rockchip,rk3288-timer";
 		reg = <0x0 0xff810000 0x0 0x20>;
 		interrupts = <GIC_SPI 66 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&cru PCLK_TIMER0>, <&cru SCLK_TIMER00>;
+		clock-names = "pclk", "timer";
 	};
 
 	spdif: spdif@ff880000 {
@@ -714,7 +709,6 @@
 		compatible = "rockchip,iommu";
 		reg = <0x0 0xff900800 0x0 0x100>;
 		interrupts = <GIC_SPI 17 IRQ_TYPE_LEVEL_HIGH>;
-		interrupt-names = "iep_mmu";
 		clocks = <&cru ACLK_IEP>, <&cru HCLK_IEP>;
 		clock-names = "aclk", "iface";
 		#iommu-cells = <0>;
@@ -726,7 +720,6 @@
 		reg = <0x0 0xff914000 0x0 0x100>,
 		      <0x0 0xff915000 0x0 0x100>;
 		interrupts = <GIC_SPI 14 IRQ_TYPE_LEVEL_HIGH>;
-		interrupt-names = "isp_mmu";
 		clocks = <&cru ACLK_ISP>, <&cru HCLK_ISP>;
 		clock-names = "aclk", "iface";
 		#iommu-cells = <0>;
@@ -738,7 +731,6 @@
 		compatible = "rockchip,iommu";
 		reg = <0x0 0xff930300 0x0 0x100>;
 		interrupts = <GIC_SPI 15 IRQ_TYPE_LEVEL_HIGH>;
-		interrupt-names = "vop_mmu";
 		clocks = <&cru ACLK_VOP>, <&cru HCLK_VOP>;
 		clock-names = "aclk", "iface";
 		#iommu-cells = <0>;
@@ -750,7 +742,6 @@
 		reg = <0x0 0xff9a0440 0x0 0x40>,
 		      <0x0 0xff9a0480 0x0 0x40>;
 		interrupts = <GIC_SPI 12 IRQ_TYPE_LEVEL_HIGH>;
-		interrupt-names = "hevc_mmu";
 		clocks = <&cru ACLK_VIDEO>, <&cru HCLK_VIDEO>;
 		clock-names = "aclk", "iface";
 		#iommu-cells = <0>;
@@ -762,7 +753,6 @@
 		reg = <0x0 0xff9a0800 0x0 0x100>;
 		interrupts = <GIC_SPI 9 IRQ_TYPE_LEVEL_HIGH>,
 			     <GIC_SPI 10 IRQ_TYPE_LEVEL_HIGH>;
-		interrupt-names = "vepu_mmu", "vdpu_mmu";
 		clocks = <&cru ACLK_VIDEO>, <&cru HCLK_VIDEO>;
 		clock-names = "aclk", "iface";
 		#iommu-cells = <0>;

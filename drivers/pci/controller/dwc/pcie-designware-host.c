@@ -55,7 +55,7 @@ static struct msi_domain_info dw_pcie_msi_domain_info = {
 /* MSI int handler */
 irqreturn_t dw_handle_msi_irq(struct pcie_port *pp)
 {
-	int i, pos, irq;
+	int i, pos;
 	unsigned long val;
 	u32 status, num_ctrls;
 	irqreturn_t ret = IRQ_NONE;
@@ -74,10 +74,9 @@ irqreturn_t dw_handle_msi_irq(struct pcie_port *pp)
 		pos = 0;
 		while ((pos = find_next_bit(&val, MAX_MSI_IRQS_PER_CTRL,
 					    pos)) != MAX_MSI_IRQS_PER_CTRL) {
-			irq = irq_find_mapping(pp->irq_domain,
-					       (i * MAX_MSI_IRQS_PER_CTRL) +
-					       pos);
-			generic_handle_irq(irq);
+			generic_handle_domain_irq(pp->irq_domain,
+						  (i * MAX_MSI_IRQS_PER_CTRL) +
+						  pos);
 			pos++;
 		}
 	}
@@ -401,7 +400,6 @@ int dw_pcie_host_init(struct pcie_port *pp)
 	dw_pcie_iatu_detect(pci);
 
 	dw_pcie_setup_rc(pp);
-	dw_pcie_msi_init(pp);
 
 	if (!dw_pcie_link_up(pci) && pci->ops && pci->ops->start_link) {
 		ret = pci->ops->start_link(pci);
@@ -551,6 +549,8 @@ void dw_pcie_setup_rc(struct pcie_port *pp)
 					    ~0);
 		}
 	}
+
+	dw_pcie_msi_init(pp);
 
 	/* Setup RC BARs */
 	dw_pcie_writel_dbi(pci, PCI_BASE_ADDRESS_0, 0x00000004);

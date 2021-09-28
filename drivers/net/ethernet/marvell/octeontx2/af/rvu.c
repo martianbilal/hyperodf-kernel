@@ -57,6 +57,10 @@ static char *mkex_profile; /* MKEX profile name */
 module_param(mkex_profile, charp, 0000);
 MODULE_PARM_DESC(mkex_profile, "MKEX profile name string");
 
+static char *kpu_profile; /* KPU profile name */
+module_param(kpu_profile, charp, 0000);
+MODULE_PARM_DESC(kpu_profile, "KPU profile name string");
+
 static void rvu_setup_hw_capabilities(struct rvu *rvu)
 {
 	struct rvu_hwinfo *hw = rvu->hw;
@@ -178,6 +182,14 @@ int rvu_rsrc_free_count(struct rsrc_bmap *rsrc)
 
 	used = bitmap_weight(rsrc->bmap, rsrc->max);
 	return (rsrc->max - used);
+}
+
+bool is_rsrc_free(struct rsrc_bmap *rsrc, int id)
+{
+	if (!rsrc->bmap)
+		return false;
+
+	return !test_bit(id, rsrc->bmap);
 }
 
 int rvu_alloc_bitmap(struct rsrc_bmap *rsrc)
@@ -379,8 +391,10 @@ void rvu_get_pf_numvfs(struct rvu *rvu, int pf, int *numvfs, int *hwvf)
 
 	/* Get numVFs attached to this PF and first HWVF */
 	cfg = rvu_read64(rvu, BLKADDR_RVUM, RVU_PRIV_PFX_CFG(pf));
-	*numvfs = (cfg >> 12) & 0xFF;
-	*hwvf = cfg & 0xFFF;
+	if (numvfs)
+		*numvfs = (cfg >> 12) & 0xFF;
+	if (hwvf)
+		*hwvf = cfg & 0xFFF;
 }
 
 static int rvu_get_hwvf(struct rvu *rvu, int pcifunc)
@@ -910,16 +924,26 @@ static int rvu_setup_hw_resources(struct rvu *rvu)
 	block->lfreset_reg = NPA_AF_LF_RST;
 	sprintf(block->name, "NPA");
 	err = rvu_alloc_bitmap(&block->lf);
-	if (err)
+	if (err) {
+		dev_err(rvu->dev,
+			"%s: Failed to allocate NPA LF bitmap\n", __func__);
 		return err;
+	}
 
 nix:
 	err = rvu_setup_nix_hw_resource(rvu, BLKADDR_NIX0);
-	if (err)
+	if (err) {
+		dev_err(rvu->dev,
+			"%s: Failed to allocate NIX0 LFs bitmap\n", __func__);
 		return err;
+	}
+
 	err = rvu_setup_nix_hw_resource(rvu, BLKADDR_NIX1);
-	if (err)
+	if (err) {
+		dev_err(rvu->dev,
+			"%s: Failed to allocate NIX1 LFs bitmap\n", __func__);
 		return err;
+	}
 
 	/* Init SSO group's bitmap */
 	block = &hw->block[BLKADDR_SSO];
@@ -939,8 +963,11 @@ nix:
 	block->lfreset_reg = SSO_AF_LF_HWGRP_RST;
 	sprintf(block->name, "SSO GROUP");
 	err = rvu_alloc_bitmap(&block->lf);
-	if (err)
+	if (err) {
+		dev_err(rvu->dev,
+			"%s: Failed to allocate SSO LF bitmap\n", __func__);
 		return err;
+	}
 
 ssow:
 	/* Init SSO workslot's bitmap */
@@ -960,8 +987,11 @@ ssow:
 	block->lfreset_reg = SSOW_AF_LF_HWS_RST;
 	sprintf(block->name, "SSOWS");
 	err = rvu_alloc_bitmap(&block->lf);
-	if (err)
+	if (err) {
+		dev_err(rvu->dev,
+			"%s: Failed to allocate SSOW LF bitmap\n", __func__);
 		return err;
+	}
 
 tim:
 	/* Init TIM LF's bitmap */
@@ -982,35 +1012,53 @@ tim:
 	block->lfreset_reg = TIM_AF_LF_RST;
 	sprintf(block->name, "TIM");
 	err = rvu_alloc_bitmap(&block->lf);
-	if (err)
+	if (err) {
+		dev_err(rvu->dev,
+			"%s: Failed to allocate TIM LF bitmap\n", __func__);
 		return err;
+	}
 
 cpt:
 	err = rvu_setup_cpt_hw_resource(rvu, BLKADDR_CPT0);
-	if (err)
+	if (err) {
+		dev_err(rvu->dev,
+			"%s: Failed to allocate CPT0 LF bitmap\n", __func__);
 		return err;
+	}
 	err = rvu_setup_cpt_hw_resource(rvu, BLKADDR_CPT1);
-	if (err)
+	if (err) {
+		dev_err(rvu->dev,
+			"%s: Failed to allocate CPT1 LF bitmap\n", __func__);
 		return err;
+	}
 
 	/* Allocate memory for PFVF data */
 	rvu->pf = devm_kcalloc(rvu->dev, hw->total_pfs,
 			       sizeof(struct rvu_pfvf), GFP_KERNEL);
-	if (!rvu->pf)
+	if (!rvu->pf) {
+		dev_err(rvu->dev,
+			"%s: Failed to allocate memory for PF's rvu_pfvf struct\n", __func__);
 		return -ENOMEM;
+	}
 
 	rvu->hwvf = devm_kcalloc(rvu->dev, hw->total_vfs,
 				 sizeof(struct rvu_pfvf), GFP_KERNEL);
-	if (!rvu->hwvf)
+	if (!rvu->hwvf) {
+		dev_err(rvu->dev,
+			"%s: Failed to allocate memory for VF's rvu_pfvf struct\n", __func__);
 		return -ENOMEM;
+	}
 
 	mutex_init(&rvu->rsrc_lock);
 
 	rvu_fwdata_init(rvu);
 
 	err = rvu_setup_msix_resources(rvu);
-	if (err)
+	if (err) {
+		dev_err(rvu->dev,
+			"%s: Failed to setup MSIX resources\n", __func__);
 		return err;
+	}
 
 	for (blkid = 0; blkid < BLK_COUNT; blkid++) {
 		block = &hw->block[blkid];
@@ -1036,25 +1084,33 @@ cpt:
 		goto msix_err;
 
 	err = rvu_npc_init(rvu);
-	if (err)
+	if (err) {
+		dev_err(rvu->dev, "%s: Failed to initialize npc\n", __func__);
 		goto npc_err;
+	}
 
 	err = rvu_cgx_init(rvu);
-	if (err)
+	if (err) {
+		dev_err(rvu->dev, "%s: Failed to initialize cgx\n", __func__);
 		goto cgx_err;
+	}
 
 	/* Assign MACs for CGX mapped functions */
 	rvu_setup_pfvf_macaddress(rvu);
 
 	err = rvu_npa_init(rvu);
-	if (err)
+	if (err) {
+		dev_err(rvu->dev, "%s: Failed to initialize npa\n", __func__);
 		goto npa_err;
+	}
 
 	rvu_get_lbk_bufsize(rvu);
 
 	err = rvu_nix_init(rvu);
-	if (err)
+	if (err) {
+		dev_err(rvu->dev, "%s: Failed to initialize nix\n", __func__);
 		goto nix_err;
+	}
 
 	rvu_program_channels(rvu);
 
@@ -1302,7 +1358,7 @@ int rvu_mbox_handler_detach_resources(struct rvu *rvu,
 	return rvu_detach_rsrcs(rvu, detach, detach->hdr.pcifunc);
 }
 
-static int rvu_get_nix_blkaddr(struct rvu *rvu, u16 pcifunc)
+int rvu_get_nix_blkaddr(struct rvu *rvu, u16 pcifunc)
 {
 	struct rvu_pfvf *pfvf = rvu_get_pfvf(rvu, pcifunc);
 	int blkaddr = BLKADDR_NIX0, vf;
@@ -1750,6 +1806,48 @@ int rvu_mbox_handler_get_hw_cap(struct rvu *rvu, struct msg_req *req,
 
 	rsp->nix_fixed_txschq_mapping = hw->cap.nix_fixed_txschq_mapping;
 	rsp->nix_shaping = hw->cap.nix_shaping;
+
+	return 0;
+}
+
+int rvu_mbox_handler_set_vf_perm(struct rvu *rvu, struct set_vf_perm *req,
+				 struct msg_rsp *rsp)
+{
+	struct rvu_hwinfo *hw = rvu->hw;
+	u16 pcifunc = req->hdr.pcifunc;
+	struct rvu_pfvf *pfvf;
+	int blkaddr, nixlf;
+	u16 target;
+
+	/* Only PF can add VF permissions */
+	if ((pcifunc & RVU_PFVF_FUNC_MASK) || is_afvf(pcifunc))
+		return -EOPNOTSUPP;
+
+	target = (pcifunc & ~RVU_PFVF_FUNC_MASK) | (req->vf + 1);
+	pfvf = rvu_get_pfvf(rvu, target);
+
+	if (req->flags & RESET_VF_PERM) {
+		pfvf->flags &= RVU_CLEAR_VF_PERM;
+	} else if (test_bit(PF_SET_VF_TRUSTED, &pfvf->flags) ^
+		 (req->flags & VF_TRUSTED)) {
+		change_bit(PF_SET_VF_TRUSTED, &pfvf->flags);
+		/* disable multicast and promisc entries */
+		if (!test_bit(PF_SET_VF_TRUSTED, &pfvf->flags)) {
+			blkaddr = rvu_get_blkaddr(rvu, BLKTYPE_NIX, target);
+			if (blkaddr < 0)
+				return 0;
+			nixlf = rvu_get_lf(rvu, &hw->block[blkaddr],
+					   target, 0);
+			if (nixlf < 0)
+				return 0;
+			npc_enadis_default_mce_entry(rvu, target, nixlf,
+						     NIXLF_ALLMULTI_ENTRY,
+						     false);
+			npc_enadis_default_mce_entry(rvu, target, nixlf,
+						     NIXLF_PROMISC_ENTRY,
+						     false);
+		}
+	}
 
 	return 0;
 }
@@ -2279,6 +2377,7 @@ static void __rvu_flr_handler(struct rvu *rvu, u16 pcifunc)
 	rvu_blklf_teardown(rvu, pcifunc, BLKADDR_SSOW);
 	rvu_blklf_teardown(rvu, pcifunc, BLKADDR_SSO);
 	rvu_blklf_teardown(rvu, pcifunc, BLKADDR_NPA);
+	rvu_reset_lmt_map_tbl(rvu, pcifunc);
 	rvu_detach_rsrcs(rvu, NULL, pcifunc);
 	mutex_unlock(&rvu->flr_lock);
 }
@@ -2804,6 +2903,12 @@ static int rvu_enable_sriov(struct rvu *rvu)
 	if (!vfs)
 		return 0;
 
+	/* LBK channel number 63 is used for switching packets between
+	 * CGX mapped VFs. Hence limit LBK pairs till 62 only.
+	 */
+	if (vfs > 62)
+		vfs = 62;
+
 	/* Save VFs number for reference in VF interrupts handlers.
 	 * Since interrupts might start arriving during SRIOV enablement
 	 * ordinary API cannot be used to get number of enabled VFs.
@@ -2842,6 +2947,8 @@ static void rvu_update_module_params(struct rvu *rvu)
 
 	strscpy(rvu->mkex_pfl_name,
 		mkex_profile ? mkex_profile : default_pfl_name, MKEX_NAME_LEN);
+	strscpy(rvu->kpu_pfl_name,
+		kpu_profile ? kpu_profile : default_pfl_name, KPU_NAME_LEN);
 }
 
 static int rvu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
@@ -2919,30 +3026,42 @@ static int rvu_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	err = rvu_mbox_init(rvu, &rvu->afpf_wq_info, TYPE_AFPF,
 			    rvu->hw->total_pfs, rvu_afpf_mbox_handler,
 			    rvu_afpf_mbox_up_handler);
-	if (err)
+	if (err) {
+		dev_err(dev, "%s: Failed to initialize mbox\n", __func__);
 		goto err_hwsetup;
+	}
 
 	err = rvu_flr_init(rvu);
-	if (err)
+	if (err) {
+		dev_err(dev, "%s: Failed to initialize flr\n", __func__);
 		goto err_mbox;
+	}
 
 	err = rvu_register_interrupts(rvu);
-	if (err)
+	if (err) {
+		dev_err(dev, "%s: Failed to register interrupts\n", __func__);
 		goto err_flr;
+	}
 
 	err = rvu_register_dl(rvu);
-	if (err)
+	if (err) {
+		dev_err(dev, "%s: Failed to register devlink\n", __func__);
 		goto err_irq;
+	}
 
 	rvu_setup_rvum_blk_revid(rvu);
 
 	/* Enable AF's VFs (if any) */
 	err = rvu_enable_sriov(rvu);
-	if (err)
+	if (err) {
+		dev_err(dev, "%s: Failed to enable sriov\n", __func__);
 		goto err_dl;
+	}
 
 	/* Initialize debugfs */
 	rvu_dbg_init(rvu);
+
+	mutex_init(&rvu->rswitch.switch_lock);
 
 	return 0;
 err_dl:

@@ -1189,7 +1189,7 @@ static inline int resize_screen(struct vc_data *vc, int width, int height,
  *	information and perform any necessary signal handling.
  *
  *	Caller must hold the console semaphore. Takes the termios rwsem and
- *	ctrl_lock of the tty IFF a tty is passed.
+ *	ctrl.lock of the tty IFF a tty is passed.
  */
 
 static int vc_do_resize(struct tty_struct *tty, struct vc_data *vc,
@@ -1219,8 +1219,25 @@ static int vc_do_resize(struct tty_struct *tty, struct vc_data *vc,
 	new_row_size = new_cols << 1;
 	new_screen_size = new_row_size * new_rows;
 
-	if (new_cols == vc->vc_cols && new_rows == vc->vc_rows)
-		return 0;
+	if (new_cols == vc->vc_cols && new_rows == vc->vc_rows) {
+		/*
+		 * This function is being called here to cover the case
+		 * where the userspace calls the FBIOPUT_VSCREENINFO twice,
+		 * passing the same fb_var_screeninfo containing the fields
+		 * yres/xres equal to a number non-multiple of vc_font.height
+		 * and yres_virtual/xres_virtual equal to number lesser than the
+		 * vc_font.height and yres/xres.
+		 * In the second call, the struct fb_var_screeninfo isn't
+		 * being modified by the underlying driver because of the
+		 * if above, and this causes the fbcon_display->vrows to become
+		 * negative and it eventually leads to out-of-bound
+		 * access by the imageblit function.
+		 * To give the correct values to the struct and to not have
+		 * to deal with possible errors from the code below, we call
+		 * the resize_screen here as well.
+		 */
+		return resize_screen(vc, new_cols, new_rows, user);
+	}
 
 	if (new_screen_size > KMALLOC_MAX_SIZE || !new_screen_size)
 		return -EINVAL;
@@ -1355,7 +1372,7 @@ int vc_resize(struct vc_data *vc, unsigned int cols, unsigned int rows)
  *	the actual work.
  *
  *	Takes the console sem and the called methods then take the tty
- *	termios_rwsem and the tty ctrl_lock in that order.
+ *	termios_rwsem and the tty ctrl.lock in that order.
  */
 static int vt_resize(struct tty_struct *tty, struct winsize *ws)
 {
@@ -2888,7 +2905,7 @@ static int do_con_write(struct tty_struct *tty, const unsigned char *buf, int co
 
 	param.vc = vc;
 
-	while (!tty->stopped && count) {
+	while (!tty->flow.stopped && count) {
 		int orig = *buf;
 		buf++;
 		n++;
@@ -3260,21 +3277,14 @@ static int con_write(struct tty_struct *tty, const unsigned char *buf, int count
 
 static int con_put_char(struct tty_struct *tty, unsigned char ch)
 {
-	if (in_interrupt())
-		return 0;	/* n_r3964 calls put_char() from interrupt context */
 	return do_con_write(tty, &ch, 1);
 }
 
-static int con_write_room(struct tty_struct *tty)
+static unsigned int con_write_room(struct tty_struct *tty)
 {
-	if (tty->stopped)
+	if (tty->flow.stopped)
 		return 0;
 	return 32768;		/* No limit, really; we're not buffering */
-}
-
-static int con_chars_in_buffer(struct tty_struct *tty)
-{
-	return 0;		/* we're not buffering */
 }
 
 /*
@@ -3523,7 +3533,6 @@ static const struct tty_operations con_ops = {
 	.write_room = con_write_room,
 	.put_char = con_put_char,
 	.flush_chars = con_flush_chars,
-	.chars_in_buffer = con_chars_in_buffer,
 	.ioctl = vt_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl = vt_compat_ioctl,
@@ -3567,8 +3576,9 @@ int __init vty_init(const struct file_operations *console_fops)
 
 	vcs_init();
 
-	console_driver = alloc_tty_driver(MAX_NR_CONSOLES);
-	if (!console_driver)
+	console_driver = tty_alloc_driver(MAX_NR_CONSOLES, TTY_DRIVER_REAL_RAW |
+			TTY_DRIVER_RESET_TERMIOS);
+	if (IS_ERR(console_driver))
 		panic("Couldn't allocate console driver\n");
 
 	console_driver->name = "tty";
@@ -3579,7 +3589,6 @@ int __init vty_init(const struct file_operations *console_fops)
 	console_driver->init_termios = tty_std_termios;
 	if (default_utf8)
 		console_driver->init_termios.c_iflag |= IUTF8;
-	console_driver->flags = TTY_DRIVER_REAL_RAW | TTY_DRIVER_RESET_TERMIOS;
 	tty_set_operations(console_driver, &con_ops);
 	if (tty_register_driver(console_driver))
 		panic("Couldn't register console driver\n");
@@ -4449,7 +4458,7 @@ void poke_blanked_console(void)
 	might_sleep();
 
 	/* This isn't perfectly race free, but a race here would be mostly harmless,
-	 * at worse, we'll do a spurrious blank and it's unlikely
+	 * at worst, we'll do a spurious blank and it's unlikely
 	 */
 	del_timer(&console_timer);
 	blank_timer_expired = 0;

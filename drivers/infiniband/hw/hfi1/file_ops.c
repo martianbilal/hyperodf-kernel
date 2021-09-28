@@ -194,7 +194,7 @@ static int hfi1_file_open(struct inode *inode, struct file *fp)
 	if (!((dd->flags & HFI1_PRESENT) && dd->kregbase1))
 		return -EINVAL;
 
-	if (!atomic_inc_not_zero(&dd->user_refcount))
+	if (!refcount_inc_not_zero(&dd->user_refcount))
 		return -ENXIO;
 
 	/* The real work is performed later in assign_ctxt() */
@@ -213,7 +213,7 @@ static int hfi1_file_open(struct inode *inode, struct file *fp)
 nomem:
 	kfree(fd);
 	fp->private_data = NULL;
-	if (atomic_dec_and_test(&dd->user_refcount))
+	if (refcount_dec_and_test(&dd->user_refcount))
 		complete(&dd->user_comp);
 	return -ENOMEM;
 }
@@ -711,7 +711,7 @@ static int hfi1_file_close(struct inode *inode, struct file *fp)
 	deallocate_ctxt(uctxt);
 done:
 
-	if (atomic_dec_and_test(&dd->user_refcount))
+	if (refcount_dec_and_test(&dd->user_refcount))
 		complete(&dd->user_comp);
 
 	cleanup_srcu_struct(&fdata->pq_srcu);
@@ -736,7 +736,7 @@ static u64 kvirt_to_phys(void *addr)
 }
 
 /**
- * complete_subctxt
+ * complete_subctxt - complete sub-context info
  * @fd: valid filedata pointer
  *
  * Sub-context info can only be set up after the base context
@@ -841,7 +841,7 @@ static int assign_ctxt(struct hfi1_filedata *fd, unsigned long arg, u32 len)
 }
 
 /**
- * match_ctxt
+ * match_ctxt - match context
  * @fd: valid filedata pointer
  * @uinfo: user info to compare base context with
  * @uctxt: context to compare uinfo to.
@@ -898,7 +898,7 @@ static int match_ctxt(struct hfi1_filedata *fd,
 }
 
 /**
- * find_sub_ctxt
+ * find_sub_ctxt - fund sub-context
  * @fd: valid filedata pointer
  * @uinfo: matching info to use to find a possible context to share.
  *

@@ -27,7 +27,8 @@ static void *xattr_alloc(struct f2fs_sb_info *sbi, int size, bool *is_inline)
 {
 	if (likely(size == sbi->inline_xattr_slab_size)) {
 		*is_inline = true;
-		return kmem_cache_zalloc(sbi->inline_xattr_slab, GFP_NOFS);
+		return f2fs_kmem_cache_alloc(sbi->inline_xattr_slab,
+					GFP_F2FS_ZERO, false, sbi);
 	}
 	*is_inline = false;
 	return f2fs_kzalloc(sbi, size, GFP_NOFS);
@@ -488,6 +489,7 @@ static inline int write_all_xattrs(struct inode *inode, __u32 hsize,
 		f2fs_wait_on_page_writeback(xpage, NODE, true, true);
 	} else {
 		struct dnode_of_data dn;
+
 		set_new_dnode(&dn, inode, NULL, NULL, new_nid);
 		xpage = f2fs_new_node_page(&dn, XATTR_NODE_OFFSET);
 		if (IS_ERR(xpage)) {

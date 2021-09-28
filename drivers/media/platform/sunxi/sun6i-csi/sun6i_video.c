@@ -48,7 +48,7 @@ static const u32 supported_pixformats[] = {
 	V4L2_PIX_FMT_YVYU,
 	V4L2_PIX_FMT_UYVY,
 	V4L2_PIX_FMT_VYUY,
-	V4L2_PIX_FMT_HM12,
+	V4L2_PIX_FMT_NV12_16L16,
 	V4L2_PIX_FMT_NV12,
 	V4L2_PIX_FMT_NV21,
 	V4L2_PIX_FMT_YUV420,
@@ -481,8 +481,10 @@ static int sun6i_video_open(struct file *file)
 		goto fh_release;
 
 	/* check if already powered */
-	if (!v4l2_fh_is_singular_file(file))
+	if (!v4l2_fh_is_singular_file(file)) {
+		ret = -EBUSY;
 		goto unlock;
+	}
 
 	ret = sun6i_csi_set_power(video->csi, true);
 	if (ret < 0)

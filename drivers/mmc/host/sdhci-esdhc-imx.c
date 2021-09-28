@@ -24,7 +24,6 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/pinctrl/consumer.h>
-#include <linux/platform_data/mmc-esdhc-imx.h>
 #include <linux/pm_runtime.h>
 #include "sdhci-pltfm.h"
 #include "sdhci-esdhc.h"
@@ -191,6 +190,38 @@
  */
 #define ESDHC_FLAG_BROKEN_AUTO_CMD23	BIT(16)
 
+enum wp_types {
+	ESDHC_WP_NONE,		/* no WP, neither controller nor gpio */
+	ESDHC_WP_CONTROLLER,	/* mmc controller internal WP */
+	ESDHC_WP_GPIO,		/* external gpio pin for WP */
+};
+
+enum cd_types {
+	ESDHC_CD_NONE,		/* no CD, neither controller nor gpio */
+	ESDHC_CD_CONTROLLER,	/* mmc controller internal CD */
+	ESDHC_CD_GPIO,		/* external gpio pin for CD */
+	ESDHC_CD_PERMANENT,	/* no CD, card permanently wired to host */
+};
+
+/*
+ * struct esdhc_platform_data - platform data for esdhc on i.MX
+ *
+ * ESDHC_WP(CD)_CONTROLLER type is not available on i.MX25/35.
+ *
+ * @wp_type:	type of write_protect method (see wp_types enum above)
+ * @cd_type:	type of card_detect method (see cd_types enum above)
+ */
+
+struct esdhc_platform_data {
+	enum wp_types wp_type;
+	enum cd_types cd_type;
+	int max_bus_width;
+	unsigned int delay_line;
+	unsigned int tuning_step;       /* The delay cell steps in tuning procedure */
+	unsigned int tuning_start_tap;	/* The start delay cell point in tuning procedure */
+	unsigned int strobe_dll_delay_target;	/* The delay cell for strobe pad (read clock) */
+};
+
 struct esdhc_soc_data {
 	u32 flags;
 };
@@ -324,11 +355,6 @@ static inline int is_imx53_esdhc(struct pltfm_imx_data *data)
 	return data->socdata == &esdhc_imx53_data;
 }
 
-static inline int is_imx6q_usdhc(struct pltfm_imx_data *data)
-{
-	return data->socdata == &usdhc_imx6q_data;
-}
-
 static inline int esdhc_is_usdhc(struct pltfm_imx_data *data)
 {
 	return !!(data->socdata->flags & ESDHC_FLAG_USDHC);
@@ -427,17 +453,14 @@ static u32 esdhc_readl_le(struct sdhci_host *host, int reg)
 					| FIELD_PREP(SDHCI_RETUNING_MODE_MASK,
 						     SDHCI_TUNING_MODE_3);
 
-			if (imx_data->socdata->flags & ESDHC_FLAG_HS400)
-				val |= SDHCI_SUPPORT_HS400;
-
 			/*
 			 * Do not advertise faster UHS modes if there are no
 			 * pinctrl states for 100MHz/200MHz.
 			 */
-			if (IS_ERR_OR_NULL(imx_data->pins_100mhz) ||
-			    IS_ERR_OR_NULL(imx_data->pins_200mhz))
-				val &= ~(SDHCI_SUPPORT_SDR50 | SDHCI_SUPPORT_DDR50
-					 | SDHCI_SUPPORT_SDR104 | SDHCI_SUPPORT_HS400);
+			if (IS_ERR_OR_NULL(imx_data->pins_100mhz))
+				val &= ~(SDHCI_SUPPORT_SDR50 | SDHCI_SUPPORT_DDR50);
+			if (IS_ERR_OR_NULL(imx_data->pins_200mhz))
+				val &= ~(SDHCI_SUPPORT_SDR104 | SDHCI_SUPPORT_HS400);
 		}
 	}
 
@@ -1453,7 +1476,6 @@ static const struct cqhci_host_ops esdhc_cqhci_ops = {
 	.dumpregs	= esdhc_sdhci_dumpregs,
 };
 
-#ifdef CONFIG_OF
 static int
 sdhci_esdhc_imx_probe_dt(struct platform_device *pdev,
 			 struct sdhci_host *host,
@@ -1486,7 +1508,7 @@ sdhci_esdhc_imx_probe_dt(struct platform_device *pdev,
 	if (of_property_read_u32(np, "fsl,delay-line", &boarddata->delay_line))
 		boarddata->delay_line = 0;
 
-	mmc_of_parse_voltage(np, &host->ocr_mask);
+	mmc_of_parse_voltage(host->mmc, &host->ocr_mask);
 
 	if (esdhc_is_usdhc(imx_data) && !IS_ERR(imx_data->pinctrl)) {
 		imx_data->pins_100mhz = pinctrl_lookup_state(imx_data->pinctrl,
@@ -1505,20 +1527,9 @@ sdhci_esdhc_imx_probe_dt(struct platform_device *pdev,
 
 	return 0;
 }
-#else
-static inline int
-sdhci_esdhc_imx_probe_dt(struct platform_device *pdev,
-			 struct sdhci_host *host,
-			 struct pltfm_imx_data *imx_data)
-{
-	return -ENODEV;
-}
-#endif
 
 static int sdhci_esdhc_imx_probe(struct platform_device *pdev)
 {
-	const struct of_device_id *of_id =
-			of_match_device(imx_esdhc_dt_ids, &pdev->dev);
 	struct sdhci_pltfm_host *pltfm_host;
 	struct sdhci_host *host;
 	struct cqhci_host *cq_host;
@@ -1534,7 +1545,7 @@ static int sdhci_esdhc_imx_probe(struct platform_device *pdev)
 
 	imx_data = sdhci_pltfm_priv(pltfm_host);
 
-	imx_data->socdata = of_id->data;
+	imx_data->socdata = device_get_match_data(&pdev->dev);
 
 	if (imx_data->socdata->flags & ESDHC_FLAG_PMQOS)
 		cpu_latency_qos_add_request(&imx_data->pm_qos_req, 0);
@@ -1603,7 +1614,7 @@ static int sdhci_esdhc_imx_probe(struct platform_device *pdev)
 		host->quirks |= SDHCI_QUIRK_BROKEN_ADMA;
 
 	if (imx_data->socdata->flags & ESDHC_FLAG_HS400)
-		host->quirks2 |= SDHCI_QUIRK2_CAPS_BIT63_FOR_HS400;
+		host->mmc->caps2 |= MMC_CAP2_HS400;
 
 	if (imx_data->socdata->flags & ESDHC_FLAG_BROKEN_AUTO_CMD23)
 		host->quirks2 |= SDHCI_QUIRK2_ACMD23_BROKEN;
@@ -1639,6 +1650,14 @@ static int sdhci_esdhc_imx_probe(struct platform_device *pdev)
 	err = sdhci_add_host(host);
 	if (err)
 		goto disable_ahb_clk;
+
+	/*
+	 * Setup the wakeup capability here, let user to decide
+	 * whether need to enable this wakeup through sysfs interface.
+	 */
+	if ((host->mmc->pm_caps & MMC_PM_KEEP_POWER) &&
+			(host->mmc->pm_caps & MMC_PM_WAKE_SDIO_IRQ))
+		device_set_wakeup_capable(&pdev->dev, true);
 
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_set_autosuspend_delay(&pdev->dev, 50);

@@ -9,6 +9,7 @@
 #include <linux/highmem.h>
 #include <linux/sched/mm.h>
 #include <crypto/hash.h>
+#include "misc.h"
 #include "ctree.h"
 #include "disk-io.h"
 #include "transaction.h"
@@ -232,7 +233,6 @@ int btrfs_lookup_file_extent(struct btrfs_trans_handle *trans,
 			     struct btrfs_path *path, u64 objectid,
 			     u64 offset, int mod)
 {
-	int ret;
 	struct btrfs_key file_key;
 	int ins_len = mod < 0 ? -1 : 0;
 	int cow = mod != 0;
@@ -240,8 +240,8 @@ int btrfs_lookup_file_extent(struct btrfs_trans_handle *trans,
 	file_key.objectid = objectid;
 	file_key.offset = offset;
 	file_key.type = BTRFS_EXTENT_DATA_KEY;
-	ret = btrfs_search_slot(trans, root, &file_key, path, ins_len, cow);
-	return ret;
+
+	return btrfs_search_slot(trans, root, &file_key, path, ins_len, cow);
 }
 
 /*
@@ -617,7 +617,7 @@ fail:
  * @file_start:  offset in file this bio begins to describe
  * @contig:	 Boolean. If true/1 means all bio vecs in this bio are
  *		 contiguous and they begin at @file_start in the file. False/0
- *		 means this bio can contains potentially discontigous bio vecs
+ *		 means this bio can contain potentially discontiguous bio vecs
  *		 so the logical offset of each should be calculated separately.
  */
 blk_status_t btrfs_csum_one_bio(struct btrfs_inode *inode, struct bio *bio,
