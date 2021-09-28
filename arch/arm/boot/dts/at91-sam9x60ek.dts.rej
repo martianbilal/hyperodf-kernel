@@ -1,0 +1,11 @@
+--- arch/arm/boot/dts/at91-sam9x60ek.dts
++++ arch/arm/boot/dts/at91-sam9x60ek.dts
+@@ -662,7 +662,7 @@
+ };
+ 
+ &shutdown_controller {
+-	atmel,shdwc-debouncer = <976>;
++	debounce-delay-us = <976>;
+ 	status = "okay";
+ 
+ 	input@0 {
