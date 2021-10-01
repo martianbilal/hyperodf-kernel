@@ -2054,6 +2054,7 @@ struct kvm_memory_slot *kvm_vcpu_gfn_to_memslot(struct kvm_vcpu *vcpu, gfn_t gfn
 	struct kvm_memslots *slots = kvm_vcpu_memslots(vcpu);
 	struct kvm_memory_slot *slot;
 	int slot_index;
+	printk (KERN_ALERT "slots for kvm : %llu\n", (long long unsigned)slots);
 
 	slot = try_get_memslot(slots, vcpu->last_used_slot, gfn);
 	if (slot)
@@ -2069,7 +2070,7 @@ struct kvm_memory_slot *kvm_vcpu_gfn_to_memslot(struct kvm_vcpu *vcpu, gfn_t gfn
 		vcpu->last_used_slot = slot_index;
 		return slot;
 	}
-
+	printk(KERN_ALERT "Value of slot obtained from gfn to memslot : %llu\n", (long long unsigned)slot);
 	return NULL;
 }
 EXPORT_SYMBOL_GPL(kvm_vcpu_gfn_to_memslot);
@@ -2085,6 +2086,8 @@ EXPORT_SYMBOL_GPL(kvm_is_visible_gfn);
 bool kvm_vcpu_is_visible_gfn(struct kvm_vcpu *vcpu, gfn_t gfn)
 {
 	struct kvm_memory_slot *memslot = kvm_vcpu_gfn_to_memslot(vcpu, gfn);
+	printk (KERN_ALERT "memSlot value obtained from kvm_vcpu_gfn_to_memslot : %lu", (long unsigned int)memslot);
+	printk (KERN_ALERT "gfn value given to gfn_to_memslot : %lld", gfn);
 
 	return kvm_is_visible_memslot(memslot);
 }
@@ -4666,10 +4669,10 @@ static long kvm_dev_ioctl(struct file *filp,
 		if (0xff000000 > (unsigned int)(-3 * PAGE_SIZE))
 			return -EINVAL;
 
-		r = vfs_ioctl(vm_file, KVM_SET_TSS_ADDR ,0xff000000);
+		r = vfs_ioctl(vm_file, KVM_SET_TSS_ADDR ,0xfffbd000);
 
 
-		kvm_userspace_mem.slot = 0; 
+		kvm_userspace_mem.slot = 1; 
 		kvm_userspace_mem.flags = 0;
 		kvm_userspace_mem.guest_phys_addr = 0;
 		kvm_userspace_mem.userspace_addr = info.kvm_userspace_mem.userspace_addr;

@@ -1209,6 +1209,9 @@ try_get_memslot(struct kvm_memslots *slots, int slot_index, gfn_t gfn)
 {
 	struct kvm_memory_slot *slot;
 
+	printk(KERN_ALERT "gfn given to the try_get_memslots : %llu \n", gfn);
+	printk(KERN_ALERT "slot_index given to the try_get_memslots : %d \n", slot_index );
+
 	if (slot_index < 0 || slot_index >= slots->used_slots)
 		return NULL;
 
@@ -1752,7 +1755,7 @@ static inline void kvm_vcpu_set_dy_eligible(struct kvm_vcpu *vcpu, bool val)
 #endif /* CONFIG_HAVE_KVM_CPU_RELAX_INTERCEPT */
 
 static inline bool kvm_is_visible_memslot(struct kvm_memory_slot *memslot)
-{
+{	
 	return (memslot && memslot->id < KVM_USER_MEM_SLOTS &&
 		!(memslot->flags & KVM_MEMSLOT_INVALID));
 }
