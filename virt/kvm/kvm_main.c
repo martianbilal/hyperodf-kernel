@@ -4674,7 +4674,7 @@ static long kvm_dev_ioctl(struct file *filp,
 		kvm_userspace_mem.guest_phys_addr = 0;
 		kvm_userspace_mem.userspace_addr = info.kvm_userspace_mem.userspace_addr;
 		printk(KERN_ALERT "%llu\n",info.kvm_userspace_mem.userspace_addr);
-		r = vfs_ioctl(vm_file, KVM_SET_USER_MEMORY_REGION, &kvm_userspace_mem);
+		r = vfs_ioctl(vm_file, KVM_SET_USER_MEMORY_REGION, (unsigned long int)&kvm_userspace_mem);
 		vcpu_fd = vfs_ioctl(vm_file, KVM_CREATE_VCPU, 0);
 		info.vm_fd = vm_fd;
 		info.vcpu_fd = vcpu_fd;

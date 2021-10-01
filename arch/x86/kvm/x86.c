@@ -647,6 +647,7 @@ static void kvm_multiple_exception(struct kvm_vcpu *vcpu,
 	prev_nr = vcpu->arch.exception.nr;
 	if (prev_nr == DF_VECTOR) {
 		/* triple fault -> shutdown */
+		printk( KERN_ALERT"Inside the function  --- %s -- calling the kvm_make_request\n", __func__);
 		kvm_make_request(KVM_REQ_TRIPLE_FAULT, vcpu);
 		return;
 	}
@@ -4472,6 +4473,7 @@ static int kvm_vcpu_ioctl_x86_set_mce(struct kvm_vcpu *vcpu,
 	if (mce->status & MCI_STATUS_UC) {
 		if ((vcpu->arch.mcg_status & MCG_STATUS_MCIP) ||
 		    !kvm_read_cr4_bits(vcpu, X86_CR4_MCE)) {
+		printk( KERN_ALERT"Inside the function  --- %s -- calling the kvm_make_request\n", __func__);
 			kvm_make_request(KVM_REQ_TRIPLE_FAULT, vcpu);
 			return 0;
 		}
@@ -7308,6 +7310,7 @@ static int emulator_leave_smm(struct x86_emulate_ctxt *ctxt,
 
 static void emulator_triple_fault(struct x86_emulate_ctxt *ctxt)
 {
+		printk( KERN_ALERT"Inside the function  --- %s -- calling the kvm_make_request\n", __func__);
 	kvm_make_request(KVM_REQ_TRIPLE_FAULT, emul_to_vcpu(ctxt));
 }
 
@@ -7456,6 +7459,7 @@ void kvm_inject_realmode_interrupt(struct kvm_vcpu *vcpu, int irq, int inc_eip)
 	ret = emulate_int_real(ctxt, irq);
 
 	if (ret != X86EMUL_CONTINUE) {
+		printk( KERN_ALERT"Inside the function  --- %s -- calling the kvm_make_request\n", __func__);
 		kvm_make_request(KVM_REQ_TRIPLE_FAULT, vcpu);
 	} else {
 		ctxt->eip = ctxt->_eip;
@@ -9444,9 +9448,11 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 			goto out;
 		}
 		if (kvm_check_request(KVM_REQ_TRIPLE_FAULT, vcpu)) {
+			printk(KERN_ALERT"KVM_REQ_TRIPLE_FAULT ====> CALLELD ");
 			if (is_guest_mode(vcpu)) {
 				kvm_x86_ops.nested_ops->triple_fault(vcpu);
 			} else {
+				dump_stack();
 				vcpu->run->exit_reason = KVM_EXIT_SHUTDOWN;
 				vcpu->mmio_needed = 0;
 				r = 0;
