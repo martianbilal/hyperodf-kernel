@@ -1209,9 +1209,6 @@ try_get_memslot(struct kvm_memslots *slots, int slot_index, gfn_t gfn)
 {
 	struct kvm_memory_slot *slot;
 
-	printk(KERN_ALERT "gfn given to the try_get_memslots : %llu \n", gfn);
-	printk(KERN_ALERT "slot_index given to the try_get_memslots : %d \n", slot_index );
-
 	if (slot_index < 0 || slot_index >= slots->used_slots)
 		return NULL;
 

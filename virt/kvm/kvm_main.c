@@ -2054,7 +2054,6 @@ struct kvm_memory_slot *kvm_vcpu_gfn_to_memslot(struct kvm_vcpu *vcpu, gfn_t gfn
 	struct kvm_memslots *slots = kvm_vcpu_memslots(vcpu);
 	struct kvm_memory_slot *slot;
 	int slot_index;
-	printk (KERN_ALERT "slots for kvm : %llu\n", (long long unsigned)slots);
 
 	slot = try_get_memslot(slots, vcpu->last_used_slot, gfn);
 	if (slot)
@@ -4330,6 +4329,7 @@ static long kvm_vm_ioctl(struct file *filp,
 	case KVM_SET_USER_MEMORY_REGION: {
 		struct kvm_userspace_memory_region kvm_userspace_mem;
 
+		printk(KERN_ALERT "The kvm userspace memory region value *******:***** %llu \n",kvm_userspace_mem.userspace_addr);
 		r = -EFAULT;
 		if (copy_from_user(&kvm_userspace_mem, argp,
 						sizeof(kvm_userspace_mem)))
@@ -4632,14 +4632,14 @@ static long kvm_dev_ioctl(struct file *filp,
 			  unsigned int ioctl, unsigned long arg)
 {
 	long r = -EINVAL;
-
+	printk (KERN_ALERT "kvm_fork code : ::: > %lu\n", KVM_FORK);
 	switch (ioctl) {
 	case KVM_GET_API_VERSION:
 		if (arg)
 			goto out;
 		r = KVM_API_VERSION;
 		break;
-		case KVM_FORK: {
+	case KVM_FORK: {
 		struct kvm *kvm = filp->private_data;
 		struct file* vm_file;
 		struct fd f; 
@@ -4666,18 +4666,14 @@ static long kvm_dev_ioctl(struct file *filp,
 		//
 		printk(KERN_ALERT "Value of VM FD in Kernel : %u", vm_fd);
 		printk(KERN_ALERT "Value of VM file in Kernel : %lu", (long unsigned int)vm_file);
-		if (0xff000000 > (unsigned int)(-3 * PAGE_SIZE))
+		if (0xfffbd000 > (unsigned int)(-3 * PAGE_SIZE))
 			return -EINVAL;
 
 		r = vfs_ioctl(vm_file, KVM_SET_TSS_ADDR ,0xfffbd000);
 
 
-		kvm_userspace_mem.slot = 1; 
-		kvm_userspace_mem.flags = 0;
-		kvm_userspace_mem.guest_phys_addr = 0;
-		kvm_userspace_mem.userspace_addr = info.kvm_userspace_mem.userspace_addr;
-		printk(KERN_ALERT "%llu\n",info.kvm_userspace_mem.userspace_addr);
-		r = vfs_ioctl(vm_file, KVM_SET_USER_MEMORY_REGION, (unsigned long int)&kvm_userspace_mem);
+		// printk(KERN_ALERT "userspace address in kvm_fork ioctl:>>>> %llu\n",info.kvm_userspace_mem.userspace_addr);
+		r = vfs_ioctl(vm_file, 0x4020AE46, (unsigned long)info.kvm_userspace_mem);
 		vcpu_fd = vfs_ioctl(vm_file, KVM_CREATE_VCPU, 0);
 		info.vm_fd = vm_fd;
 		info.vcpu_fd = vcpu_fd;

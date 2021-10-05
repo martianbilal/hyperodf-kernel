@@ -30,6 +30,15 @@
 /* So that the fiemap access checks can't overflow on 32 bit machines. */
 #define FIEMAP_MAX_EXTENTS	(UINT_MAX / sizeof(struct fiemap_extent))
 
+struct kvm_userspace_memory_region {
+	__u32 slot;
+	__u32 flags;
+	__u64 guest_phys_addr;
+	__u64 memory_size; /* bytes */
+	__u64 userspace_addr; /* start of the userspace allocated memory */
+};
+
+
 /**
  * vfs_ioctl - call filesystem specific ioctl methods
  * @filp:	open file to invoke ioctl method on
@@ -43,12 +52,22 @@
  */
 long vfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
+	struct kvm_userspace_memory_region *usermem = arg;
+	
 	int error = -ENOTTY;
-
+	// printing out the function arguments for the kvm_set_user_memory_region call 
+	if (cmd == 0x4020AE46){
+		printk(KERN_ALERT "***** kvm set user memory region called for vfs ioctl *****\n");
+		printk(KERN_ALERT "The value for arg with this call : %lu\n", (unsigned long)(usermem->userspace_addr) );
+	}
 	if (!filp->f_op->unlocked_ioctl)
 		goto out;
 
 	error = filp->f_op->unlocked_ioctl(filp, cmd, arg);
+	if (cmd == 0x4020AE46){
+		printk(KERN_ALERT "REACHED HERE line 53 in vfs_ioctl ----< <<<< <------n");
+	}	
+
 	if (error == -ENOIOCTLCMD)
 		error = -ENOTTY;
  out:

@@ -106,7 +106,7 @@ struct kvm_userspace_memory_region {
 
 /* for KVM_FORK*/
 struct fork_info { 
-	struct kvm_userspace_memory_region kvm_userspace_mem;
+	unsigned long kvm_userspace_mem;
 	int vm_fd;
 	int vcpu_fd;
 };
