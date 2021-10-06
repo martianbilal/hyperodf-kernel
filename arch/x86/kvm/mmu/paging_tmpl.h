@@ -680,6 +680,7 @@ static int FNAME(fetch)(struct kvm_vcpu *vcpu, gpa_t addr,
 
 	direct_access = gw->pte_access;
 
+	printk(KERN_ALERT "function name of paging tmpl handler: %s\n", __func__ );
 	top_level = vcpu->arch.mmu->root_level;
 	if (top_level == PT32E_ROOT_LEVEL)
 		top_level = PT32_ROOT_LEVEL;
