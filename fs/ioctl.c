@@ -52,13 +52,10 @@ struct kvm_userspace_memory_region {
  */
 long vfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	struct kvm_userspace_memory_region *usermem = arg;
-	
 	int error = -ENOTTY;
 	// printing out the function arguments for the kvm_set_user_memory_region call 
 	if (cmd == 0x4020AE46){
 		printk(KERN_ALERT "***** kvm set user memory region called for vfs ioctl *****\n");
-		printk(KERN_ALERT "The value for arg with this call : %lu\n", (unsigned long)(usermem->userspace_addr) );
 	}
 	if (!filp->f_op->unlocked_ioctl)
 		goto out;
