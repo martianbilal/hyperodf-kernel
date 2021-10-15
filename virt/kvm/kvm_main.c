@@ -3713,6 +3713,9 @@ static long kvm_vcpu_ioctl(struct file *filp,
 	struct kvm_fpu *fpu = NULL;
 	struct kvm_sregs *kvm_sregs = NULL;
 
+	//debug
+	printk(KERN_ALERT "The value of the vcpu -> run ::> %llu\n", (long long unsigned)vcpu->run);
+
 	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_bugged)
 		return -EIO;
 
@@ -4641,7 +4644,11 @@ static long kvm_dev_ioctl(struct file *filp,
 		break;
 	case KVM_FORK: {
 		struct kvm *kvm = filp->private_data;
-		struct file* vm_file;
+		struct file *vm_file;
+		struct kvm_vcpu *parent_vcpu; 
+		struct file *parent_vcpu_file; 
+		struct kvm_vcpu *vcpu;
+		struct file *vcpu_file;
 		struct fd f; 
 		void __user *argp = (void __user *)arg;
 		struct fork_info __user *user_fork_info = argp;
@@ -4656,6 +4663,10 @@ static long kvm_dev_ioctl(struct file *filp,
 
 		if (copy_from_user(&info, user_fork_info, sizeof(info)))
 			goto out;
+
+		printk(KERN_ALERT "This is the value of the parent vcpu->fd : %u ", info.vcpu_fd);
+		parent_vcpu_file = fdget(info.vcpu_fd).file;
+		parent_vcpu = parent_vcpu_file->private_data;
 
 		vm_fd = kvm_dev_ioctl_create_vm(0);
 		f = fdget(vm_fd); 
@@ -4672,9 +4683,14 @@ static long kvm_dev_ioctl(struct file *filp,
 		r = vfs_ioctl(vm_file, KVM_SET_TSS_ADDR ,0xfffbd000);
 
 
-		// printk(KERN_ALERT "userspace address in kvm_fork ioctl:>>>> %llu\n",info.kvm_userspace_mem.userspace_addr);
 		r = vfs_ioctl(vm_file, 0x4020AE46, (unsigned long)info.kvm_userspace_mem);
 		vcpu_fd = vfs_ioctl(vm_file, KVM_CREATE_VCPU, 0);
+		vcpu_file = fdget(vcpu_fd).file;
+		vcpu = vcpu_file->private_data;
+
+		//sharing the states between the parent and the child vcpu
+		vcpu->run = parent_vcpu->run;  
+
 		info.vm_fd = vm_fd;
 		info.vcpu_fd = vcpu_fd;
 		printk("the vm fd ::::: %u \n the vcpu fd ::::: %u", vm_fd, vcpu_fd);
