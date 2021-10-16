@@ -3713,9 +3713,6 @@ static long kvm_vcpu_ioctl(struct file *filp,
 	struct kvm_fpu *fpu = NULL;
 	struct kvm_sregs *kvm_sregs = NULL;
 
-	//debug
-	printk(KERN_ALERT "The value of the vcpu -> run ::> %llu\n", (long long unsigned)vcpu->run);
-
 	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_bugged)
 		return -EIO;
 
@@ -4688,8 +4685,10 @@ static long kvm_dev_ioctl(struct file *filp,
 		vcpu_file = fdget(vcpu_fd).file;
 		vcpu = vcpu_file->private_data;
 
+		//sharing the root hpa (eptp) with the parent vm
+		// vcpu->arch.mmu->root_hpa = parent_vcpu->arch.mmu->root_hpa;
 		//sharing the states between the parent and the child vcpu
-		vcpu->run = parent_vcpu->run;  
+		// vcpu->run = parent_vcpu->run;  
 
 		info.vm_fd = vm_fd;
 		info.vcpu_fd = vcpu_fd;

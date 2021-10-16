@@ -938,14 +938,20 @@ static int tdp_mmu_map_handle_target_level(struct kvm_vcpu *vcpu, int write,
 	int ret = RET_PF_FIXED;
 	int make_spte_ret = 0;
 
+	//debug 
+	printk(KERN_ALERT"Inside the handle target level function****** \n");
+
 	if (unlikely(is_noslot_pfn(pfn)))
 		new_spte = make_mmio_spte(vcpu, iter->gfn, ACC_ALL);
-	else
+	else{
 		make_spte_ret = make_spte(vcpu, ACC_ALL, iter->level, iter->gfn,
 					 pfn, iter->old_spte, prefault, true,
 					 map_writable, !shadow_accessed_mask,
 					 &new_spte);
-
+		//debug
+		printk(KERN_ALERT"Called the make_spte_ret function, the new spte is %lld****** \n", new_spte);
+	}
+		
 	if (new_spte == iter->old_spte)
 		ret = RET_PF_SPURIOUS;
 	else if (!tdp_mmu_map_set_spte_atomic(vcpu, iter, new_spte))
