@@ -2069,7 +2069,6 @@ struct kvm_memory_slot *kvm_vcpu_gfn_to_memslot(struct kvm_vcpu *vcpu, gfn_t gfn
 		vcpu->last_used_slot = slot_index;
 		return slot;
 	}
-	printk(KERN_ALERT "Value of slot obtained from gfn to memslot : %llu\n", (long long unsigned)slot);
 	return NULL;
 }
 EXPORT_SYMBOL_GPL(kvm_vcpu_gfn_to_memslot);
@@ -2085,9 +2084,6 @@ EXPORT_SYMBOL_GPL(kvm_is_visible_gfn);
 bool kvm_vcpu_is_visible_gfn(struct kvm_vcpu *vcpu, gfn_t gfn)
 {
 	struct kvm_memory_slot *memslot = kvm_vcpu_gfn_to_memslot(vcpu, gfn);
-	printk (KERN_ALERT "memSlot value obtained from kvm_vcpu_gfn_to_memslot : %lu", (long unsigned int)memslot);
-	printk (KERN_ALERT "gfn value given to gfn_to_memslot : %lld", gfn);
-
 	return kvm_is_visible_memslot(memslot);
 }
 EXPORT_SYMBOL_GPL(kvm_vcpu_is_visible_gfn);
@@ -4640,8 +4636,10 @@ static long kvm_dev_ioctl(struct file *filp,
 		r = KVM_API_VERSION;
 		break;
 	case KVM_FORK: {
-		struct kvm *kvm = filp->private_data;
+		struct kvm *kvm; 
+		struct kvm *parent_kvm;
 		struct file *vm_file;
+		struct file *parent_vm_file;
 		struct kvm_vcpu *parent_vcpu; 
 		struct file *parent_vcpu_file; 
 		struct kvm_vcpu *vcpu;
@@ -4656,12 +4654,10 @@ static long kvm_dev_ioctl(struct file *filp,
 
 		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Fork the vm >>>>>>>>>>>>>>>>>>>>>>>\n\n");
 
-		printk(KERN_ALERT "Value of Parent VM file in Kernel : %lu", (long unsigned int)filp);
 
 		if (copy_from_user(&info, user_fork_info, sizeof(info)))
 			goto out;
 
-		printk(KERN_ALERT "This is the value of the parent vcpu->fd : %u ", info.vcpu_fd);
 		parent_vcpu_file = fdget(info.vcpu_fd).file;
 		parent_vcpu = parent_vcpu_file->private_data;
 
@@ -4671,9 +4667,11 @@ static long kvm_dev_ioctl(struct file *filp,
 			return -EBADF;
 
 		vm_file = f.file;
-		//
-		printk(KERN_ALERT "Value of VM FD in Kernel : %u", vm_fd);
-		printk(KERN_ALERT "Value of VM file in Kernel : %lu", (long unsigned int)vm_file);
+		kvm = vm_file->private_data;
+
+		parent_vm_file = fdget(info.vm_fd).file;
+		parent_kvm = parent_vm_file->private_data;
+
 		if (0xfffbd000 > (unsigned int)(-3 * PAGE_SIZE))
 			return -EINVAL;
 
@@ -4689,10 +4687,20 @@ static long kvm_dev_ioctl(struct file *filp,
 		// vcpu->arch.mmu->root_hpa = parent_vcpu->arch.mmu->root_hpa;
 		//sharing the states between the parent and the child vcpu
 		// vcpu->run = parent_vcpu->run;  
+		//sharing the mmu between the two parent and the child vm
+
+		//removing the old mmu pages of the tdp mmu 
+		WARN_ON(!list_empty(&kvm->arch.tdp_mmu_pages));
+		WARN_ON(!list_empty(&kvm->arch.tdp_mmu_roots));
+		rcu_barrier();
+
+		// vcpu->arch.mmu = parent_vcpu->arch.mmu;
+		kvm->arch.tdp_mmu_pages = parent_kvm->arch.tdp_mmu_pages;
+		kvm->arch.tdp_mmu_roots = parent_kvm->arch.tdp_mmu_roots;
+		// kvm->arch = parent_kvm->arch
 
 		info.vm_fd = vm_fd;
 		info.vcpu_fd = vcpu_fd;
-		printk("the vm fd ::::: %u \n the vcpu fd ::::: %u", vm_fd, vcpu_fd);
 		if (copy_to_user(user_fork_info, &info, sizeof(struct fork_info)))
 			goto out;
 

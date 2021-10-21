@@ -1000,9 +1000,9 @@ int kvm_tdp_mmu_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	bool write = error_code & PFERR_WRITE_MASK;
 	bool exec = error_code & PFERR_FETCH_MASK;
 	bool huge_page_disallowed = exec && nx_huge_page_workaround_enabled;
-	struct kvm_mmu *mmu = vcpu->arch.mmu;
+	volatile struct kvm_mmu *mmu = vcpu->arch.mmu;
 	struct tdp_iter iter;
-	struct kvm_mmu_page *sp;
+	volatile struct kvm_mmu_page *sp;
 	u64 *child_pt;
 	u64 new_spte;
 	int ret;
@@ -1051,12 +1051,13 @@ int kvm_tdp_mmu_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 			 * give up and retry, avoiding unnecessary page table
 			 * allocation and free.
 			 */
+
+			//debug 
 			if (is_removed_spte(iter.old_spte))
 				break;
 
 			sp = alloc_tdp_mmu_page(vcpu, iter.gfn, iter.level - 1);
 			child_pt = sp->spt;
-
 			new_spte = make_nonleaf_spte(child_pt,
 						     !shadow_accessed_mask);
 
