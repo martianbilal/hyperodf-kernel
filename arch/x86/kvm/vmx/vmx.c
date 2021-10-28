@@ -115,7 +115,7 @@ module_param(nested, bool, S_IRUGO);
 bool __read_mostly enable_pml = 1;
 module_param_named(pml, enable_pml, bool, S_IRUGO);
 
-static bool __read_mostly dump_invalid_vmcs = 0;
+static bool __read_mostly dump_invalid_vmcs = 1;
 module_param(dump_invalid_vmcs, bool, 0644);
 
 #define MSR_BITMAP_MODE_X2APIC		1

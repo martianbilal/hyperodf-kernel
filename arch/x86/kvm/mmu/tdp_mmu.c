@@ -989,6 +989,38 @@ static int tdp_mmu_map_handle_target_level(struct kvm_vcpu *vcpu, int write,
 }
 
 /*
+ * Copies the EPT of the parent in the child  
+ */
+void kvm_tdp_mmu_copy(struct kvm_vcpu *child_vcpu, struct kvm_vcpu *parent_vcpu)
+{
+	struct tdp_iter iter; 
+	struct kvm_mmu *parent_mmu = parent_vcpu->arch.mmu;
+	struct kvm_mmu *child_mmu = child_vcpu->arch.mmu;
+	u64 pages[6]; 
+
+	rcu_read_lock();
+
+	// share the page addresses between the parent and the child mmu 
+	tdp_mmu_for_each_pte(iter, parent_mmu, 0, 6) {
+		if(iter.level == 1) {
+			// getting page addresses from the parent  
+		}	
+	}
+
+	tdp_mmu_for_each_pte(iter, child_mmu, 0, 6) {
+		if(iter.level == 1) {
+			// getting page addresses from the parent  
+		}	
+	}
+
+
+
+	rcu_read_unlock();	
+
+}
+
+
+/*
  * Handle a TDP page fault (NPT/EPT violation/misconfiguration) by installing
  * page tables and SPTEs to translate the faulting guest physical address.
  */
@@ -1010,7 +1042,7 @@ int kvm_tdp_mmu_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	int level;
 	int req_level;
 
-	printk(KERN_ALERT " |||>>>>> kvm_tdp_mmu_map is called with gpa : %lld\n", gpa);
+	printk(KERN_ALERT " |||>>>>> kvm_tdp_mmu_map is called with gfn : %lld\n", gfn);
 
 	level = kvm_mmu_hugepage_adjust(vcpu, gfn, max_level, &pfn,
 					huge_page_disallowed, &req_level);
@@ -1052,7 +1084,6 @@ int kvm_tdp_mmu_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 			 * allocation and free.
 			 */
 
-			//debug 
 			if (is_removed_spte(iter.old_spte))
 				break;
 
@@ -1079,9 +1110,17 @@ int kvm_tdp_mmu_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 		return RET_PF_RETRY;
 	}
 
+	
 	ret = tdp_mmu_map_handle_target_level(vcpu, write, map_writable, &iter,
 					      pfn, prefault);
 	rcu_read_unlock();
+
+	if(gfn == 0) {
+		tdp_mmu_for_each_pte(iter, mmu, gfn, gfn + 6) {
+			printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", iter.gfn, iter.level, *iter.sptep, iter.old_spte);
+		}
+	}
+
 
 	return ret;
 }

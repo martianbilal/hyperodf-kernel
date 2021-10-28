@@ -4644,6 +4644,9 @@ static long kvm_dev_ioctl(struct file *filp,
 		struct file *parent_vcpu_file; 
 		struct kvm_vcpu *vcpu;
 		struct file *vcpu_file;
+		struct kvm_mmu *parent_mmu;
+		struct kvm_mmu *child_mmu;
+
 		struct fd f; 
 		void __user *argp = (void __user *)arg;
 		struct fork_info __user *user_fork_info = argp;
@@ -4690,14 +4693,25 @@ static long kvm_dev_ioctl(struct file *filp,
 		//sharing the mmu between the two parent and the child vm
 
 		//removing the old mmu pages of the tdp mmu 
-		WARN_ON(!list_empty(&kvm->arch.tdp_mmu_pages));
-		WARN_ON(!list_empty(&kvm->arch.tdp_mmu_roots));
-		rcu_barrier();
+		// WARN_ON(!list_empty(&kvm->arch.tdp_mmu_pages));
+		// WARN_ON(!list_empty(&kvm->arch.tdp_mmu_roots));
+		// rcu_barrier();
 
-		// vcpu->arch.mmu = parent_vcpu->arch.mmu;
-		kvm->arch.tdp_mmu_pages = parent_kvm->arch.tdp_mmu_pages;
-		kvm->arch.tdp_mmu_roots = parent_kvm->arch.tdp_mmu_roots;
-		// kvm->arch = parent_kvm->arch
+
+		// // vcpu->arch.mmu = parent_vcpu->arch.mmu;
+		// kvm->arch.tdp_mmu_pages = parent_kvm->arch.tdp_mmu_pages;
+		// kvm->arch.tdp_mmu_roots = parent_kvm->arch.tdp_mmu_roots;
+		// // kvm->arch = parent_kvm->arch
+
+		//initializing a new mmu 
+		//going through the page tables of the new mmu and making them same as that of the parent 
+
+
+
+		// we will need to call a function over here for making the ept ptes read only, first we 
+		// will be doing what is being done with the simple fork 
+		// will ned to get the tdp_iter.c tdp_iter.h 	
+		// alternatively can also create functions similar the copy_pte_range etc used by the fork
 
 		info.vm_fd = vm_fd;
 		info.vcpu_fd = vcpu_fd;
