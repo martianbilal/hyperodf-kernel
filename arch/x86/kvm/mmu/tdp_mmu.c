@@ -987,32 +987,72 @@ static int tdp_mmu_map_handle_target_level(struct kvm_vcpu *vcpu, int write,
 /*
  * Copies the EPT of the parent in the child  
  */
-void kvm_tdp_mmu_copy(struct kvm_vcpu *child_vcpu, struct kvm_vcpu *parent_vcpu)
+void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu)
 {
-	struct tdp_iter iter; 
+	struct tdp_iter parent_iter; 
+	struct tdp_iter child_iter; 
 	struct kvm_mmu *parent_mmu = parent_vcpu->arch.mmu;
 	struct kvm_mmu *child_mmu = child_vcpu->arch.mmu;
 	u64 pages[6]; 
 	int counter = 0;
+	struct kvm_mmu_page *sp;
+	u64 *child_pt;
+	u64 new_spte;
 
 	rcu_read_lock();
 
+printk(KERN_ALERT " Reached at the start of the iter ----------<>>>>>> \n");
 	// share the page addresses between the parent and the child mmu 
-	tdp_mmu_for_each_pte(iter, parent_mmu, 0, 6) {
-		if(iter.level == 1) {
+	tdp_mmu_for_each_pte(parent_iter, parent_mmu, 0, 6) {
+		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", parent_iter.gfn, parent_iter.level, *parent_iter.sptep, parent_iter.old_spte);
+		if(parent_iter.level == 1) {
 			// getting page addresses from the parent  
+			// pages[counter] = *parent_iter.sptep;
 			counter++; 
-			
 		}	
 	}
 
+printk(KERN_ALERT " Reached after the second of the iter ----------<>>>>>> \n");
+
 	counter = 0; 
-	tdp_mmu_for_each_pte(iter, child_mmu, 0, 6) {
-		if(iter.level == 1) {
+	tdp_mmu_for_each_pte(child_iter, child_mmu, 0, 6) {
+			printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", parent_iter.gfn, parent_iter.level, *parent_iter.sptep, parent_iter.old_spte);
+		if(child_iter.level == 1) {
 			// getting page addresses from the parent  
+			printk(KERN_ALERT " Reached at the start of the set_spte of the iter ----------<>>>>>> \n");
+			tdp_mmu_set_spte_atomic_no_dirty_log(child_vcpu->kvm, &child_iter, pages[counter]);
 			counter++; 
+		} else {
+			if (!is_shadow_present_pte(child_iter.old_spte)) {
+			/*
+			 * If SPTE has been frozen by another thread, just
+			 * give up and retry, avoiding unnecessary page table
+			 * allocation and free.
+			 */
+
+			if (is_removed_spte(child_iter.old_spte))
+				break;
+
+			sp = alloc_tdp_mmu_page(child_vcpu, child_iter.gfn, child_iter.level - 1);
+			child_pt = sp->spt;
+			new_spte = make_nonleaf_spte(child_pt,
+						     !shadow_accessed_mask);
+
+			if (tdp_mmu_set_spte_atomic_no_dirty_log(child_vcpu->kvm, &child_iter, new_spte)) {
+				tdp_mmu_link_page(child_vcpu->kvm, sp,
+						  true &&
+						  0 >= child_iter.level);
+
+				trace_kvm_mmu_get_page(sp, true);
+			} else {
+				tdp_mmu_free_sp(sp);
+				break;
+			}
+		}
 		}	
 	}
+
+printk(KERN_ALERT " Reached at the end of the iter ----------<>>>>>> \n");
 
 
 
@@ -1116,11 +1156,11 @@ int kvm_tdp_mmu_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 					      pfn, prefault);
 	rcu_read_unlock();
 
-	// if(gfn == 0) {
-	// 	tdp_mmu_for_each_pte(iter, mmu, gfn, gfn + 6) {
-	// 		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", iter.gfn, iter.level, *iter.sptep, iter.old_spte);
-	// 	}
-	// }
+	if(gfn == 0) {
+		tdp_mmu_for_each_pte(iter, mmu, gfn, gfn + 6) {
+			printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", iter.gfn, iter.level, *iter.sptep, iter.old_spte);
+		}
+	}
 
 
 	return ret;
