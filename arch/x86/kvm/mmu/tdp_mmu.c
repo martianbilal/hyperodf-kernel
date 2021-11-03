@@ -938,8 +938,6 @@ static int tdp_mmu_map_handle_target_level(struct kvm_vcpu *vcpu, int write,
 	int ret = RET_PF_FIXED;
 	int make_spte_ret = 0;
 
-	//debug 
-	printk(KERN_ALERT"Inside the handle target level function****** \n");
 
 	if (unlikely(is_noslot_pfn(pfn)))
 		new_spte = make_mmio_spte(vcpu, iter->gfn, ACC_ALL);
@@ -948,8 +946,6 @@ static int tdp_mmu_map_handle_target_level(struct kvm_vcpu *vcpu, int write,
 					 pfn, iter->old_spte, prefault, true,
 					 map_writable, !shadow_accessed_mask,
 					 &new_spte);
-		//debug
-		printk(KERN_ALERT"Called the make_spte_ret function, the new spte is %lld****** \n", new_spte);
 	}
 		
 	if (new_spte == iter->old_spte)
@@ -997,6 +993,7 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *child_vcpu, struct kvm_vcpu *parent_vcpu)
 	struct kvm_mmu *parent_mmu = parent_vcpu->arch.mmu;
 	struct kvm_mmu *child_mmu = child_vcpu->arch.mmu;
 	u64 pages[6]; 
+	int counter = 0;
 
 	rcu_read_lock();
 
@@ -1004,12 +1001,16 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *child_vcpu, struct kvm_vcpu *parent_vcpu)
 	tdp_mmu_for_each_pte(iter, parent_mmu, 0, 6) {
 		if(iter.level == 1) {
 			// getting page addresses from the parent  
+			counter++; 
+			
 		}	
 	}
 
+	counter = 0; 
 	tdp_mmu_for_each_pte(iter, child_mmu, 0, 6) {
 		if(iter.level == 1) {
 			// getting page addresses from the parent  
+			counter++; 
 		}	
 	}
 
@@ -1032,9 +1033,9 @@ int kvm_tdp_mmu_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	bool write = error_code & PFERR_WRITE_MASK;
 	bool exec = error_code & PFERR_FETCH_MASK;
 	bool huge_page_disallowed = exec && nx_huge_page_workaround_enabled;
-	volatile struct kvm_mmu *mmu = vcpu->arch.mmu;
+	struct kvm_mmu *mmu = vcpu->arch.mmu;
 	struct tdp_iter iter;
-	volatile struct kvm_mmu_page *sp;
+	struct kvm_mmu_page *sp;
 	u64 *child_pt;
 	u64 new_spte;
 	int ret;
@@ -1042,7 +1043,7 @@ int kvm_tdp_mmu_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	int level;
 	int req_level;
 
-	printk(KERN_ALERT " |||>>>>> kvm_tdp_mmu_map is called with gfn : %lld\n", gfn);
+	// printk(KERN_ALERT " |||>>>>> kvm_tdp_mmu_map is called with gfn : %lld\n", gfn);
 
 	level = kvm_mmu_hugepage_adjust(vcpu, gfn, max_level, &pfn,
 					huge_page_disallowed, &req_level);
@@ -1115,11 +1116,11 @@ int kvm_tdp_mmu_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 					      pfn, prefault);
 	rcu_read_unlock();
 
-	if(gfn == 0) {
-		tdp_mmu_for_each_pte(iter, mmu, gfn, gfn + 6) {
-			printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", iter.gfn, iter.level, *iter.sptep, iter.old_spte);
-		}
-	}
+	// if(gfn == 0) {
+	// 	tdp_mmu_for_each_pte(iter, mmu, gfn, gfn + 6) {
+	// 		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", iter.gfn, iter.level, *iter.sptep, iter.old_spte);
+	// 	}
+	// }
 
 
 	return ret;

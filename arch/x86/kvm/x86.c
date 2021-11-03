@@ -4115,6 +4115,12 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 
 }
 
+
+void kvm_arch_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu){
+	kvm_tdp_mmu_copy(parent_vcpu, child_vcpu);
+	return;
+}
+
 long kvm_arch_dev_ioctl(struct file *filp,
 			unsigned int ioctl, unsigned long arg)
 {

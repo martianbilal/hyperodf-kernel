@@ -4657,7 +4657,6 @@ static long kvm_dev_ioctl(struct file *filp,
 
 		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Fork the vm >>>>>>>>>>>>>>>>>>>>>>>\n\n");
 
-
 		if (copy_from_user(&info, user_fork_info, sizeof(info)))
 			goto out;
 
@@ -4685,6 +4684,9 @@ static long kvm_dev_ioctl(struct file *filp,
 		vcpu_fd = vfs_ioctl(vm_file, KVM_CREATE_VCPU, 0);
 		vcpu_file = fdget(vcpu_fd).file;
 		vcpu = vcpu_file->private_data;
+
+		//create a function in the x86.c --> vmx.c --> tdp_mmu.c
+		kvm_arch_tdp_mmu_copy(parent_vcpu, vcpu);
 
 		//sharing the root hpa (eptp) with the parent vm
 		// vcpu->arch.mmu->root_hpa = parent_vcpu->arch.mmu->root_hpa;
