@@ -761,7 +761,9 @@ static bool zap_gfn_range(struct kvm *kvm, struct kvm_mmu_page *root,
 
 	for_each_tdp_pte_min_level(iter, root->spt, root->role.level,
 				   min_level, start, end) {
+	
 retry:
+	printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", iter.gfn, iter.level, *iter.sptep, iter.old_spte);
 		if (can_yield &&
 		    tdp_mmu_iter_cond_resched(kvm, &iter, flush, shared)) {
 			flush = false;
@@ -1012,7 +1014,7 @@ printk(KERN_ALERT " Reached at the start of the iter ----------<>>>>>> \n");
 		}	
 	}
 
-printk(KERN_ALERT " Reached after the second of the iter ----------<>>>>>> \n");
+	printk(KERN_ALERT " Reached after the second of the iter ----------<>>>>>> \n");
 
 	counter = 0; 
 	tdp_mmu_for_each_pte(child_iter, child_mmu, 0, 6) {
@@ -1020,7 +1022,7 @@ printk(KERN_ALERT " Reached after the second of the iter ----------<>>>>>> \n");
 		if(child_iter.level == 1) {
 			// getting page addresses from the parent  
 			printk(KERN_ALERT " Reached at the start of the set_spte of the iter ----------<>>>>>> \n");
-			tdp_mmu_set_spte_atomic_no_dirty_log(child_vcpu->kvm, &child_iter, pages[counter]);
+			(child_vcpu->kvm, &child_iter, pages[counter]);
 			counter++; 
 		} else {
 			if (!is_shadow_present_pte(child_iter.old_spte)) {
