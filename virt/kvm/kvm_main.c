@@ -4635,7 +4635,9 @@ static long kvm_dev_ioctl(struct file *filp,
 			goto out;
 		r = KVM_API_VERSION;
 		break;
-	case KVM_FORK: {
+	
+	// TODO : Add a for loop here to do this for dealing with all the parent vcpus 
+	 case KVM_FORK: {
 		struct kvm *kvm; 
 		struct kvm *parent_kvm;
 		struct file *vm_file;
@@ -4652,6 +4654,8 @@ static long kvm_dev_ioctl(struct file *filp,
 		struct fork_info __user *user_fork_info = argp;
 		struct fork_info info; 
 		struct kvm_userspace_memory_region kvm_userspace_mem;
+		struct kvm_regs *kvm_regs;
+		struct kvm_sregs *kvm_sregs;
 		int vm_fd; 
 		int vcpu_fd;
 
@@ -4685,8 +4689,24 @@ static long kvm_dev_ioctl(struct file *filp,
 		vcpu_file = fdget(vcpu_fd).file;
 		vcpu = vcpu_file->private_data;
 
+		// setting up the regs of the child vcpu same as that of the parent vcpu
+		kvm_regs = kzalloc(sizeof(struct kvm_regs), GFP_KERNEL_ACCOUNT);
+		if (!kvm_regs)
+			goto out;
+		r = kvm_arch_vcpu_ioctl_get_regs(parent_vcpu, kvm_regs);
+		r = kvm_arch_vcpu_ioctl_set_regs(vcpu, kvm_regs);
+
+		// setting up the sregs of the child vcpu same as that of the parent vcpu
+		kvm_sregs = kzalloc(sizeof(struct kvm_sregs), GFP_KERNEL_ACCOUNT);
+		if (!kvm_sregs)
+			goto out;
+		r = kvm_arch_vcpu_ioctl_get_sregs(parent_vcpu, kvm_sregs);
+		r = kvm_arch_vcpu_ioctl_set_sregs(vcpu, kvm_sregs);
+
+
+		
 		//create a function in the x86.c --> vmx.c --> tdp_mmu.c
-		kvm_arch_tdp_mmu_copy(parent_vcpu, vcpu);
+		// kvm_arch_tdp_mmu_copy(parent_vcpu, vcpu);
 
 		//sharing the root hpa (eptp) with the parent vm
 		// vcpu->arch.mmu->root_hpa = parent_vcpu->arch.mmu->root_hpa;

@@ -784,7 +784,8 @@ retry:
 		    !is_last_spte(iter.old_spte, iter.level))
 			continue;
 
-		if (!shared) {
+		if (!shared){
+
 			tdp_mmu_set_spte(kvm, &iter, 0);
 			flush = true;
 		} else if (!tdp_mmu_zap_spte_atomic(kvm, &iter)) {
