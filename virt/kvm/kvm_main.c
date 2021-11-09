@@ -62,6 +62,7 @@
 #include "mmu_lock.h"
 #include "vfio.h"
 
+
 #define CREATE_TRACE_POINTS
 #include <trace/events/kvm.h>
 
@@ -4706,7 +4707,7 @@ static long kvm_dev_ioctl(struct file *filp,
 
 		
 		//create a function in the x86.c --> vmx.c --> tdp_mmu.c
-		// kvm_arch_tdp_mmu_copy(parent_vcpu, vcpu);
+		kvm_arch_tdp_mmu_copy(parent_vcpu, vcpu);
 
 		//sharing the root hpa (eptp) with the parent vm
 		// vcpu->arch.mmu->root_hpa = parent_vcpu->arch.mmu->root_hpa;

@@ -757,6 +757,8 @@ static bool zap_gfn_range(struct kvm *kvm, struct kvm_mmu_page *root,
 
 	kvm_lockdep_assert_mmu_lock_held(kvm, shared);
 
+	printk(KERN_ALERT "GFN --->>> %llu ", start );
+
 	rcu_read_lock();
 
 	for_each_tdp_pte_min_level(iter, root->spt, root->role.level,
@@ -786,8 +788,8 @@ retry:
 
 		if (!shared){
 
-			tdp_mmu_set_spte(kvm, &iter, 0);
-			flush = true;
+			// tdp_mmu_set_spte(kvm, &iter, 0);
+			// flush = true;
 		} else if (!tdp_mmu_zap_spte_atomic(kvm, &iter)) {
 			/*
 			 * The iter must explicitly re-read the SPTE because
@@ -1018,8 +1020,12 @@ printk(KERN_ALERT " Reached at the start of the iter ----------<>>>>>> \n");
 	printk(KERN_ALERT " Reached after the second of the iter ----------<>>>>>> \n");
 
 	counter = 0; 
+	kvm_mmu_load(child_vcpu);
+	printk("The value of child root_hpa with __va : %llu\n", __va(child_mmu->root_hpa)); 
+	printk("The value of child root_hpa without __va : %llu\n", child_mmu->root_hpa); 
+
 	tdp_mmu_for_each_pte(child_iter, child_mmu, 0, 6) {
-			printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", parent_iter.gfn, parent_iter.level, *parent_iter.sptep, parent_iter.old_spte);
+			printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", child_iter.gfn, child_iter.level, *child_iter.sptep, child_iter.old_spte);
 		if(child_iter.level == 1) {
 			// getting page addresses from the parent  
 			printk(KERN_ALERT " Reached at the start of the set_spte of the iter ----------<>>>>>> \n");
