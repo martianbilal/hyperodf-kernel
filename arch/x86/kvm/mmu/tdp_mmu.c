@@ -996,19 +996,32 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu)
 {
 	struct tdp_iter parent_iter; 
 	struct tdp_iter child_iter; 
+	struct tdp_iter leaf_iter;
 	struct kvm_mmu *parent_mmu = parent_vcpu->arch.mmu;
 	struct kvm_mmu *child_mmu = child_vcpu->arch.mmu;
+	volatile struct kvm_mmu_page *root_page = sptep_to_sp(__va(parent_mmu->root_hpa));; 
 	u64* pages[6]; 
+	u64* gfns;  
 	int counter = 0;
 	struct kvm_mmu_page *sp;
+	struct kvm_mmu_page *root;
 	u64 *child_pt;
 	u64 new_spte;
 
 	rcu_read_lock();
 
+	
+	printk("this is the size of the gfns : %llu", sizeof(root_page->gfns)); 
+	printk("%llu", root_page->tdp_mmu_root_count); 
+	gfns = root_page->gfns;
+
+	tdp_root_for_each_leaf_pte(leaf_iter, root_page, 0, 0x10000000){
+		printk(KERN_ALERT "this is the gfn : %llu\n", leaf_iter.gfn);
+	}
+
 printk(KERN_ALERT " Reached at the start of the iter ----------<>>>>>> \n");
 	// share the page addresses between the parent and the child mmu 
-	tdp_mmu_for_each_pte(parent_iter, parent_mmu, 0, 7) {
+	tdp_mmu_for_each_pte(parent_iter, parent_mmu, 0, 6) {
 		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", parent_iter.gfn, parent_iter.level, *parent_iter.sptep, parent_iter.old_spte);
 		if(parent_iter.level == 1) {
 			// getting page addresses from the parent  
@@ -1017,6 +1030,8 @@ printk(KERN_ALERT " Reached at the start of the iter ----------<>>>>>> \n");
 		}	
 	}
 
+	
+
 	printk(KERN_ALERT " Reached after the second of the iter ----------<>>>>>> \n");
 
 	counter = 0; 
@@ -1024,7 +1039,7 @@ printk(KERN_ALERT " Reached at the start of the iter ----------<>>>>>> \n");
 	printk("The value of child root_hpa with __va : %llu\n", __va(child_mmu->root_hpa)); 
 	printk("The value of child root_hpa without __va : %llu\n", child_mmu->root_hpa); 
 
-	tdp_mmu_for_each_pte(child_iter, child_mmu, 0, 7) {
+	tdp_mmu_for_each_pte(child_iter, child_mmu, 0, 6) {
 			printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", child_iter.gfn, child_iter.level, *child_iter.sptep, child_iter.old_spte);
 		if(child_iter.level == 1) {
 			// getting page addresses from the parent  
