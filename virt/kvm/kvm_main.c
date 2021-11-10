@@ -4326,7 +4326,6 @@ static long kvm_vm_ioctl(struct file *filp,
 	case KVM_SET_USER_MEMORY_REGION: {
 		struct kvm_userspace_memory_region kvm_userspace_mem;
 
-		printk(KERN_ALERT "The kvm userspace memory region value *******:***** %llu \n",kvm_userspace_mem.userspace_addr);
 		r = -EFAULT;
 		if (copy_from_user(&kvm_userspace_mem, argp,
 						sizeof(kvm_userspace_mem)))
@@ -4704,10 +4703,12 @@ static long kvm_dev_ioctl(struct file *filp,
 		r = kvm_arch_vcpu_ioctl_get_sregs(parent_vcpu, kvm_sregs);
 		r = kvm_arch_vcpu_ioctl_set_sregs(vcpu, kvm_sregs);
 
+		if (copy_from_user(&kvm_userspace_mem, info.kvm_userspace_mem,
+						sizeof(kvm_userspace_mem)))
+			goto out;
 
-		
 		//create a function in the x86.c --> vmx.c --> tdp_mmu.c
-		kvm_arch_tdp_mmu_copy(parent_vcpu, vcpu);
+		kvm_arch_tdp_mmu_copy(parent_vcpu, vcpu, kvm_userspace_mem.memory_size);
 
 		//sharing the root hpa (eptp) with the parent vm
 		// vcpu->arch.mmu->root_hpa = parent_vcpu->arch.mmu->root_hpa;

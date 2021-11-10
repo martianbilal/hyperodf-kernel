@@ -995,7 +995,7 @@ void kvm_inc_notifier_count(struct kvm *kvm, unsigned long start,
 void kvm_dec_notifier_count(struct kvm *kvm, unsigned long start,
 				   unsigned long end);
 
-void kvm_arch_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu);
+void kvm_arch_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu, unsigned long mem_size);
 
 long kvm_arch_dev_ioctl(struct file *filp,
 			unsigned int ioctl, unsigned long arg);

@@ -615,7 +615,7 @@ static inline void __tdp_mmu_set_spte(struct kvm *kvm, struct tdp_iter *iter,
 {
 	lockdep_assert_held_write(&kvm->mmu_lock);
 
-	/*
+	/*	
 	 * No thread should be using this function to set SPTEs to the
 	 * temporary removed SPTE value.
 	 * If operating under the MMU lock in read mode, tdp_mmu_set_spte_atomic
@@ -992,7 +992,7 @@ static int tdp_mmu_map_handle_target_level(struct kvm_vcpu *vcpu, int write,
 /*
  * Copies the EPT of the parent in the child  
  */
-void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu)
+void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu, unsigned long mem_size)
 {
 	struct tdp_iter parent_iter; 
 	struct tdp_iter child_iter; 
@@ -1004,7 +1004,6 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu)
 	u64* gfns;  
 	int counter = 0;
 	struct kvm_mmu_page *sp;
-	struct kvm_mmu_page *root;
 	u64 *child_pt;
 	u64 new_spte;
 
@@ -1015,7 +1014,7 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu)
 	printk("%llu", root_page->tdp_mmu_root_count); 
 	gfns = root_page->gfns;
 
-	tdp_root_for_each_leaf_pte(leaf_iter, root_page, 0, 0x10000000){
+	tdp_root_for_each_leaf_pte(leaf_iter, root_page, 0, mem_size){
 		printk(KERN_ALERT "this is the gfn : %llu\n", leaf_iter.gfn);
 	}
 
