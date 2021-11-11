@@ -996,6 +996,7 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 {
 	struct tdp_iter child_iter; 
 	struct tdp_iter leaf_iter;
+	struct tdp_iter parent_iter;
 	struct kvm_mmu_page *sp;
 	long long unsigned int *child_pt;
 	long long unsigned int new_spte;
@@ -1051,6 +1052,17 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 			}	
 		}
 	}	
+
+// printing the EPT of the child 
+	tdp_mmu_for_each_pte(child_iter, child_mmu, 0, mem_size){
+		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", child_iter.gfn, child_iter.level, *child_iter.sptep, child_iter.old_spte);
+	}
+
+// printing the EPT of the Parent 
+	tdp_mmu_for_each_pte(parent_iter, parent_mmu, 0, mem_size){
+		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", parent_iter.gfn, parent_iter.level, *parent_iter.sptep, parent_iter.old_spte);
+	}
+
 
 	rcu_read_unlock();	
 
