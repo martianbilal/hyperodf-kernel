@@ -997,8 +997,8 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 	struct tdp_iter child_iter; 
 	struct tdp_iter leaf_iter;
 	struct kvm_mmu_page *sp;
-	u64 *child_pt;
-	u64 new_spte;
+	long long unsigned int *child_pt;
+	long long unsigned int new_spte;
 
 	struct kvm_mmu *parent_mmu = parent_vcpu->arch.mmu;
 	struct kvm_mmu *child_mmu = child_vcpu->arch.mmu;
@@ -1016,7 +1016,9 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 		tdp_mmu_for_each_pte(child_iter, child_mmu, leaf_iter.gfn, leaf_iter.gfn+1) {
 			if(child_iter.level == 1) {
 				// getting page addresses from the parent  
-				tdp_mmu_map_set_spte_atomic(child_vcpu, &child_iter, *leaf_iter.sptep);
+				new_spte = *leaf_iter.sptep & 
+					~(PT_WRITABLE_MASK);
+				tdp_mmu_map_set_spte_atomic(child_vcpu, &child_iter, new_spte);
 
 			} else {
 				if (!is_shadow_present_pte(child_iter.old_spte)) {
@@ -1579,7 +1581,7 @@ static bool write_protect_gfn(struct kvm *kvm, struct kvm_mmu_page *root,
 
 	for_each_tdp_pte_min_level(iter, root->spt, root->role.level,
 				   min_level, gfn, gfn + 1) {
-		if (!is_shadow_present_pte(iter.old_spte) ||
+		if (!	(iter.old_spte) ||
 		    !is_last_spte(iter.old_spte, iter.level))
 			continue;
 
