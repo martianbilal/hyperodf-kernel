@@ -667,6 +667,13 @@ static inline void tdp_mmu_set_spte_no_dirty_log(struct kvm *kvm,
 			continue;					\
 		else
 
+#define tdp_root_for_each_last_level_pte(_iter, _root, _start, _end)	\
+	tdp_root_for_each_pte(_iter, _root, _start, _end)		\
+		if (!is_shadow_present_pte(_iter.old_spte) ||		\
+		    _iter.level != 2)		\
+			continue;					\
+		else
+
 #define tdp_mmu_for_each_pte(_iter, _mmu, _start, _end)		\
 	for_each_tdp_pte(_iter, __va(_mmu->root_hpa),		\
 			 _mmu->shadow_root_level, _start, _end)
@@ -765,7 +772,6 @@ static bool zap_gfn_range(struct kvm *kvm, struct kvm_mmu_page *root,
 				   min_level, start, end) {
 	
 retry:
-	printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", iter.gfn, iter.level, *iter.sptep, iter.old_spte);
 		if (can_yield &&
 		    tdp_mmu_iter_cond_resched(kvm, &iter, flush, shared)) {
 			flush = false;
@@ -1053,14 +1059,16 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 		}
 	}	
 
-// printing the EPT of the child 
-	tdp_mmu_for_each_pte(child_iter, child_mmu, 0, mem_size){
-		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", child_iter.gfn, child_iter.level, *child_iter.sptep, child_iter.old_spte);
+// printing the leaf entries of the EPT of child 
+	printk(KERN_ALERT "===== Printing the leaf entries of the child VM =====\n");
+	tdp_root_for_each_leaf_pte(leaf_iter, sptep_to_sp(__va(child_mmu->root_hpa)), 0, mem_size){
+		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", leaf_iter.gfn, leaf_iter.level, *leaf_iter.sptep, leaf_iter.old_spte);
 	}
 
 // printing the EPT of the Parent 
-	tdp_mmu_for_each_pte(parent_iter, parent_mmu, 0, mem_size){
-		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", parent_iter.gfn, parent_iter.level, *parent_iter.sptep, parent_iter.old_spte);
+	printk(KERN_ALERT "===== Printing the leaf entries of the parent VM =====\n");
+	tdp_root_for_each_leaf_pte(leaf_iter, sptep_to_sp(__va(parent_mmu->root_hpa)), 0, mem_size){
+		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", leaf_iter.gfn, leaf_iter.level, *leaf_iter.sptep, leaf_iter.old_spte);
 	}
 
 
@@ -1166,7 +1174,7 @@ int kvm_tdp_mmu_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 
 	if(gfn == 0) {
 		tdp_mmu_for_each_pte(iter, mmu, gfn, gfn + 6) {
-			printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", iter.gfn, iter.level, *iter.sptep, iter.old_spte);
+			printk(KERN_ALERT "---- %llu --- %d --- %llu -- %llu\n", iter.gfn, iter.level, *iter.sptep, iter.old_spte);
 		}
 	}
 

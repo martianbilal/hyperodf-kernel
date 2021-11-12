@@ -16,6 +16,7 @@
  */
 
 #include "irq.h"
+#include "tdp_iter.h"
 #include "ioapic.h"
 #include "mmu.h"
 #include "mmu_internal.h"
@@ -56,6 +57,11 @@
 #include "paging.h"
 
 extern bool itlb_multihit_kvm_mitigation;
+
+
+#define tdp_mmu_for_each_pte(_iter, _mmu, _start, _end)		\
+	for_each_tdp_pte(_iter, __va(_mmu->root_hpa),		\
+			 _mmu->shadow_root_level, _start, _end)
 
 int __read_mostly nx_huge_pages = -1;
 #ifdef CONFIG_PREEMPT_RT
@@ -3967,11 +3973,19 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	bool write = error_code & PFERR_WRITE_MASK;
 	bool map_writable;
 
+	struct tdp_iter iter; 
+
 	gfn_t gfn = gpa >> PAGE_SHIFT;
 	unsigned long mmu_seq;
 	kvm_pfn_t pfn;
 	hva_t hva;
 	int r;
+
+	printk(KERN_ALERT "Printing the EPT entries for vcpu id : %u", vcpu->vcpu_id);
+	tdp_mmu_for_each_pte(iter, vcpu->arch.mmu, gfn, gfn+1){
+		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", iter.gfn, iter.level, *iter.sptep, iter.old_spte);
+	}
+		
 
 	if (page_fault_handle_page_track(vcpu, error_code, gfn))
 		return RET_PF_EMULATE;
