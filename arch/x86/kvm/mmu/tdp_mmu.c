@@ -1000,12 +1000,15 @@ static int tdp_mmu_map_handle_target_level(struct kvm_vcpu *vcpu, int write,
  */
 void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu, unsigned long mem_size)
 {
-	struct tdp_iter child_iter; 
+	struct tdp_iter child_iter;
 	struct tdp_iter leaf_iter;
-	struct tdp_iter parent_iter;
+	struct tdp_iter l2_iter;
+	// struct tdp_iter child_l2_iter;
 	struct kvm_mmu_page *sp;
 	long long unsigned int *child_pt;
 	long long unsigned int new_spte;
+	struct kvm_mmu_page *child_root_page; 
+
 
 	struct kvm_mmu *parent_mmu = parent_vcpu->arch.mmu;
 	struct kvm_mmu *child_mmu = child_vcpu->arch.mmu;
@@ -1018,16 +1021,12 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 
 	kvm_mmu_load(child_vcpu);
 
+	child_root_page = sptep_to_sp(__va(child_mmu->root_hpa)); 
 
-	tdp_root_for_each_leaf_pte(leaf_iter, root_page, 0, mem_size){
-		tdp_mmu_for_each_pte(child_iter, child_mmu, leaf_iter.gfn, leaf_iter.gfn+1) {
-			if(child_iter.level == 1) {
-				// getting page addresses from the parent  
-				new_spte = *leaf_iter.sptep & 
-					~(PT_WRITABLE_MASK);
-				tdp_mmu_map_set_spte_atomic(child_vcpu, &child_iter, new_spte);
-
-			} else {
+	//sharing the last level EPT pages between the parent and child
+	tdp_root_for_each_last_level_pte(l2_iter, root_page, 0, mem_size){
+		tdp_mmu_for_each_pte(child_iter, child_mmu, l2_iter.gfn, l2_iter.gfn+1) {
+			if(child_iter.level > 2){
 				if (!is_shadow_present_pte(child_iter.old_spte)) {
 					/*
 					* If SPTE has been frozen by another thread, just
@@ -1053,17 +1052,69 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 						tdp_mmu_free_sp(sp);
 						break;
 					}
+				}	
+			} else if (child_iter.level == 2) {
+				new_spte = *l2_iter.sptep;
+				tdp_mmu_map_set_spte_atomic(child_vcpu, &child_iter, new_spte);
+			} else {
+				continue;
+			}
 
-				}
-			}	
 		}
-	}	
-
-// printing the leaf entries of the EPT of child 
-	printk(KERN_ALERT "===== Printing the leaf entries of the child VM =====\n");
-	tdp_root_for_each_leaf_pte(leaf_iter, sptep_to_sp(__va(child_mmu->root_hpa)), 0, mem_size){
-		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", leaf_iter.gfn, leaf_iter.level, *leaf_iter.sptep, leaf_iter.old_spte);
 	}
+
+	printk(KERN_ALERT "===== Printing the second last level page table entries for parent VM =====\n");
+	tdp_root_for_each_last_level_pte(l2_iter, root_page, 0, mem_size){
+		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", l2_iter.gfn, l2_iter.level, *l2_iter.sptep, l2_iter.old_spte);
+
+	}
+	printk(KERN_ALERT "===== Printing the second last level page table entries for Child VM =====\n");
+	tdp_root_for_each_last_level_pte(l2_iter, child_root_page, 0, mem_size){
+		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", l2_iter.gfn, l2_iter.level, *l2_iter.sptep, l2_iter.old_spte);
+
+	}
+
+
+	// tdp_root_for_each_leaf_pte(leaf_iter, root_page, 0, mem_size){
+	// 	tdp_mmu_for_each_pte(child_iter, child_mmu, leaf_iter.gfn, leaf_iter.gfn+1) {
+	// 		if(child_iter.level == 1) {
+	// 			// getting page addresses from the parent  
+	// 			new_spte = *leaf_iter.sptep & 
+	// 				~(PT_WRITABLE_MASK);
+	// 			tdp_mmu_map_set_spte_atomic(child_vcpu, &child_iter, new_spte);
+
+	// 		} else {
+	// 			if (!is_shadow_present_pte(child_iter.old_spte)) {
+	// 				/*
+	// 				* If SPTE has been frozen by another thread, just
+	// 				* give up and retry, avoiding unnecessary page table
+	// 				* allocation and free.
+	// 				*/
+
+	// 				if (is_removed_spte(child_iter.old_spte))
+	// 					break;
+
+	// 				sp = alloc_tdp_mmu_page(child_vcpu, child_iter.gfn, child_iter.level - 1);
+	// 				child_pt = sp->spt;
+	// 				new_spte = make_nonleaf_spte(child_pt,
+	// 								!shadow_accessed_mask);
+
+	// 				if (tdp_mmu_set_spte_atomic_no_dirty_log(child_vcpu->kvm, &child_iter, new_spte)) {
+	// 					tdp_mmu_link_page(child_vcpu->kvm, sp,
+	// 							true &&
+	// 							0 >= child_iter.level);
+
+	// 					trace_kvm_mmu_get_page(sp, true);
+	// 				} else {
+	// 					tdp_mmu_free_sp(sp);
+	// 					break;
+	// 				}
+
+	// 			}
+	// 		}	
+	// 	}
+	// }	
+
 
 // printing the EPT of the Parent 
 	printk(KERN_ALERT "===== Printing the leaf entries of the parent VM =====\n");
@@ -1071,6 +1122,11 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", leaf_iter.gfn, leaf_iter.level, *leaf_iter.sptep, leaf_iter.old_spte);
 	}
 
+// printing the leaf entries of the EPT of child 
+	printk(KERN_ALERT "===== Printing the leaf entries of the child VM =====\n");
+	tdp_root_for_each_leaf_pte(leaf_iter, sptep_to_sp(__va(child_mmu->root_hpa)), 0, mem_size){
+		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", leaf_iter.gfn, leaf_iter.level, *leaf_iter.sptep, leaf_iter.old_spte);
+	}
 
 	rcu_read_unlock();	
 
