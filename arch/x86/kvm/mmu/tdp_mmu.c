@@ -1054,8 +1054,13 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 					}
 				}	
 			} else if (child_iter.level == 2) {
-				new_spte = *l2_iter.sptep;
+				//setting the new spte 
+				new_spte = *l2_iter.sptep &
+				~(PT_WRITABLE_MASK);
 				tdp_mmu_map_set_spte_atomic(child_vcpu, &child_iter, new_spte);
+
+				//changing the ref count for the shared pages
+				
 			} else {
 				continue;
 			}
