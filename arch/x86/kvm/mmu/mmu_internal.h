@@ -40,6 +40,9 @@ struct kvm_mmu_page {
 	bool mmio_cached;
 	bool lpage_disallowed; /* Can't be replaced by an equiv large page */
 
+	/* holds the numbers of VMs using this page */
+	u16 vm_count;
+
 	/*
 	 * The following two entries are used to key the shadow page in the
 	 * hash table.

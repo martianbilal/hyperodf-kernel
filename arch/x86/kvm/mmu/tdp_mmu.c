@@ -183,6 +183,7 @@ static struct kvm_mmu_page *alloc_tdp_mmu_page(struct kvm_vcpu *vcpu, gfn_t gfn,
 	sp->role.word = page_role_for_level(vcpu, level).word;
 	sp->gfn = gfn;
 	sp->tdp_mmu_page = true;
+	sp->vm_count = 1; 
 
 	trace_kvm_mmu_get_page(sp, true);
 
@@ -1007,12 +1008,12 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 	struct kvm_mmu_page *sp;
 	long long unsigned int *child_pt;
 	long long unsigned int new_spte;
-	struct kvm_mmu_page *child_root_page; 
+	volatile struct kvm_mmu_page *child_root_page; 
 
 
 	struct kvm_mmu *parent_mmu = parent_vcpu->arch.mmu;
 	struct kvm_mmu *child_mmu = child_vcpu->arch.mmu;
-	struct kvm_mmu_page *root_page = sptep_to_sp(__va(parent_mmu->root_hpa));; 
+	volatile struct kvm_mmu_page *root_page = sptep_to_sp(__va(parent_mmu->root_hpa));; 
 
 
 	rcu_read_lock();
@@ -1055,6 +1056,7 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 				}	
 			} else if (child_iter.level == 2) {
 				//setting the new spte 
+				printk(KERN_ALERT "Refcount value for vm_count ::> %u", sptep_to_sp(rcu_dereference(l2_iter.sptep))->vm_count);
 				new_spte = *l2_iter.sptep &
 				~(PT_WRITABLE_MASK);
 				tdp_mmu_map_set_spte_atomic(child_vcpu, &child_iter, new_spte);
