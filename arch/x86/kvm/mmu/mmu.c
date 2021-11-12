@@ -58,10 +58,19 @@
 
 extern bool itlb_multihit_kvm_mitigation;
 
+#define tdp_root_for_each_pte(_iter, _root, _start, _end) \
+	for_each_tdp_pte(_iter, _root->spt, _root->role.level, _start, _end)
 
 #define tdp_mmu_for_each_pte(_iter, _mmu, _start, _end)		\
 	for_each_tdp_pte(_iter, __va(_mmu->root_hpa),		\
 			 _mmu->shadow_root_level, _start, _end)
+
+#define tdp_root_for_each_last_level_pte(_iter, _root, _start, _end)	\
+	tdp_root_for_each_pte(_iter, _root, _start, _end)		\
+		if (!is_shadow_present_pte(_iter.old_spte) ||		\
+		    _iter.level != 2)		\
+			continue;					\
+		else
 
 int __read_mostly nx_huge_pages = -1;
 #ifdef CONFIG_PREEMPT_RT
@@ -3242,6 +3251,7 @@ static int fast_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code)
 		sp = sptep_to_sp(sptep);
 		if (!is_last_spte(spte, sp->role.level))
 			break;
+		printk(KERN_ALERT "this is the value of the ret : %lln", sptep);
 
 		/*
 		 * Check whether the memory access that caused the fault would
@@ -3991,8 +4001,15 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 		return RET_PF_EMULATE;
 
 	r = fast_page_fault(vcpu, gpa, error_code);
-	if (r != RET_PF_INVALID)
+	if (r != RET_PF_INVALID){
+		tdp_root_for_each_last_level_pte(iter, sptep_to_sp(__va(vcpu->arch.mmu->root_hpa)), gfn, gfn+1){
+			if(sptep_to_sp(__va(vcpu->arch.mmu->root_hpa))->vm_count > 1){
+				kvm_tdp_mmu_cow_ept(vcpu, gpa, error_code, prefault, max_level);
+			}
+		}
+		printk(KERN_ALERT "this is the value of the r : %u , and the value of RET_PF_INVALID: %u", r, RET_PF_INVALID);
 		return r;
+	}
 
 	r = mmu_topup_memory_caches(vcpu, false);
 	if (r)

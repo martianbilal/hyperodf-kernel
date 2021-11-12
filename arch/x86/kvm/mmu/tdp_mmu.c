@@ -999,6 +999,12 @@ static int tdp_mmu_map_handle_target_level(struct kvm_vcpu *vcpu, int write,
 /*
  * Copies the EPT of the parent in the child  
  */
+
+void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
+			     bool prefault, int max_level)
+{
+	return;
+}
 void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu, unsigned long mem_size)
 {
 	struct tdp_iter child_iter;
@@ -1008,12 +1014,13 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 	struct kvm_mmu_page *sp;
 	long long unsigned int *child_pt;
 	long long unsigned int new_spte;
-	volatile struct kvm_mmu_page *child_root_page; 
+	struct kvm_mmu_page *child_root_page; 
+	struct kvm_mmu_page *page; 
 
 
 	struct kvm_mmu *parent_mmu = parent_vcpu->arch.mmu;
 	struct kvm_mmu *child_mmu = child_vcpu->arch.mmu;
-	volatile struct kvm_mmu_page *root_page = sptep_to_sp(__va(parent_mmu->root_hpa));; 
+	struct kvm_mmu_page *root_page = sptep_to_sp(__va(parent_mmu->root_hpa));; 
 
 
 	rcu_read_lock();
@@ -1056,7 +1063,9 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 				}	
 			} else if (child_iter.level == 2) {
 				//setting the new spte 
-				printk(KERN_ALERT "Refcount value for vm_count ::> %u", sptep_to_sp(rcu_dereference(l2_iter.sptep))->vm_count);
+				page = sptep_to_sp(rcu_dereference(l2_iter.sptep));
+				page->vm_count += 1;
+				printk(KERN_ALERT "Refcount value for vm_count ::> %u", page->vm_count);
 				new_spte = *l2_iter.sptep &
 				~(PT_WRITABLE_MASK);
 				tdp_mmu_map_set_spte_atomic(child_vcpu, &child_iter, new_spte);
