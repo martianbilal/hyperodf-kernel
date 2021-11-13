@@ -3251,7 +3251,6 @@ static int fast_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code)
 		sp = sptep_to_sp(sptep);
 		if (!is_last_spte(spte, sp->role.level))
 			break;
-		printk(KERN_ALERT "this is the value of the ret : %lln", sptep);
 
 		/*
 		 * Check whether the memory access that caused the fault would
@@ -3991,7 +3990,7 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	hva_t hva;
 	int r;
 
-	printk(KERN_ALERT "Printing the EPT entries for : %u", *(vcpu->pid));
+	printk(KERN_ALERT "Printing the EPT entries for : %d", vcpu->pid->numbers[0].nr);
 	tdp_mmu_for_each_pte(iter, vcpu->arch.mmu, gfn, gfn+1){
 		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", iter.gfn, iter.level, *iter.sptep, iter.old_spte);
 	}
@@ -4003,7 +4002,10 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	r = fast_page_fault(vcpu, gpa, error_code);
 	if (r != RET_PF_INVALID){
 		tdp_root_for_each_last_level_pte(iter, sptep_to_sp(__va(vcpu->arch.mmu->root_hpa)), gfn, gfn+1){
-			if(sptep_to_sp(__va(vcpu->arch.mmu->root_hpa))->vm_count > 1){
+			printk(KERN_ALERT "the value of vm_count : %u", to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count);
+			printk(KERN_ALERT "the value of spte : %llu", *iter.sptep);
+			printk(KERN_ALERT "the value of spte : %u", iter.level);
+			if(to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count){
 				kvm_tdp_mmu_cow_ept(vcpu, gpa, error_code, prefault, max_level);
 			}
 		}

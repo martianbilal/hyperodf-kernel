@@ -1003,6 +1003,10 @@ static int tdp_mmu_map_handle_target_level(struct kvm_vcpu *vcpu, int write,
 void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 			     bool prefault, int max_level)
 {
+	
+	printk(KERN_ALERT "------- Start Working on COW EPT -------");
+
+	
 	return;
 }
 void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu, unsigned long mem_size)
@@ -1063,13 +1067,18 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 				}	
 			} else if (child_iter.level == 2) {
 				//setting the new spte 
-				page = sptep_to_sp(rcu_dereference(l2_iter.sptep));
-				page->vm_count += 1;
-				printk(KERN_ALERT "Refcount value for vm_count ::> %u", page->vm_count);
 				new_spte = *l2_iter.sptep &
 				~(PT_WRITABLE_MASK);
 				tdp_mmu_map_set_spte_atomic(child_vcpu, &child_iter, new_spte);
+				tdp_mmu_map_set_spte_atomic(parent_vcpu, &l2_iter, new_spte);
+				handle_changed_spte(parent_vcpu->kvm, kvm_mmu_page_as_id(page), child_iter.gfn, child_iter.old_spte, new_spte, child_iter.level, true);
 
+				page = to_shadow_page(spte_to_pfn(new_spte) << PAGE_SHIFT);
+				smp_wmb();
+				page->vm_count += 1;
+				printk(KERN_ALERT "This is the value of the child_iter spte that is being changed : %llu", new_spte);
+				printk(KERN_ALERT "Refcount value for vm_count ::> %u", page->vm_count);
+				
 				//changing the ref count for the shared pages
 				
 			} else {
