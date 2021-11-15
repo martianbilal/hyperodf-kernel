@@ -1001,14 +1001,29 @@ static int tdp_mmu_map_handle_target_level(struct kvm_vcpu *vcpu, int write,
  */
 
 void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
-			     bool prefault, int max_level)
+				struct tdp_iter iter, kvm_pfn_t pfn, int max_level)
 {
-	
+	struct kvm_mmu_page *sp;
+
 	printk(KERN_ALERT "------- Start Working on COW EPT -------");
 
+	//getting the faulting page 
+	sp = to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT);
+	printk(KERN_ALERT "---- The value of the the vm_count for the page in the %s is : %u", __func__, sp->vm_count );
+	sp->vm_count = sp->vm_count - 1;
+	// decrement the vm_count of the page by 1 
+	
+	// allocate a new page for the EPT 
+	// call handle_target level to add the leaf sptes  
+	
 	
 	return;
 }
+
+/*
+*	A function for dumping out all the information of the EPT
+*/
+
 void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu, unsigned long mem_size)
 {
 	struct tdp_iter child_iter;

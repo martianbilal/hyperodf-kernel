@@ -16,7 +16,6 @@
  */
 
 #include "irq.h"
-#include "tdp_iter.h"
 #include "ioapic.h"
 #include "mmu.h"
 #include "mmu_internal.h"
@@ -4006,7 +4005,7 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 			printk(KERN_ALERT "the value of spte : %llu", *iter.sptep);
 			printk(KERN_ALERT "the value of spte : %u", iter.level);
 			if(to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count){
-				kvm_tdp_mmu_cow_ept(vcpu, gpa, error_code, prefault, max_level);
+				kvm_tdp_mmu_cow_ept(vcpu, gpa, error_code, iter, pfn, max_level);
 			}
 		}
 		printk(KERN_ALERT "this is the value of the r : %u , and the value of RET_PF_INVALID: %u", r, RET_PF_INVALID);
