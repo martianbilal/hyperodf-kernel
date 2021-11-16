@@ -405,10 +405,16 @@ static void __handle_changed_spte(struct kvm *kvm, int as_id, gfn_t gfn,
 	bool was_leaf = was_present && is_last_spte(old_spte, level);
 	bool is_leaf = is_present && is_last_spte(new_spte, level);
 	bool pfn_changed = spte_to_pfn(old_spte) != spte_to_pfn(new_spte);
+	bool vm_count = 0; 
 
 	WARN_ON(level > PT64_ROOT_MAX_LEVEL);
 	WARN_ON(level < PG_LEVEL_4K);
 	WARN_ON(gfn & (KVM_PAGES_PER_HPAGE(level) - 1));
+
+	if(old_spte){
+		vm_count = (to_shadow_page(spte_to_pfn(old_spte) << PAGE_SHIFT)->vm_count);
+	}
+
 
 	/*
 	 * If this warning were to trigger it would indicate that there was a
@@ -474,7 +480,7 @@ static void __handle_changed_spte(struct kvm *kvm, int as_id, gfn_t gfn,
 	 * Recursively handle child PTs if the change removed a subtree from
 	 * the paging structure.
 	 */
-	if (was_present && !was_leaf && (pfn_changed || !is_present))
+	if (was_present && !was_leaf && (pfn_changed || !is_present) && !vm_count)
 		handle_removed_tdp_mmu_page(kvm,
 				spte_to_child_pt(old_spte, level), shared);
 }
@@ -1020,7 +1026,20 @@ void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	printk(KERN_ALERT "---- The value of the the vm_count for the page in the %s is : %u", __func__, sp->vm_count );
 	// decrement the vm_count of the page by 1 
 	sp->vm_count = sp->vm_count - 1;
-	
+
+	tdp_root_for_each_leaf_pte(leaf_iter, sp, 0, 0x100000){
+		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", leaf_iter.gfn, leaf_iter.level, *leaf_iter.sptep, leaf_iter.old_spte);
+		pg = kvm_vcpu_gfn_to_page(vcpu, leaf_iter.gfn);
+		pg_addr = page_address(pg);
+		
+		//allocating a new page 
+		//writing the 
+	}
+
+
+	tdp_mmu_set_spte(vcpu->kvm, &iter, 0);
+
+
 	//setting up a spte in the second last level page table
 	tdp_mmu_for_each_pte(base_iter, vcpu->arch.mmu, gfn, gfn+1){
 		if(base_iter.level == 2 ){
@@ -1037,18 +1056,10 @@ void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 		}
 	}
 
-	tdp_root_for_each_leaf_pte(leaf_iter, sp, 0, 0x100000){
-		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", leaf_iter.gfn, leaf_iter.level, *leaf_iter.sptep, leaf_iter.old_spte);
-		pg = kvm_vcpu_gfn_to_page(vcpu, leaf_iter.gfn);
-		pg_addr = page_address(pg);
-		
-		//allocating a new page 
-		//writing the 
-	}
 
 
 
-	tdp_mmu_set_spte(vcpu->kvm, &iter, 0);
+
 	
 	//create a 
 

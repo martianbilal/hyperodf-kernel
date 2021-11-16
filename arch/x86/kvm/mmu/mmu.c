@@ -4004,7 +4004,7 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 			printk(KERN_ALERT "the value of vm_count : %u", to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count);
 			printk(KERN_ALERT "the value of spte : %llu", *iter.sptep);
 			printk(KERN_ALERT "the value of spte : %u", iter.level);
-			if(to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count){
+			if(to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count > 1){
 				kvm_tdp_mmu_cow_ept(vcpu, gpa, error_code, iter, pfn, max_level);
 			}
 		}
