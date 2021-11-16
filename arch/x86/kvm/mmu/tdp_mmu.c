@@ -1036,7 +1036,6 @@ void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 		//writing the 
 	}
 
-
 	tdp_mmu_set_spte(vcpu->kvm, &iter, 0);
 
 

@@ -578,7 +578,7 @@ static u64 mmu_spte_update_no_track(u64 *sptep, u64 new_spte)
  *
  * Returns true if the TLB needs to be flushed
  */
-static bool mmu_spte_update(u64 *sptep, u64 new_spte)
+bool mmu_spte_update(u64 *sptep, u64 new_spte)
 {
 	bool flush = false;
 	u64 old_spte = mmu_spte_update_no_track(sptep, new_spte);
@@ -3980,6 +3980,7 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	bool is_tdp_mmu_fault = is_tdp_mmu(vcpu->arch.mmu);
 	bool write = error_code & PFERR_WRITE_MASK;
 	bool map_writable;
+	long long unsigned int new_spte;
 
 	struct tdp_iter iter; 
 
@@ -4001,9 +4002,16 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 			printk(KERN_ALERT "the value of vm_count : %u", to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count);
 			printk(KERN_ALERT "the value of spte : %llu", *iter.sptep);
 			printk(KERN_ALERT "the value of spte : %u", iter.level);
+			if(!is_writable_pte(*iter.sptep) && to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count == 1){
+				new_spte = *iter.sptep | (PT_WRITABLE_MASK | shadow_mmu_writable_mask);
+				mmu_spte_update(iter.sptep, new_spte);
+			}
 			if(to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count > 1){
 				kvm_tdp_mmu_cow_ept(vcpu, gpa, error_code, iter, pfn, max_level);
+				continue;
+				// return ;
 			}
+				
 		}
 		printk(KERN_ALERT "this is the value of the r : %u , and the value of RET_PF_INVALID: %u", r, RET_PF_INVALID);
 		return r;
