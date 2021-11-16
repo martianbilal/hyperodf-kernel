@@ -3990,9 +3990,7 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	int r;
 
 	printk(KERN_ALERT "Printing the EPT entries for : %d", vcpu->pid->numbers[0].nr);
-	tdp_mmu_for_each_pte(iter, vcpu->arch.mmu, gfn, gfn+1){
-		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", iter.gfn, iter.level, *iter.sptep, iter.old_spte);
-	}
+	kvm_tdp_print_ept(vcpu, 0, 0x10000);
 		
 
 	if (page_fault_handle_page_track(vcpu, error_code, gfn))

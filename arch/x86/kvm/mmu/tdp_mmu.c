@@ -1080,12 +1080,12 @@ void kvm_tdp_print_ept(struct kvm_vcpu *vcpu, int start, int end){
 	struct tdp_iter _iter;
 	
 	printk(KERN_ALERT "Printing the EPT for vcpu id : %d", vcpu->pid->numbers[0].nr);
-	printk(KERN_ALERT "GFN --------------- LEVEL --------------- NEW SPTE --------------- OLD SPTE --------------- WRITE");
+	printk(KERN_ALERT "GFN ---- LEVEL ---- NEW SPTE ---- OLD SPTE ---- WRITE ---- READ");
 	tdp_mmu_for_each_pte(_iter, mmu, start, end){
 		if (!is_shadow_present_pte(_iter.old_spte))
 			continue;
 
-		printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %lld\n", _iter.gfn, _iter.level, *_iter.sptep, _iter.old_spte, *_iter.sptep & PT_WRITABLE_MASK);
+		printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0);
 		
 	}
 }
@@ -1152,9 +1152,9 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 				~(PT_WRITABLE_MASK);
 				tdp_mmu_map_set_spte_atomic(child_vcpu, &child_iter, new_spte);
 				tdp_mmu_map_set_spte_atomic(parent_vcpu, &l2_iter, new_spte);
+				page = to_shadow_page(spte_to_pfn(new_spte) << PAGE_SHIFT);
 				handle_changed_spte(parent_vcpu->kvm, kvm_mmu_page_as_id(page), child_iter.gfn, child_iter.old_spte, new_spte, child_iter.level, true);
 
-				page = to_shadow_page(spte_to_pfn(new_spte) << PAGE_SHIFT);
 				smp_wmb();
 				page->vm_count += 1;
 				printk(KERN_ALERT "This is the value of the child_iter spte that is being changed : %llu", new_spte);
