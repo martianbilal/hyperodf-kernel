@@ -67,6 +67,7 @@ static __always_inline u64 rsvd_bits(int s, int e)
 }
 
 
+void kvm_tdp_print_ept(struct kvm_vcpu *vcpu, int start, int end);
 void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 			    struct tdp_iter iter, kvm_pfn_t pfn, int max_level);
 void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu, unsigned long mem_size);

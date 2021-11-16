@@ -1075,6 +1075,20 @@ void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 /*
 *	A function for dumping out all the information of the EPT
 */
+void kvm_tdp_print_ept(struct kvm_vcpu *vcpu, int start, int end){
+	struct kvm_mmu *mmu = vcpu->arch.mmu;
+	struct tdp_iter _iter;
+	
+	printk(KERN_ALERT "Printing the EPT for vcpu id : %d", vcpu->pid->numbers[0].nr);
+	printk(KERN_ALERT "GFN --------------- LEVEL --------------- NEW SPTE --------------- OLD SPTE --------------- WRITE");
+	tdp_mmu_for_each_pte(_iter, mmu, start, end){
+		if (!is_shadow_present_pte(_iter.old_spte))
+			continue;
+
+		printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %lld\n", _iter.gfn, _iter.level, *_iter.sptep, _iter.old_spte, *_iter.sptep & PT_WRITABLE_MASK);
+		
+	}
+}
 
 void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu, unsigned long mem_size)
 {
@@ -1321,9 +1335,7 @@ int kvm_tdp_mmu_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	rcu_read_unlock();
 
 	if(gfn == 0) {
-		tdp_mmu_for_each_pte(iter, mmu, gfn, gfn + 6) {
-			printk(KERN_ALERT "---- %llu --- %d --- %llu -- %llu\n", iter.gfn, iter.level, *iter.sptep, iter.old_spte);
-		}
+		kvm_tdp_print_ept(vcpu, 0, 0x100000);
 	}
 
 
