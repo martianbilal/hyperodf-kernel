@@ -1248,7 +1248,7 @@ static void drop_large_spte(struct kvm_vcpu *vcpu, u64 *sptep)
  *
  * Return true if tlb need be flushed.
  */
-static bool spte_write_protect(u64 *sptep, bool pt_protect)
+bool spte_write_protect(u64 *sptep, bool pt_protect)
 {
 	u64 spte = *sptep;
 
@@ -3989,7 +3989,6 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	hva_t hva;
 	int r;
 
-	printk(KERN_ALERT "Printing the EPT entries for : %d", vcpu->pid->numbers[0].nr);
 	kvm_tdp_print_ept(vcpu, 0, 0x10000);
 		
 

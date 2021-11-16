@@ -1148,12 +1148,13 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 				}	
 			} else if (child_iter.level == 2) {
 				//setting the new spte 
-				new_spte = *l2_iter.sptep &
-				~(PT_WRITABLE_MASK);
-				tdp_mmu_map_set_spte_atomic(child_vcpu, &child_iter, new_spte);
-				tdp_mmu_map_set_spte_atomic(parent_vcpu, &l2_iter, new_spte);
-				page = to_shadow_page(spte_to_pfn(new_spte) << PAGE_SHIFT);
-				handle_changed_spte(parent_vcpu->kvm, kvm_mmu_page_as_id(page), child_iter.gfn, child_iter.old_spte, new_spte, child_iter.level, true);
+				// new_spte = *l2_iter.sptep &
+				// ~(PT_WRITABLE_MASK | shadow_mmu_writable_mask);
+				spte_write_protect(l2_iter.sptep, true);
+				tdp_mmu_map_set_spte_atomic(child_vcpu, &child_iter, *l2_iter.sptep);
+				// tdp_mmu_map_set_spte_atomic(parent_vcpu, &l2_iter, *l2_iter.sptep);
+				page = to_shadow_page(spte_to_pfn(*l2_iter.sptep) << PAGE_SHIFT);
+				handle_changed_spte(parent_vcpu->kvm, kvm_mmu_page_as_id(page), child_iter.gfn, l2_iter.old_spte, *l2_iter.sptep, child_iter.level, true);
 
 				smp_wmb();
 				page->vm_count += 1;

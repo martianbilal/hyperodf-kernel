@@ -66,7 +66,7 @@ static __always_inline u64 rsvd_bits(int s, int e)
 	return ((2ULL << (e - s)) - 1) << s;
 }
 
-
+bool spte_write_protect(u64 *sptep, bool pt_protect);
 void kvm_tdp_print_ept(struct kvm_vcpu *vcpu, int start, int end);
 void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 			    struct tdp_iter iter, kvm_pfn_t pfn, int max_level);
