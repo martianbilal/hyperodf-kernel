@@ -7,6 +7,7 @@
 #include "tdp_mmu.h"
 #include "spte.h"
 
+#include <linux/mm.h>
 #include <asm/cmpxchg.h>
 #include <trace/events/kvm.h>
 
@@ -1004,15 +1005,55 @@ void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 				struct tdp_iter iter, kvm_pfn_t pfn, int max_level)
 {
 	struct kvm_mmu_page *sp;
+	struct tdp_iter leaf_iter;
+	struct tdp_iter base_iter;
+	struct page* pg; 
+	unsigned long pg_addr;
+	long long unsigned int *child_pt;
+	long long unsigned int new_spte;
+	gfn_t gfn = gpa >> PAGE_SHIFT;
 
 	printk(KERN_ALERT "------- Start Working on COW EPT -------");
 
 	//getting the faulting page 
 	sp = to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT);
 	printk(KERN_ALERT "---- The value of the the vm_count for the page in the %s is : %u", __func__, sp->vm_count );
-	sp->vm_count = sp->vm_count - 1;
 	// decrement the vm_count of the page by 1 
+	sp->vm_count = sp->vm_count - 1;
 	
+	//setting up a spte in the second last level page table
+	tdp_mmu_for_each_pte(base_iter, vcpu->arch.mmu, gfn, gfn+1){
+		if(base_iter.level == 2 ){
+			sp = alloc_tdp_mmu_page(vcpu, base_iter.gfn, base_iter.level - 1);
+			child_pt = sp->spt;
+			new_spte = make_nonleaf_spte(child_pt,
+							!shadow_accessed_mask);
+
+			if (tdp_mmu_set_spte_atomic_no_dirty_log(vcpu->kvm, &base_iter, new_spte)) {
+				tdp_mmu_link_page(vcpu->kvm, sp,
+						true &&
+						0 >= base_iter.level);
+			}
+		}
+	}
+
+	tdp_root_for_each_leaf_pte(leaf_iter, sp, 0, 0x100000){
+		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", leaf_iter.gfn, leaf_iter.level, *leaf_iter.sptep, leaf_iter.old_spte);
+		pg = kvm_vcpu_gfn_to_page(vcpu, leaf_iter.gfn);
+		pg_addr = page_address(pg);
+		
+		//allocating a new page 
+		//writing the 
+	}
+
+
+
+	tdp_mmu_set_spte(vcpu->kvm, &iter, 0);
+	
+	//create a 
+
+
+	//use map function for setting up the rest of the values 
 	// allocate a new page for the EPT 
 	// call handle_target level to add the leaf sptes  
 	
