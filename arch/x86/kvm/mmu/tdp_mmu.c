@@ -411,11 +411,6 @@ static void __handle_changed_spte(struct kvm *kvm, int as_id, gfn_t gfn,
 	WARN_ON(level < PG_LEVEL_4K);
 	WARN_ON(gfn & (KVM_PAGES_PER_HPAGE(level) - 1));
 
-	if(old_spte){
-		vm_count = (to_shadow_page(spte_to_pfn(old_spte) << PAGE_SHIFT)->vm_count);
-	}
-
-
 	/*
 	 * If this warning were to trigger it would indicate that there was a
 	 * missing MMU notifier or a race with some notifier handler.
@@ -437,6 +432,11 @@ static void __handle_changed_spte(struct kvm *kvm, int as_id, gfn_t gfn,
 		 * corruption.
 		 */
 		BUG();
+	}
+
+	if(old_spte && old_spte == new_spte){
+		vm_count = (to_shadow_page(spte_to_pfn(old_spte) << PAGE_SHIFT)->vm_count);
+		printk(KERN_ALERT "Value of vm_count in %s is : %d", __func__, vm_count);
 	}
 
 	if (old_spte == new_spte)
@@ -756,6 +756,7 @@ static bool zap_gfn_range(struct kvm *kvm, struct kvm_mmu_page *root,
 	gfn_t max_gfn_host = 1ULL << (shadow_phys_bits - PAGE_SHIFT);
 	bool zap_all = (start == 0 && end >= max_gfn_host);
 	struct tdp_iter iter;
+	struct kvm_mmu_page *sp;
 
 	/*
 	 * No need to try to step down in the iterator when zapping all SPTEs,
@@ -772,7 +773,7 @@ static bool zap_gfn_range(struct kvm *kvm, struct kvm_mmu_page *root,
 
 	kvm_lockdep_assert_mmu_lock_held(kvm, shared);
 
-	printk(KERN_ALERT "GFN --->>> %llu ", start );
+	printk(KERN_ALERT "GFN --->>> %llu ", end );
 
 	rcu_read_lock();
 
@@ -780,6 +781,7 @@ static bool zap_gfn_range(struct kvm *kvm, struct kvm_mmu_page *root,
 				   min_level, start, end) {
 	
 retry:
+
 		if (can_yield &&
 		    tdp_mmu_iter_cond_resched(kvm, &iter, flush, shared)) {
 			flush = false;
@@ -800,10 +802,9 @@ retry:
 		    !is_last_spte(iter.old_spte, iter.level))
 			continue;
 
-		if (!shared){
-
-			// tdp_mmu_set_spte(kvm, &iter, 0);
-			// flush = true;
+		if (!shared && (to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count < 1)){
+			tdp_mmu_set_spte(kvm, &iter, 0);
+			flush = true;
 		} else if (!tdp_mmu_zap_spte_atomic(kvm, &iter)) {
 			/*
 			 * The iter must explicitly re-read the SPTE because
@@ -828,10 +829,24 @@ bool __kvm_tdp_mmu_zap_gfn_range(struct kvm *kvm, int as_id, gfn_t start,
 				 gfn_t end, bool can_yield, bool flush)
 {
 	struct kvm_mmu_page *root;
+	struct tdp_iter iter; 
+	struct kvm_mmu_page *sp;
 
-	for_each_tdp_mmu_root_yield_safe(kvm, root, as_id, false)
+	
+	for_each_tdp_mmu_root(kvm, root, as_id){
+		tdp_root_for_each_last_level_pte(iter, root, start, end){
+			//decrement the vm_count before zapping
+			sp = to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT);
+			printk(KERN_ALERT "this is the value of the VM count : %d", sp->vm_count );
+			sp->vm_count =  sp->vm_count - 1;
+			printk(KERN_ALERT "this is the value of the VM count : %d", sp->vm_count );
+		}
+	}
+
+	for_each_tdp_mmu_root_yield_safe(kvm, root, as_id, false){
 		flush = zap_gfn_range(kvm, root, start, end, can_yield, flush,
 				      false);
+	}
 
 	return flush;
 }
@@ -1027,15 +1042,6 @@ void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	// decrement the vm_count of the page by 1 
 	sp->vm_count = sp->vm_count - 1;
 
-	tdp_root_for_each_leaf_pte(leaf_iter, sp, 0, 0x100000){
-		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", leaf_iter.gfn, leaf_iter.level, *leaf_iter.sptep, leaf_iter.old_spte);
-		pg = kvm_vcpu_gfn_to_page(vcpu, leaf_iter.gfn);
-		pg_addr = page_address(pg);
-		
-		//allocating a new page 
-		//writing the 
-	}
-
 	tdp_mmu_set_spte(vcpu->kvm, &iter, 0);
 
 
@@ -1054,6 +1060,18 @@ void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 			}
 		}
 	}
+
+	// tdp_root_for_each_leaf_pte(leaf_iter, sp, 0, 0x100000){
+	// 	printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", leaf_iter.gfn, leaf_iter.level, *leaf_iter.sptep, leaf_iter.old_spte);
+	// 	pg = kvm_vcpu_gfn_to_page(vcpu, leaf_iter.gfn);
+	// 	pg_addr = (unsigned long)page_address(pg);
+
+		
+	// 	//allocating a new page 
+	// 	//writing the 
+	// }
+
+	
 
 
 
@@ -1079,12 +1097,12 @@ void kvm_tdp_print_ept(struct kvm_vcpu *vcpu, int start, int end){
 	struct tdp_iter _iter;
 	
 	printk(KERN_ALERT "Printing the EPT for vcpu id : %d", vcpu->pid->numbers[0].nr);
-	printk(KERN_ALERT "GFN ---- LEVEL ---- NEW SPTE ---- OLD SPTE ---- WRITE ---- READ");
+	printk(KERN_ALERT "GFN ---- LEVEL ---- NEW SPTE ---- PFN ---- OLD SPTE ---- WRITE ---- READ");
 	tdp_mmu_for_each_pte(_iter, mmu, start, end){
 		if (!is_shadow_present_pte(_iter.old_spte))
 			continue;
 
-		printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0);
+		printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0);
 		
 	}
 }

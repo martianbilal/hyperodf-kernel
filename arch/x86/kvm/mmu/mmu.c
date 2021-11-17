@@ -3990,7 +3990,6 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	hva_t hva;
 	int r;
 
-	kvm_tdp_print_ept(vcpu, 0, 0x10000);
 		
 
 	if (page_fault_handle_page_track(vcpu, error_code, gfn))
@@ -5308,6 +5307,8 @@ int kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa, u64 error_code,
 	int r, emulation_type = EMULTYPE_PF;
 	bool direct = vcpu->arch.mmu->direct_map;
 	printk (KERN_ALERT "The boolean value of direct_map : -----> ---- %d\n", direct);
+	kvm_tdp_print_ept(vcpu, 0, 0x10000);
+	
 	if (WARN_ON(!VALID_PAGE(vcpu->arch.mmu->root_hpa)))
 		return RET_PF_RETRY;
 
