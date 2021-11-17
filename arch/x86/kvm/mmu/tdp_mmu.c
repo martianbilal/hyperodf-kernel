@@ -405,7 +405,7 @@ static void __handle_changed_spte(struct kvm *kvm, int as_id, gfn_t gfn,
 	bool was_leaf = was_present && is_last_spte(old_spte, level);
 	bool is_leaf = is_present && is_last_spte(new_spte, level);
 	bool pfn_changed = spte_to_pfn(old_spte) != spte_to_pfn(new_spte);
-	bool vm_count = 0; 
+	int vm_count = 0; 
 
 	WARN_ON(level > PT64_ROOT_MAX_LEVEL);
 	WARN_ON(level < PG_LEVEL_4K);
@@ -480,9 +480,13 @@ static void __handle_changed_spte(struct kvm *kvm, int as_id, gfn_t gfn,
 	 * Recursively handle child PTs if the change removed a subtree from
 	 * the paging structure.
 	 */
-	if (was_present && !was_leaf && (pfn_changed || !is_present) && !vm_count)
+	if (was_present && !was_leaf && (pfn_changed || !is_present) && !vm_count) {
+		printk("In %s, these are the values that are being udpated ====  old_spte :  %llu === spte : %llu === level : %u === vm_count %d", __func__ , old_spte , new_spte, level, vm_count);
 		handle_removed_tdp_mmu_page(kvm,
 				spte_to_child_pt(old_spte, level), shared);
+		
+	}
+		
 }
 
 static void handle_changed_spte(struct kvm *kvm, int as_id, gfn_t gfn,
@@ -814,6 +818,7 @@ retry:
 		}
 
 		if (!shared){
+			printk("In %s, these are the values that are being udpated ====  gfn :  %u === spte : %llu === level : %u", __func__ , iter.gfn , *iter.sptep, iter.level);
 			tdp_mmu_set_spte(kvm, &iter, 0);
 			flush = true;
 		} else if (!tdp_mmu_zap_spte_atomic(kvm, &iter)) {
