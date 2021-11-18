@@ -434,11 +434,6 @@ static void __handle_changed_spte(struct kvm *kvm, int as_id, gfn_t gfn,
 		BUG();
 	}
 
-	if(old_spte && old_spte == new_spte){
-		vm_count = (to_shadow_page(spte_to_pfn(old_spte) << PAGE_SHIFT)->vm_count);
-		printk(KERN_ALERT "Value of vm_count in %s is : %d", __func__, vm_count);
-	}
-
 	if (old_spte == new_spte)
 		return;
 
@@ -475,6 +470,11 @@ static void __handle_changed_spte(struct kvm *kvm, int as_id, gfn_t gfn,
 	if (was_leaf && is_dirty_spte(old_spte) &&
 	    (!is_present || !is_dirty_spte(new_spte) || pfn_changed))
 		kvm_set_pfn_dirty(spte_to_pfn(old_spte));
+
+	if(level == 2 && old_spte){
+		vm_count = (to_shadow_page(spte_to_pfn(old_spte) << PAGE_SHIFT)->vm_count);
+		printk(KERN_ALERT "Value of vm_count in %s is : %d", __func__, vm_count);
+	}
 
 	/*
 	 * Recursively handle child PTs if the change removed a subtree from
@@ -812,7 +812,9 @@ retry:
 		    !is_last_spte(iter.old_spte, iter.level))
 			continue;
 		
+		printk(KERN_ALERT "this is the value of the pfn for which zap is not defined : %llu", spte_to_pfn(*iter.sptep));
 		if (to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count >= 1){
+			printk(KERN_ALERT "this is the value of the pfn for which zap is denied : %llu", spte_to_pfn(*iter.sptep));
 			rcu_read_unlock();
 			return true;
 		}
@@ -1383,17 +1385,18 @@ bool kvm_tdp_mmu_unmap_gfn_range(struct kvm *kvm, struct kvm_gfn_range *range,
 	struct kvm_mmu_page *sp;
 	struct tdp_iter iter;
 
-	for_each_tdp_mmu_root(kvm, root, range->slot->id){
-		tdp_root_for_each_last_level_pte(iter, root, range->start, range->end){
-			//decrement the vm_count before zapping
-			sp = to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT);
-			printk(KERN_ALERT "In %s, this is the value of the VM count : %d", __func__, sp->vm_count );
-			printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d\n", iter.gfn, iter.level, *iter.sptep, spte_to_pfn(*iter.sptep), iter.old_spte, (*iter.sptep & PT_WRITABLE_MASK) > 0, (*iter.sptep & PT64_EPT_READABLE_MASK)  > 0);
-		}
-	}
-	for_each_tdp_mmu_root(kvm, root, range->slot->as_id)
-		flush |= zap_gfn_range(kvm, root, range->start, range->end,
-				       range->may_block, flush, false);
+
+	// for_each_tdp_mmu_root(kvm, root, range->slot->id){
+	// 	tdp_root_for_each_last_level_pte(iter, root, range->start, range->end){
+	// 		//decrement the vm_count before zapping
+	// 		sp = to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT);
+	// 		printk(KERN_ALERT "In %s, this is the value of the VM count : %d", __func__, sp->vm_count );
+	// 		printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d\n", iter.gfn, iter.level, *iter.sptep, spte_to_pfn(*iter.sptep), iter.old_spte, (*iter.sptep & PT_WRITABLE_MASK) > 0, (*iter.sptep & PT64_EPT_READABLE_MASK)  > 0);
+	// 	}
+	// }
+	// for_each_tdp_mmu_root(kvm, root, range->slot->as_id)
+	// 	flush |= zap_gfn_range(kvm, root, range->start, range->end,
+	// 			       range->may_block, flush, false);
 
 	return flush;
 }

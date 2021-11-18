@@ -3986,6 +3986,7 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 
 	gfn_t gfn = gpa >> PAGE_SHIFT;
 	unsigned long mmu_seq;
+	struct kvm_mmu_page *sp;
 	kvm_pfn_t pfn;
 	hva_t hva;
 	int r;
@@ -3998,9 +3999,13 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	r = fast_page_fault(vcpu, gpa, error_code);
 	if (r != RET_PF_INVALID){
 		tdp_root_for_each_last_level_pte(iter, sptep_to_sp(__va(vcpu->arch.mmu->root_hpa)), gfn, gfn+1){
-			printk(KERN_ALERT "the value of vm_count : %u", to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count);
+			sp = to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT);
+			printk(KERN_ALERT "the value of vm_count : %u", sp->vm_count);
 			printk(KERN_ALERT "the value of spte : %llu", *iter.sptep);
 			printk(KERN_ALERT "the value of spte : %u", iter.level);
+			
+			//check vm_count only if the level is greater than 1 
+			//normal pages dont have an attribute page count 
 			if(!is_writable_pte(*iter.sptep) && to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count == 1){
 				new_spte = *iter.sptep | (PT_WRITABLE_MASK | shadow_mmu_writable_mask);
 				mmu_spte_update(iter.sptep, new_spte);
@@ -4014,6 +4019,25 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 		}
 		printk(KERN_ALERT "this is the value of the r : %u , and the value of RET_PF_INVALID: %u", r, RET_PF_INVALID);
 		return r;
+	}
+
+	tdp_root_for_each_last_level_pte(iter, sptep_to_sp(__va(vcpu->arch.mmu->root_hpa)), gfn, gfn+1){
+		if(iter.level == 2) {
+			sp = sptep_to_sp(iter.sptep);
+			printk(KERN_ALERT "the value of spte : %llu", *iter.sptep);
+			printk(KERN_ALERT "the value of spte : %u", iter.level);
+			printk(KERN_ALERT "the value of sp : %llu", sp);
+			
+			printk(KERN_ALERT "the value of vm_count : %u", sp->vm_count);
+			
+			
+			//check vm_count only if the level is greater than 1 
+			//normal pages dont have an attribute page count 
+			if(!is_writable_pte(*iter.sptep) && sp->vm_count == 1){
+				new_spte = *iter.sptep | (PT_WRITABLE_MASK | shadow_mmu_writable_mask);
+				mmu_spte_update(iter.sptep, new_spte);
+			}
+		}
 	}
 
 	r = mmu_topup_memory_caches(vcpu, false);
@@ -4052,7 +4076,7 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 
 out_unlock:
 	if (is_tdp_mmu_fault)
-		read_unlock(&vcpu->kvm->mmu_lock);
+		read_unlock(&vcpu->kvm->mmu_lock);	 
 	else
 		write_unlock(&vcpu->kvm->mmu_lock);
 	kvm_release_pfn_clean(pfn);
