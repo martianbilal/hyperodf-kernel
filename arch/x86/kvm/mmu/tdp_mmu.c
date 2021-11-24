@@ -1038,30 +1038,35 @@ static int tdp_mmu_map_handle_target_level(struct kvm_vcpu *vcpu, int write,
 
 /*
  * Copies the EPT of the parent in the child  
+ * TODO: Add appropriate locks
  */
 
 void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 				struct tdp_iter iter, kvm_pfn_t pfn, int max_level)
 {
+	struct kvm_mmu_page *parent_sp;
 	struct kvm_mmu_page *sp;
 	struct tdp_iter leaf_iter;
 	struct tdp_iter base_iter;
 	struct page* pg; 
 	unsigned long pg_addr;
 	long long unsigned int *child_pt;
+	long long unsigned int *copy_child_pt;
+	int i;
+
 	long long unsigned int new_spte;
 	gfn_t gfn = gpa >> PAGE_SHIFT;
 
 	printk(KERN_ALERT "------- Start Working on COW EPT -------");
 
 	//getting the faulting page 
-	sp = to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT);
-	printk(KERN_ALERT "---- The value of the the vm_count for the page in the %s is : %u", __func__, sp->vm_count );
+	parent_sp = to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT);
+	printk(KERN_ALERT "---- The value of the the vm_count for the page in the %s is : %u", __func__, parent_sp->vm_count );
 	// decrement the vm_count of the page by 1 
-	sp->vm_count = sp->vm_count - 1;
+	parent_sp->vm_count = parent_sp->vm_count - 1;
+	copy_child_pt = parent_sp->spt;
 
 	tdp_mmu_set_spte(vcpu->kvm, &iter, 0);
-
 
 	//setting up a spte in the second last level page table
 	tdp_mmu_for_each_pte(base_iter, vcpu->arch.mmu, gfn, gfn+1){
@@ -1076,33 +1081,11 @@ void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 						true &&
 						0 >= base_iter.level);
 			}
+			break;
 		}
 	}
 
-	// tdp_root_for_each_leaf_pte(leaf_iter, sp, 0, 0x100000){
-	// 	printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", leaf_iter.gfn, leaf_iter.level, *leaf_iter.sptep, leaf_iter.old_spte);
-	// 	pg = kvm_vcpu_gfn_to_page(vcpu, leaf_iter.gfn);
-	// 	pg_addr = (unsigned long)page_address(pg);
-
-		
-	// 	//allocating a new page 
-	// 	//writing the 
-	// }
-
-	
-
-
-
-
-
-	
-	//create a 
-
-
-	//use map function for setting up the rest of the values 
-	// allocate a new page for the EPT 
-	// call handle_target level to add the leaf sptes  
-	
+	kvm_tdp_print_ept(vcpu, gfn, gfn+1);	
 	
 	return;
 }
@@ -1119,8 +1102,11 @@ void kvm_tdp_print_ept(struct kvm_vcpu *vcpu, int start, int end){
 	tdp_mmu_for_each_pte(_iter, mmu, start, end){
 		if (!is_shadow_present_pte(_iter.old_spte))
 			continue;
-
-		printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0);
+		if (_iter.level >= 2) {
+			printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0, sptep_to_sp(_iter.sptep)->vm_count);
+		} else {
+			printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0);
+		}
 		
 	}
 }
@@ -1192,7 +1178,8 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 				handle_changed_spte(parent_vcpu->kvm, kvm_mmu_page_as_id(page), child_iter.gfn, l2_iter.old_spte, *l2_iter.sptep, child_iter.level, true);
 
 				smp_wmb();
-				page->vm_count += 1;
+				//TODO: change the counter type to refcount 
+				page->vm_count += 1; 
 				printk(KERN_ALERT "This is the value of the child_iter spte that is being changed : %llu", new_spte);
 				printk(KERN_ALERT "Refcount value for vm_count ::> %u", page->vm_count);
 				
@@ -1215,47 +1202,6 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", l2_iter.gfn, l2_iter.level, *l2_iter.sptep, l2_iter.old_spte);
 
 	}
-
-
-	// tdp_root_for_each_leaf_pte(leaf_iter, root_page, 0, mem_size){
-	// 	tdp_mmu_for_each_pte(child_iter, child_mmu, leaf_iter.gfn, leaf_iter.gfn+1) {
-	// 		if(child_iter.level == 1) {
-	// 			// getting page addresses from the parent  
-	// 			new_spte = *leaf_iter.sptep & 
-	// 				~(PT_WRITABLE_MASK);
-	// 			tdp_mmu_map_set_spte_atomic(child_vcpu, &child_iter, new_spte);
-
-	// 		} else {
-	// 			if (!is_shadow_present_pte(child_iter.old_spte)) {
-	// 				/*
-	// 				* If SPTE has been frozen by another thread, just
-	// 				* give up and retry, avoiding unnecessary page table
-	// 				* allocation and free.
-	// 				*/
-
-	// 				if (is_removed_spte(child_iter.old_spte))
-	// 					break;
-
-	// 				sp = alloc_tdp_mmu_page(child_vcpu, child_iter.gfn, child_iter.level - 1);
-	// 				child_pt = sp->spt;
-	// 				new_spte = make_nonleaf_spte(child_pt,
-	// 								!shadow_accessed_mask);
-
-	// 				if (tdp_mmu_set_spte_atomic_no_dirty_log(child_vcpu->kvm, &child_iter, new_spte)) {
-	// 					tdp_mmu_link_page(child_vcpu->kvm, sp,
-	// 							true &&
-	// 							0 >= child_iter.level);
-
-	// 					trace_kvm_mmu_get_page(sp, true);
-	// 				} else {
-	// 					tdp_mmu_free_sp(sp);
-	// 					break;
-	// 				}
-
-	// 			}
-	// 		}	
-	// 	}
-	// }	
 
 
 // printing the EPT of the Parent 
@@ -1389,7 +1335,7 @@ bool kvm_tdp_mmu_unmap_gfn_range(struct kvm *kvm, struct kvm_gfn_range *range,
 	// for_each_tdp_mmu_root(kvm, root, range->slot->id){
 	// 	tdp_root_for_each_last_level_pte(iter, root, range->start, range->end){
 	// 		//decrement the vm_count before zapping
-	// 		sp = to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT);
+	// 		sp = to_shadow_page((*iter.sptep) << PAGE_SHIFT);
 	// 		printk(KERN_ALERT "In %s, this is the value of the VM count : %d", __func__, sp->vm_count );
 	// 		printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d\n", iter.gfn, iter.level, *iter.sptep, spte_to_pfn(*iter.sptep), iter.old_spte, (*iter.sptep & PT_WRITABLE_MASK) > 0, (*iter.sptep & PT64_EPT_READABLE_MASK)  > 0);
 	// 	}
