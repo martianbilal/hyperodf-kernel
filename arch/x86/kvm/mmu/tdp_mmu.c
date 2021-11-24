@@ -1103,7 +1103,7 @@ void kvm_tdp_print_ept(struct kvm_vcpu *vcpu, int start, int end){
 		if (!is_shadow_present_pte(_iter.old_spte))
 			continue;
 		if (_iter.level >= 2) {
-			printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0, sptep_to_sp(_iter.sptep)->vm_count);
+			printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0, sptep_to_sp(_iter.sptep)->vm_count);
 		} else {
 			printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0);
 		}
