@@ -1098,12 +1098,12 @@ void kvm_tdp_print_ept(struct kvm_vcpu *vcpu, int start, int end){
 	struct tdp_iter _iter;
 	
 	printk(KERN_ALERT "Printing the EPT for vcpu id : %d", vcpu->pid->numbers[0].nr);
-	printk(KERN_ALERT "GFN ---- LEVEL ---- NEW SPTE ---- PFN ---- OLD SPTE ---- WRITE ---- READ");
+	printk(KERN_ALERT "GFN ---- LEVEL ---- NEW SPTE ---- PFN ---- OLD SPTE ---- WRITE ---- READ ---- vm_count");
 	tdp_mmu_for_each_pte(_iter, mmu, start, end){
 		if (!is_shadow_present_pte(_iter.old_spte))
 			continue;
 		if (_iter.level >= 2) {
-			printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0, sptep_to_sp(_iter.sptep)->vm_count);
+			printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0, to_shadow_page(spte_to_pfn(*_iter.sptep) << PAGE_SHIFT)->vm_count );
 		} else {
 			printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0);
 		}
@@ -1190,30 +1190,6 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 			}
 
 		}
-	}
-
-	printk(KERN_ALERT "===== Printing the second last level page table entries for parent VM =====\n");
-	tdp_root_for_each_last_level_pte(l2_iter, root_page, 0, mem_size){
-		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", l2_iter.gfn, l2_iter.level, *l2_iter.sptep, l2_iter.old_spte);
-
-	}
-	printk(KERN_ALERT "===== Printing the second last level page table entries for Child VM =====\n");
-	tdp_root_for_each_last_level_pte(l2_iter, child_root_page, 0, mem_size){
-		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", l2_iter.gfn, l2_iter.level, *l2_iter.sptep, l2_iter.old_spte);
-
-	}
-
-
-// printing the EPT of the Parent 
-	printk(KERN_ALERT "===== Printing the leaf entries of the parent VM =====\n");
-	tdp_root_for_each_leaf_pte(leaf_iter, sptep_to_sp(__va(parent_mmu->root_hpa)), 0, mem_size){
-		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", leaf_iter.gfn, leaf_iter.level, *leaf_iter.sptep, leaf_iter.old_spte);
-	}
-
-// printing the leaf entries of the EPT of child 
-	printk(KERN_ALERT "===== Printing the leaf entries of the child VM =====\n");
-	tdp_root_for_each_leaf_pte(leaf_iter, sptep_to_sp(__va(child_mmu->root_hpa)), 0, mem_size){
-		printk(KERN_ALERT "%llu --- %d --- %llu -- %llu\n", leaf_iter.gfn, leaf_iter.level, *leaf_iter.sptep, leaf_iter.old_spte);
 	}
 
 	rcu_read_unlock();	

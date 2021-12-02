@@ -4708,7 +4708,7 @@ static long kvm_dev_ioctl(struct file *filp,
 			goto out;
 
 		//create a function in the x86.c --> vmx.c --> tdp_mmu.c
-		// kvm_arch_tdp_mmu_copy(parent_vcpu, vcpu, kvm_userspace_mem.memory_size);
+		kvm_arch_tdp_mmu_copy(parent_vcpu, vcpu, kvm_userspace_mem.memory_size);
 
 		info.vm_fd = vm_fd;
 		info.vcpu_fd = vcpu_fd;
