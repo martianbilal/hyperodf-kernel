@@ -55,14 +55,14 @@ long vfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	int error = -ENOTTY;
 	// printing out the function arguments for the kvm_set_user_memory_region call 
 	if (cmd == 0x4020AE46){
-		printk(KERN_ALERT "***** kvm set user memory region called for vfs ioctl *****\n");
+		// printk(KERN_ALERT "***** kvm set user memory region called for vfs ioctl *****\n");
 	}
 	if (!filp->f_op->unlocked_ioctl)
 		goto out;
 
 	error = filp->f_op->unlocked_ioctl(filp, cmd, arg);
 	if (cmd == 0x4020AE46){
-		printk(KERN_ALERT "REACHED HERE line 53 in vfs_ioctl ----< <<<< <------n");
+		// printk(KERN_ALERT "REACHED HERE line 53 in vfs_ioctl ----< <<<< <------n");
 	}	
 
 	if (error == -ENOIOCTLCMD)

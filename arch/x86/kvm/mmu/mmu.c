@@ -3017,7 +3017,7 @@ static int __direct_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	gfn_t gfn = gpa >> PAGE_SHIFT;
 	gfn_t base_gfn = gfn;
 
-	printk(KERN_ALERT "********** reached in direct map ********* :)) \n");
+	// printk(KERN_ALERT "********** reached in direct map ********* :)) \n");
 
 	level = kvm_mmu_hugepage_adjust(vcpu, gfn, max_level, &pfn,
 					huge_page_disallowed, &req_level);
@@ -4000,9 +4000,9 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	if (r != RET_PF_INVALID){
 		tdp_root_for_each_last_level_pte(iter, sptep_to_sp(__va(vcpu->arch.mmu->root_hpa)), gfn, gfn+1){
 			sp = to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT);
-			printk(KERN_ALERT "the value of vm_count : %u", sp->vm_count);
-			printk(KERN_ALERT "the value of spte : %llu", *iter.sptep);
-			printk(KERN_ALERT "the value of spte : %u", iter.level);
+			// printk(KERN_ALERT "the value of vm_count : %u", sp->vm_count);
+			// printk(KERN_ALERT "the value of spte : %llu", *iter.sptep);
+			// printk(KERN_ALERT "the value of spte : %u", iter.level);
 			
 			//check vm_count only if the level is greater than 1 
 			//normal pages dont have an attribute page count 
@@ -4017,18 +4017,18 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 			}
 				
 		}
-		printk(KERN_ALERT "this is the value of the r : %u , and the value of RET_PF_INVALID: %u", r, RET_PF_INVALID);
+		// printk(KERN_ALERT "this is the value of the r : %u , and the value of RET_PF_INVALID: %u", r, RET_PF_INVALID);
 		return r;
 	}
 
 	tdp_root_for_each_last_level_pte(iter, sptep_to_sp(__va(vcpu->arch.mmu->root_hpa)), gfn, gfn+1){
 		if(iter.level == 2) {
 			sp = sptep_to_sp(iter.sptep);
-			printk(KERN_ALERT "the value of spte : %llu", *iter.sptep);
-			printk(KERN_ALERT "the value of spte : %u", iter.level);
-			printk(KERN_ALERT "the value of sp : %llu", sp);
+			// printk(KERN_ALERT "the value of spte : %llu", *iter.sptep);
+			// printk(KERN_ALERT "the value of spte : %u", iter.level);
+			// printk(KERN_ALERT "the value of sp : %llu", sp);
 			
-			printk(KERN_ALERT "the value of vm_count : %u", sp->vm_count);
+			// printk(KERN_ALERT "the value of vm_count : %u", sp->vm_count);
 			
 			
 			//check vm_count only if the level is greater than 1 
@@ -5330,7 +5330,7 @@ int kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa, u64 error_code,
 {
 	int r, emulation_type = EMULTYPE_PF;
 	bool direct = vcpu->arch.mmu->direct_map;
-	printk (KERN_ALERT "The boolean value of direct_map : -----> ---- %d\n", direct);
+	// printk (KERN_ALERT "The boolean value of direct_map : -----> ---- %d\n", direct);
 	kvm_tdp_print_ept(vcpu, 0, 0x10000);
 	
 	if (WARN_ON(!VALID_PAGE(vcpu->arch.mmu->root_hpa)))

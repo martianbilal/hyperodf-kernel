@@ -812,9 +812,9 @@ retry:
 		    !is_last_spte(iter.old_spte, iter.level))
 			continue;
 		
-		printk(KERN_ALERT "this is the value of the pfn for which zap is not defined : %llu", spte_to_pfn(*iter.sptep));
+		// printk(KERN_ALERT "this is the value of the pfn for which zap is not defined : %llu", spte_to_pfn(*iter.sptep));
 		if (to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count >= 1){
-			printk(KERN_ALERT "this is the value of the pfn for which zap is denied : %llu", spte_to_pfn(*iter.sptep));
+			// printk(KERN_ALERT "this is the value of the pfn for which zap is denied : %llu", spte_to_pfn(*iter.sptep));
 			rcu_read_unlock();
 			return true;
 		}
@@ -855,9 +855,9 @@ bool __kvm_tdp_mmu_zap_gfn_range(struct kvm *kvm, int as_id, gfn_t start,
 		tdp_root_for_each_pte_except_leaves(iter, root, start, end){					
 			//decrement the vm_count before zapping
 			sp = to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT);
-			printk(KERN_ALERT "this is the value of the VM count : %d", sp->vm_count );
+			// printk(KERN_ALERT "this is the value of the VM count : %d", sp->vm_count );
 			sp->vm_count =  sp->vm_count - 1;
-			printk(KERN_ALERT "this is the value of the VM count : %d", sp->vm_count );
+			// printk(KERN_ALERT "this is the value of the VM count : %d", sp->vm_count );
 		}
 	}
 
@@ -1061,7 +1061,7 @@ void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 
 	//getting the faulting page 
 	parent_sp = to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT);
-	printk(KERN_ALERT "---- The value of the the vm_count for the page in the %s is : %u", __func__, parent_sp->vm_count );
+	// printk(KERN_ALERT "---- The value of the the vm_count for the page in the %s is : %u", __func__, parent_sp->vm_count );
 	// decrement the vm_count of the page by 1 
 	parent_sp->vm_count = parent_sp->vm_count - 1;
 	copy_child_pt = parent_sp->spt;
@@ -1094,21 +1094,23 @@ void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 *	A function for dumping out all the information of the EPT
 */
 void kvm_tdp_print_ept(struct kvm_vcpu *vcpu, int start, int end){
-	struct kvm_mmu *mmu = vcpu->arch.mmu;
-	struct tdp_iter _iter;
+	// struct kvm_mmu *mmu = vcpu->arch.mmu;
+	// struct tdp_iter _iter;
 	
-	printk(KERN_ALERT "Printing the EPT for vcpu id : %d", vcpu->pid->numbers[0].nr);
-	printk(KERN_ALERT "GFN ---- LEVEL ---- NEW SPTE ---- PFN ---- OLD SPTE ---- WRITE ---- READ ---- vm_count");
-	tdp_mmu_for_each_pte(_iter, mmu, start, end){
-		if (!is_shadow_present_pte(_iter.old_spte))
-			continue;
-		if (_iter.level >= 2) {
-			printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0, to_shadow_page(spte_to_pfn(*_iter.sptep) << PAGE_SHIFT)->vm_count );
-		} else {
-			printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0);
-		}
+	// printk(KERN_ALERT "Printing the EPT for vcpu id : %d", vcpu->pid->numbers[0].nr);
+	// printk(KERN_ALERT "GFN ---- LEVEL ---- NEW SPTE ---- PFN ---- OLD SPTE ---- WRITE ---- READ ---- vm_count");
+	// tdp_mmu_for_each_pte(_iter, mmu, start, end){
+	// 	if (!is_shadow_present_pte(_iter.old_spte))
+	// 		continue;
+	// 	if (_iter.level >= 2) {
+	// 		printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0, to_shadow_page(spte_to_pfn(*_iter.sptep) << PAGE_SHIFT)->vm_count );
+	// 	} else {
+	// 		printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0);
+	// 	}
 		
-	}
+	// }
+	// commenting out --> cause it is a huge over head for the large VMs
+	return;
 }
 
 void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu, unsigned long mem_size)
@@ -1180,8 +1182,8 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 				smp_wmb();
 				//TODO: change the counter type to refcount 
 				page->vm_count += 1; 
-				printk(KERN_ALERT "This is the value of the child_iter spte that is being changed : %llu", new_spte);
-				printk(KERN_ALERT "Refcount value for vm_count ::> %u", page->vm_count);
+				// printk(KERN_ALERT "This is the value of the child_iter spte that is being changed : %llu", new_spte);
+				// printk(KERN_ALERT "Refcount value for vm_count ::> %u", page->vm_count);
 				
 				//changing the ref count for the shared pages
 				
