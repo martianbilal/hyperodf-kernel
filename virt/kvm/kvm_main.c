@@ -2365,7 +2365,7 @@ out:
  * 2): @write_fault = false && @writable, @writable will tell the caller
  *     whether the mapping is writable.
  */
-static kvm_pfn_t hva_to_pfn(unsigned long addr, bool atomic, bool *async,
+	static kvm_pfn_t hva_to_pfn(unsigned long addr, bool atomic, bool *async,
 			bool write_fault, bool *writable)
 {
 	struct vm_area_struct *vma;
@@ -4650,6 +4650,7 @@ static long kvm_dev_ioctl(struct file *filp,
 		struct kvm_mmu *child_mmu;
 
 		struct fd f; 
+		struct fd parent_f;
 		void __user *argp = (void __user *)arg;
 		struct fork_info __user *user_fork_info = argp;
 		struct fork_info info; 
@@ -4675,9 +4676,11 @@ static long kvm_dev_ioctl(struct file *filp,
 		vm_file = f.file;
 		kvm = vm_file->private_data;
 
-		parent_vm_file = fdget(info.vm_fd).file;
+		parent_f = fdget(info.vm_fd);
+		parent_vm_file = parent_f.file;
 		parent_kvm = parent_vm_file->private_data;
-
+		printk("%llu", (unsigned long long )parent_kvm);
+		printk("%i", parent_kvm->users_count);
 		if (0xfffbd000 > (unsigned int)(-3 * PAGE_SIZE))
 			return -EINVAL;
 

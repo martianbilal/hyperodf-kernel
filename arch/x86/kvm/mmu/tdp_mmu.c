@@ -813,11 +813,12 @@ retry:
 			continue;
 		
 		// printk(KERN_ALERT "this is the value of the pfn for which zap is not defined : %llu", spte_to_pfn(*iter.sptep));
-		if (to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count >= 1){
-			// printk(KERN_ALERT "this is the value of the pfn for which zap is denied : %llu", spte_to_pfn(*iter.sptep));
-			rcu_read_unlock();
-			return true;
-		}
+		//ToDO : find a graceful way for doing this 
+		// if (to_shadow_page(spte_to_pfn(*iter.sptep) << PAGE_SHIFT)->vm_count >= 1){
+		// 	// printk(KERN_ALERT "this is the value of the pfn for which zap is denied : %llu", spte_to_pfn(*iter.sptep));
+		// 	rcu_read_unlock();
+		// 	return true;
+		// }
 
 		if (!shared){
 			printk("In %s, these are the values that are being udpated ====  gfn :  %u === spte : %llu === level : %u", __func__ , iter.gfn , *iter.sptep, iter.level);
@@ -1085,7 +1086,7 @@ void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 		}
 	}
 
-	kvm_tdp_print_ept(vcpu, gfn, gfn+1);	
+	// kvm_tdp_print_ept(vcpu, gfn, gfn+1);	
 	
 	return;
 }
@@ -1295,7 +1296,7 @@ int kvm_tdp_mmu_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	rcu_read_unlock();
 
 	if(gfn == 0) {
-		kvm_tdp_print_ept(vcpu, 0, 0x100000);
+		// kvm_tdp_print_ept(vcpu, 0, 0x100000);
 	}
 
 

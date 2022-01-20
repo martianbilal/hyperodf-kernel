@@ -745,7 +745,7 @@ static bool kvm_vcpu_exit_request(struct kvm_vcpu *vcpu, int *ret)
 		if (kvm_timer_should_notify_user(vcpu) ||
 		    kvm_pmu_should_notify_user(vcpu)) {
 			*ret = -EINTR;
-			run->exit_reason = KVM_EXIT_INTR;
+			run->exit_reason = INTR;
 			return true;
 		}
 	}
