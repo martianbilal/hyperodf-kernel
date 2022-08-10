@@ -78,6 +78,7 @@
 #include <asm/intel_pt.h>
 #include <asm/emulate_prefix.h>
 #include <asm/sgx.h>
+#include <asm/current.h>
 #include <clocksource/hyperv_timer.h>
 
 #define CREATE_TRACE_POINTS
@@ -5926,7 +5927,8 @@ set_identity_unlock:
 	case KVM_GET_IRQCHIP: {
 		/* 0: PIC master, 1: PIC slave, 2: IOAPIC */
 		struct kvm_irqchip *chip;
-
+		
+		printk(KERN_ALERT, "KVM_GET_IRQCHIP CALLED!!\n");
 		chip = memdup_user(argp, sizeof(*chip));
 		if (IS_ERR(chip)) {
 			r = PTR_ERR(chip);
@@ -10653,6 +10655,22 @@ int kvm_arch_vcpu_precreate(struct kvm *kvm, unsigned int id)
 			     "guest TSC will not be reliable\n");
 
 	return 0;
+}
+
+static void kvm_arch_vcpu_dump(struct kvm_vcpu *vcpu, struct kvm *kvm, struct task_struct *c,
+	int pid){
+	printk("=====================[DEBUG]=====================\n");
+	printk("=====================[DEBUG] [%d] [%p]=====================\n", c, task_pid_nr(c));
+	return;
+}
+
+void kvm_vcpu_dump(struct kvm_vcpu *vcpu, struct kvm *kvm){
+	// Dump all the fields of the KVM_VCPU
+	volatile struct task_struct *volatile c = get_current();
+	kvm_arch_vcpu_dump(vcpu, kvm, c, task_pid_nr(c));
+	printk("=====================[DEBUG]=====================\n");
+	printk("=====================[DEBUG] [%d]=====================\n", task_pid_nr(c));
+	return;
 }
 
 int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)

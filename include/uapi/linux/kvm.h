@@ -104,6 +104,11 @@ struct kvm_userspace_memory_region {
 	__u64 userspace_addr; /* start of the userspace allocated memory */
 };
 
+/**/
+struct debug_info {
+	int marker; 
+};
+
 /* for KVM_FORK*/
 struct fork_info { 
 	unsigned long kvm_userspace_mem;
@@ -1597,6 +1602,7 @@ struct kvm_enc_region {
 #define KVM_S390_NORMAL_RESET	_IO(KVMIO,   0xc3)
 #define KVM_S390_CLEAR_RESET	_IO(KVMIO,   0xc4)
 #define KVM_FORK _IOWR(KVMIO, 0xc5, struct fork_info)
+#define KVM_DEBUG _IOR(KVMIO, 0xc6, struct debug_info)
 
 struct kvm_s390_pv_sec_parm {
 	__u64 origin;

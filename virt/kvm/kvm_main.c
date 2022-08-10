@@ -3634,6 +3634,7 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 	mutex_unlock(&kvm->lock);
 	kvm_arch_vcpu_postcreate(vcpu);
 	kvm_create_vcpu_debugfs(vcpu);
+	kvm_vcpu_dump(vcpu, kvm);
 	return r;
 
 unlock_vcpu_destroy:
@@ -4636,8 +4637,15 @@ static long kvm_dev_ioctl(struct file *filp,
 		r = KVM_API_VERSION;
 		break;
 	
+	//
+	case KVM_DEBUG: {
+		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Debug the vm >>>>>>>>>>>>>>>>>>>>>>>\n\n");
+		r = 0;
+		break; 
+	}
+
 	// TODO : Add a for loop here to do this for dealing with all the parent vcpus 
-	 case KVM_FORK: {
+	case KVM_FORK: {
 		struct kvm *kvm; 
 		struct kvm *parent_kvm;
 		struct file *vm_file;
