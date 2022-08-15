@@ -1602,7 +1602,7 @@ struct kvm_enc_region {
 #define KVM_S390_NORMAL_RESET	_IO(KVMIO,   0xc3)
 #define KVM_S390_CLEAR_RESET	_IO(KVMIO,   0xc4)
 #define KVM_FORK _IOWR(KVMIO, 0xc5, struct fork_info)
-#define KVM_DEBUG _IOR(KVMIO, 0xc6, struct debug_info)
+#define KVM_DEBUG _IOWR(KVMIO, 0xc6, struct debug_info)
 
 struct kvm_s390_pv_sec_parm {
 	__u64 origin;

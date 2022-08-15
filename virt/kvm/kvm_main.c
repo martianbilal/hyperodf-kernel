@@ -3549,6 +3549,12 @@ static void kvm_create_vcpu_debugfs(struct kvm_vcpu *vcpu)
 #endif
 }
 
+
+static int kvm_ioctl_debug(struct kvm *kvm, u32 id){
+	struct kvm_vcpu *vcpu; 
+	return 0;
+}
+
 /*
  * Creates some virtual cpus.  Good luck creating more than one.
  */
@@ -3728,6 +3734,12 @@ static long kvm_vcpu_ioctl(struct file *filp,
 	if (mutex_lock_killable(&vcpu->mutex))
 		return -EINTR;
 	switch (ioctl) {
+	case KVM_DEBUG: {
+		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Debug the vm >>>>>>>>>>>>>>>>>>>>>>>\n\n");
+		kvm_vcpu_dump(vcpu, vcpu->kvm);
+		r = 0;
+		break; 
+	}
 	case KVM_RUN: {
 		struct pid *oldpid;
 		r = -EINVAL;
@@ -4582,6 +4594,8 @@ static int kvm_dev_ioctl_create_vm(unsigned long type)
 	struct kvm *kvm;
 	struct file *file;
 
+	printk(KERN_ALERT "[Debug] KVM_DEBUG Number %ld", KVM_DEBUG);
+	printk(KERN_ALERT "[Debug] KVM_CREATE_VM Number %ld", KVM_CREATE_VM);
 	kvm = kvm_create_vm(type);
 	if (IS_ERR(kvm))
 		return PTR_ERR(kvm);
@@ -4638,11 +4652,11 @@ static long kvm_dev_ioctl(struct file *filp,
 		break;
 	
 	//
-	case KVM_DEBUG: {
-		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Debug the vm >>>>>>>>>>>>>>>>>>>>>>>\n\n");
-		r = 0;
-		break; 
-	}
+	// case KVM_DEBUG: {
+	// 	printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Debug the vm >>>>>>>>>>>>>>>>>>>>>>>\n\n");
+	// 	r = 0;
+	// 	break; 
+	// }
 
 	// TODO : Add a for loop here to do this for dealing with all the parent vcpus 
 	case KVM_FORK: {

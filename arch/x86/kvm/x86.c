@@ -159,6 +159,9 @@ EXPORT_SYMBOL_GPL(kvm_default_tsc_scaling_ratio);
 bool __read_mostly kvm_has_bus_lock_exit;
 EXPORT_SYMBOL_GPL(kvm_has_bus_lock_exit);
 
+
+int VM_NUMBER = 0;
+
 /* tsc tolerance in parts per million - default to 1/2 of the NTP threshold */
 static u32 __read_mostly tsc_tolerance_ppm = 250;
 module_param(tsc_tolerance_ppm, uint, S_IRUGO | S_IWUSR);
@@ -10657,10 +10660,11 @@ int kvm_arch_vcpu_precreate(struct kvm *kvm, unsigned int id)
 	return 0;
 }
 
-static void kvm_arch_vcpu_dump(struct kvm_vcpu *vcpu, struct kvm *kvm, struct task_struct *c,
+void kvm_arch_vcpu_dump(struct kvm_vcpu *vcpu, struct kvm *kvm, struct task_struct *c,
 	int pid){
 	printk("=====================[DEBUG]=====================\n");
-	printk("=====================[DEBUG] [%d] [%p]=====================\n", c, task_pid_nr(c));
+	printk("[DEBUG] [%d] [%p] [%p] [%p]=====================\n", task_pid_nr(c), 
+	c, kvm, vcpu);
 	return;
 }
 
@@ -10678,6 +10682,7 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 	struct page *page;
 	int r;
 
+	VM_NUMBER = VM_NUMBER + 1;
 	vcpu->arch.last_vmentry_cpu = -1;
 
 	if (!irqchip_in_kernel(vcpu->kvm) || kvm_vcpu_is_reset_bsp(vcpu))
