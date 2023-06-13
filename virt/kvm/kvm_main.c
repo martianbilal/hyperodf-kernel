@@ -3640,7 +3640,7 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 	mutex_unlock(&kvm->lock);
 	kvm_arch_vcpu_postcreate(vcpu);
 	kvm_create_vcpu_debugfs(vcpu);
-	kvm_vcpu_dump(vcpu, kvm);
+	// kvm_vcpu_dump(vcpu, kvm);
 	return r;
 
 unlock_vcpu_destroy:
@@ -4657,7 +4657,44 @@ static long kvm_dev_ioctl(struct file *filp,
 	// 	r = 0;
 	// 	break; 
 	// }
+	// case : KVM_ODF_EPT
+	case KVM_EPT_ODF: {
+		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<KVM ODF EPT>>>>>>>>>>>>>>>>>>>>>>>\n\n");
+		// print the child and parent vcpu id
+		struct kvm *kvm;
+		struct kvm_vcpu *vcpu;
+		struct kvm_vcpu *parent_vcpu;
+		struct kvm_vcpu *child_vcpu;
+		struct file* parent_vcpu_file;
+		struct file* child_vcpu_file;
 
+
+		void __user *argp = (void __user *)arg;
+		struct odf_info __user *user_odf_info = argp;
+		struct odf_info info; 
+		
+		int child_vcpu_fd;
+		int parent_vcpu_fd;
+
+		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Share the EPT>>>>>>>>>>>>>>>>>>>>>>>\n\n");
+
+		if (copy_from_user(&info, user_odf_info, sizeof(info)))
+			goto out;
+
+		child_vcpu_fd = info.child_vcpu_fd;
+		parent_vcpu_fd = info.parent_vcpu_fd;
+
+		parent_vcpu_file = fdget(parent_vcpu_fd).file;
+		child_vcpu_file = fdget(child_vcpu_fd).file;
+
+		parent_vcpu = parent_vcpu_file->private_data;
+		child_vcpu = child_vcpu_file->private_data;
+
+		kvm_arch_tdp_mmu_copy(parent_vcpu, child_vcpu, info.mem_size);
+		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Done sharing the EPT>>>>>>>>>>>>>>>>>>>>>>>\n\n");
+		r = 0;
+		break; 
+	}
 	// TODO : Add a for loop here to do this for dealing with all the parent vcpus 
 	case KVM_FORK: {
 		struct kvm *kvm; 

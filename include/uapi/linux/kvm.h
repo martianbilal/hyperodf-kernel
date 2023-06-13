@@ -116,6 +116,13 @@ struct fork_info {
 	int vcpu_fd;
 };
 
+/* for KVM_EPT_ODF */
+struct odf_info{
+	int parent_vcpu_fd;
+	int child_vcpu_fd;
+	int mem_size
+};
+
 
 /*
  * The bit 0 ~ bit 15 of kvm_memory_region::flags are visible for userspace,
@@ -1603,6 +1610,7 @@ struct kvm_enc_region {
 #define KVM_S390_CLEAR_RESET	_IO(KVMIO,   0xc4)
 #define KVM_FORK _IOWR(KVMIO, 0xc5, struct fork_info)
 #define KVM_DEBUG _IOWR(KVMIO, 0xc6, struct debug_info)
+#define KVM_EPT_ODF _IOWR(KVMIO, 0xc7, struct odf_info)
 
 struct kvm_s390_pv_sec_parm {
 	__u64 origin;
