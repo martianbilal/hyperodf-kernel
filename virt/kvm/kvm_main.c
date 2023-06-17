@@ -4596,6 +4596,7 @@ static int kvm_dev_ioctl_create_vm(unsigned long type)
 
 	printk(KERN_ALERT "[Debug] KVM_DEBUG Number %ld", KVM_DEBUG);
 	printk(KERN_ALERT "[Debug] KVM_CREATE_VM Number %ld", KVM_CREATE_VM);
+	printk(KERN_ALERT "[Debug] KVM_CREATE_VM Number %ld", KVM_EPT_ODF);
 	kvm = kvm_create_vm(type);
 	if (IS_ERR(kvm))
 		return PTR_ERR(kvm);
@@ -4683,6 +4684,9 @@ static long kvm_dev_ioctl(struct file *filp,
 
 		child_vcpu_fd = info.child_vcpu_fd;
 		parent_vcpu_fd = info.parent_vcpu_fd;
+
+		printk(KERN_ALERT "[%s:%d]child vcpu : %d\n\n", __func__, __LINE__, child_vcpu_fd);
+		printk(KERN_ALERT "[%s:%d]parent vcpu : %d\n\n", __func__, __LINE__, parent_vcpu_fd);
 
 		parent_vcpu_file = fdget(parent_vcpu_fd).file;
 		child_vcpu_file = fdget(child_vcpu_fd).file;

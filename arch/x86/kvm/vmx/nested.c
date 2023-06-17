@@ -806,7 +806,7 @@ static int nested_vmx_check_msr_switch(struct kvm_vcpu *vcpu,
 		return 0;
 
 	if (!kvm_vcpu_is_legal_aligned_gpa(vcpu, addr, 16) ||
-	    kvm_vcpu_is_illegal_gpa(vcpu, (addr + count * sizeof(struct vmx_msr_entry) - 1)))
+	    !kvm_vcpu_is_legal_gpa(vcpu, (addr + count * sizeof(struct vmx_msr_entry) - 1)))
 		return -EINVAL;
 
 	return 0;

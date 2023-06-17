@@ -120,7 +120,7 @@ struct fork_info {
 struct odf_info{
 	int parent_vcpu_fd;
 	int child_vcpu_fd;
-	int mem_size
+	int mem_size;
 };
 
 
