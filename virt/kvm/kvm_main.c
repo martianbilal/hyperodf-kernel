@@ -13,6 +13,7 @@
  *   Yaniv Kamay  <yaniv@qumranet.com>
  */
 
+#include "linux/kern_levels.h"
 #include <kvm/iodev.h>
 
 #include <linux/kvm_host.h>
@@ -4693,6 +4694,8 @@ static long kvm_dev_ioctl(struct file *filp,
 
 		parent_vcpu = parent_vcpu_file->private_data;
 		child_vcpu = child_vcpu_file->private_data;
+
+		printk(KERN_ALERT "calling the kvm_arch_tdp_mmu_copy\n\n");
 
 		kvm_arch_tdp_mmu_copy(parent_vcpu, child_vcpu, info.mem_size);
 		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Done sharing the EPT>>>>>>>>>>>>>>>>>>>>>>>\n\n");

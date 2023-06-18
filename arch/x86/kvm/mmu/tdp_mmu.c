@@ -1114,6 +1114,80 @@ void kvm_tdp_print_ept(struct kvm_vcpu *vcpu, int start, int end){
 	return;
 }
 
+
+#define DEBUG_TDP_MMU
+#ifdef DEBUG_TDP_MMU
+// add the function name and line number to printk
+#define dprintk(fmt, ...) printk(KERN_ALERT "[%s:%d] " fmt, __func__, __LINE__, ##__VA_ARGS__)
+#else
+#define dprintk(fmt, ...) do {} while (0)
+#endif
+
+void kvm_tdp_custom_print_ept(struct kvm_vcpu *vcpu, int start, int end){
+	struct kvm_mmu *mmu = vcpu->arch.mmu;
+	struct tdp_iter _iter;
+	
+	printk(KERN_ALERT "Printing the EPT for vcpu id : %d", vcpu->pid->numbers[0].nr);
+	printk(KERN_ALERT "GFN ---- LEVEL ---- NEW SPTE ---- PFN ---- OLD SPTE ---- WRITE ---- READ ---- vm_count");
+	tdp_mmu_for_each_pte(_iter, mmu, start, end){
+		if (!is_shadow_present_pte(_iter.old_spte))
+			continue;
+		if (_iter.level >= 2) {
+			printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0, to_shadow_page(spte_to_pfn(*_iter.sptep) << PAGE_SHIFT)->vm_count );
+		} else {
+			printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0);
+		}
+		
+	}
+	// commenting out --> cause it is a huge over head for the large VMs
+	return;
+}
+
+
+void print_kvm_mmu(struct kvm_mmu *mmu) {
+	int i = 0;
+	dprintk("root_hpa: %llx\n", mmu->root_hpa);
+	dprintk("root_pgd: %llx\n", mmu->root_pgd);
+	// dprintk("mmu_role: %u\n", (unsigned long long)mmu->mmu_role);
+	dprintk("root_level: %u\n", mmu->root_level);
+	dprintk("shadow_root_level: %u\n", mmu->shadow_root_level);
+	dprintk("ept_ad: %u\n", mmu->ept_ad);
+	dprintk("direct_map: %d\n", mmu->direct_map);
+
+	/* Printing the array of previous roots */
+	i = 0;
+	for(i = 0; i < KVM_MMU_NUM_PREV_ROOTS; i++) {
+		dprintk("prev_root[%d]: %llx\n", i, mmu->prev_roots[i].pgd);
+	}
+
+	dprintk("permissions: ");
+	i = 0;
+	for(i = 0; i < 16; i++) {
+		dprintk("%u ", mmu->permissions[i]);
+	}
+	dprintk("\n");
+
+	dprintk("pkru_mask: %u\n", mmu->pkru_mask);
+
+	/* The following fields are pointers, but we print them as they do not point to functions */
+	dprintk("pae_root: %p\n", mmu->pae_root);
+	dprintk("pml4_root: %p\n", mmu->pml4_root);
+	dprintk("pml5_root: %p\n", mmu->pml5_root);
+
+	/* Other complex types have been skipped for simplicity, you can add print statements for them as needed */
+
+	/* Printing the array of pdptrs */
+	dprintk("pdptrs: ");
+	i = 0;
+	for(i = 0; i < 4; i++) {
+		dprintk("%llx ", mmu->pdptrs[i]);
+	}
+	dprintk("\n");
+}
+
+
+
+
 void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu, unsigned long mem_size)
 {
 	struct tdp_iter child_iter;
@@ -1126,23 +1200,39 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 	struct kvm_mmu_page *child_root_page; 
 	struct kvm_mmu_page *page; 
 
+	dprintk("Entered the kvm_tdp_mmu_copy function");
+
 
 	struct kvm_mmu *parent_mmu = parent_vcpu->arch.mmu;
 	struct kvm_mmu *child_mmu = child_vcpu->arch.mmu;
+
+
 	struct kvm_mmu_page *root_page = sptep_to_sp(__va(parent_mmu->root_hpa));; 
 
 
 	rcu_read_lock();
 
 	
-
+	dprintk("Acquired RCU Read Lock");
 	kvm_mmu_load(child_vcpu);
+	dprintk("Loaded the child_vcpu mmu");
 
 	child_root_page = sptep_to_sp(__va(child_mmu->root_hpa)); 
+	dprintk("child root page acquired| gfn = %llx", child_root_page->gfn);
+
+
 
 	//sharing the last level EPT pages between the parent and child
 	tdp_root_for_each_last_level_pte(l2_iter, root_page, 0, mem_size){
+		// log the iteration of the outer loop 
+		// along with the iter info
+		dprintk("l2_iter.gfn = %llx | l2_iter.level = %d | l2_iter.sptep = %llx | l2_iter.old_spte = %llx", l2_iter.gfn, l2_iter.level, *l2_iter.sptep, l2_iter.old_spte);
+
 		tdp_mmu_for_each_pte(child_iter, child_mmu, l2_iter.gfn, l2_iter.gfn+1) {
+			// log the iteration of the inner loop 
+			// along with the iter info
+			dprintk("child_iter.gfn = %llx | child_iter.level = %d | child_iter.sptep = %llx | child_iter.old_spte = %llx", child_iter.gfn, child_iter.level, *child_iter.sptep, child_iter.old_spte);
+
 			if(child_iter.level > 2){
 				if (!is_shadow_present_pte(child_iter.old_spte)) {
 					/*
@@ -1150,23 +1240,35 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 					* give up and retry, avoiding unnecessary page table
 					* allocation and free.
 					*/
-
+					
+					dprintk("child_iter.old_spte is not present");
 					if (is_removed_spte(child_iter.old_spte))
 						break;
 
+					dprintk("child_iter.old_spte is not removed");
 					sp = alloc_tdp_mmu_page(child_vcpu, child_iter.gfn, child_iter.level - 1);
+					dprintk("allocate the tdp_mmu_page for gfn at level - 1");
+
 					child_pt = sp->spt;
+					dprintk("got the child pt from the created page | *child_pt = %llx", *child_pt);
+
 					new_spte = make_nonleaf_spte(child_pt,
 									!shadow_accessed_mask);
-
+					dprintk("created the new spte | new_spte = %llx", new_spte);
+					
 					if (tdp_mmu_set_spte_atomic_no_dirty_log(child_vcpu->kvm, &child_iter, new_spte)) {
+						dprintk("set the spte atomic no dirty log");
+
 						tdp_mmu_link_page(child_vcpu->kvm, sp,
 								true &&
 								0 >= child_iter.level);
+						dprintk("linked the page to the child_vcpu->kvm");
 
 						trace_kvm_mmu_get_page(sp, true);
 					} else {
+						dprintk("set the spte atomic no dirty log failed");
 						tdp_mmu_free_sp(sp);
+						dprintk("free the sp");
 						break;
 					}
 				}	
@@ -1174,13 +1276,21 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 				//setting the new spte 
 				// new_spte = *l2_iter.sptep &
 				// ~(PT_WRITABLE_MASK | shadow_mmu_writable_mask);
+				dprintk("child_iter.level == 2");
 				spte_write_protect(l2_iter.sptep, true);
+				dprintk("write protected the spte at level 2");
+
 				tdp_mmu_map_set_spte_atomic(child_vcpu, &child_iter, *l2_iter.sptep);
+				dprintk("update the spte");
 				// tdp_mmu_map_set_spte_atomic(parent_vcpu, &l2_iter, *l2_iter.sptep);
 				page = to_shadow_page(spte_to_pfn(*l2_iter.sptep) << PAGE_SHIFT);
+				
+				dprintk("get the shadow page(mmu) from the spte");
 				handle_changed_spte(parent_vcpu->kvm, kvm_mmu_page_as_id(page), child_iter.gfn, l2_iter.old_spte, *l2_iter.sptep, child_iter.level, true);
+				dprintk("handle the changed spte");
 
 				smp_wmb();
+				dprintk("smp_wmb");
 				//TODO: change the counter type to refcount 
 				page->vm_count += 1; 
 				// printk(KERN_ALERT "This is the value of the child_iter spte that is being changed : %llu", new_spte);
@@ -1195,7 +1305,8 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 		}
 	}
 
-	rcu_read_unlock();	
+	rcu_read_unlock();
+	dprintk("rcu read unlock");	
 
 }
 
