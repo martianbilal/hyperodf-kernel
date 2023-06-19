@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 
+#include "linux/kvm_host.h"
 #include "mmu.h"
 #include "mmu_internal.h"
 #include "mmutrace.h"
@@ -1115,7 +1116,8 @@ void kvm_tdp_print_ept(struct kvm_vcpu *vcpu, int start, int end){
 }
 
 
-#define DEBUG_TDP_MMU
+// uncomment this to debug tdb sharing
+// #define DEBUG_TDP_MMU
 #ifdef DEBUG_TDP_MMU
 // add the function name and line number to printk
 #define dprintk(fmt, ...) printk(KERN_ALERT "[%s:%d] " fmt, __func__, __LINE__, ##__VA_ARGS__)
@@ -1144,8 +1146,9 @@ void kvm_tdp_custom_print_ept(struct kvm_vcpu *vcpu, int start, int end){
 }
 
 
-void print_kvm_mmu(struct kvm_mmu *mmu) {
+void kvm_tdp_print_mmu(struct kvm_mmu *mmu) {
 	int i = 0;
+	dprintk("=======================Printing the MMU structure==============================\n");
 	dprintk("root_hpa: %llx\n", mmu->root_hpa);
 	dprintk("root_pgd: %llx\n", mmu->root_pgd);
 	// dprintk("mmu_role: %u\n", (unsigned long long)mmu->mmu_role);
@@ -1205,8 +1208,11 @@ void kvm_tdp_mmu_copy(struct kvm_vcpu *parent_vcpu, struct kvm_vcpu *child_vcpu,
 
 	struct kvm_mmu *parent_mmu = parent_vcpu->arch.mmu;
 	struct kvm_mmu *child_mmu = child_vcpu->arch.mmu;
+	dprintk("Acquired the parent and child mmu");
+	kvm_tdp_print_mmu(child_mmu);
+	kvm_tdp_print_mmu(parent_mmu);
 
-
+	// need to verify that the root hpa 
 	struct kvm_mmu_page *root_page = sptep_to_sp(__va(parent_mmu->root_hpa));; 
 
 
