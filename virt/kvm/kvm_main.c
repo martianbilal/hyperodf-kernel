@@ -4596,6 +4596,7 @@ static int kvm_dev_ioctl_create_vm(unsigned long type)
 	struct file *file;
 
 	printk(KERN_ALERT "[Debug] KVM_DEBUG Number %ld", KVM_DEBUG);
+	printk(KERN_ALERT "[Debug] KVM_EPT_ODF Number %ld", KVM_EPT_ODF);
 	printk(KERN_ALERT "[Debug] KVM_CREATE_VM Number %ld", KVM_CREATE_VM);
 	printk(KERN_ALERT "[Debug] KVM_CREATE_VM Number %ld", KVM_EPT_ODF);
 	kvm = kvm_create_vm(type);
