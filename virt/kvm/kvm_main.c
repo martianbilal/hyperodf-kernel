@@ -4645,7 +4645,7 @@ static long kvm_dev_ioctl(struct file *filp,
 			  unsigned int ioctl, unsigned long arg)
 {
 	long r = -EINVAL;
-	printk (KERN_ALERT "kvm_fork code : ::: > %lu\n", KVM_FORK);
+	// printk (KERN_ALERT "kvm_fork code : ::: > %lu\n", KVM_FORK);
 	switch (ioctl) {
 	case KVM_GET_API_VERSION:
 		if (arg)
