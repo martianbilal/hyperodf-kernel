@@ -4595,10 +4595,9 @@ static int kvm_dev_ioctl_create_vm(unsigned long type)
 	struct kvm *kvm;
 	struct file *file;
 
-	printk(KERN_ALERT "[Debug] KVM_DEBUG Number %ld", KVM_DEBUG);
-	printk(KERN_ALERT "[Debug] KVM_EPT_ODF Number %ld", KVM_EPT_ODF);
-	printk(KERN_ALERT "[Debug] KVM_CREATE_VM Number %ld", KVM_CREATE_VM);
-	printk(KERN_ALERT "[Debug] KVM_CREATE_VM Number %ld", KVM_EPT_ODF);
+	// printk(KERN_ALERT "[Debug] KVM_DEBUG Number %ld", KVM_DEBUG);
+	// printk(KERN_ALERT "[Debug] KVM_EPT_ODF Number %ld", KVM_EPT_ODF);
+	// printk(KERN_ALERT "[Debug] KVM_CREATE_VM Number %ld", KVM_CREATE_VM);
 	kvm = kvm_create_vm(type);
 	if (IS_ERR(kvm))
 		return PTR_ERR(kvm);
@@ -4646,7 +4645,7 @@ static long kvm_dev_ioctl(struct file *filp,
 			  unsigned int ioctl, unsigned long arg)
 {
 	long r = -EINVAL;
-	// printk (KERN_ALERT "kvm_fork code : ::: > %lu\n", KVM_FORK);
+	printk (KERN_ALERT "kvm_fork code : ::: > %lu\n", KVM_FORK);
 	switch (ioctl) {
 	case KVM_GET_API_VERSION:
 		if (arg)
@@ -4679,7 +4678,7 @@ static long kvm_dev_ioctl(struct file *filp,
 		int child_vcpu_fd;
 		int parent_vcpu_fd;
 
-		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Share the EPT>>>>>>>>>>>>>>>>>>>>>>>\n\n");
+		// printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Share the EPT>>>>>>>>>>>>>>>>>>>>>>>\n\n");
 
 		if (copy_from_user(&info, user_odf_info, sizeof(info)))
 			goto out;
@@ -4687,8 +4686,8 @@ static long kvm_dev_ioctl(struct file *filp,
 		child_vcpu_fd = info.child_vcpu_fd;
 		parent_vcpu_fd = info.parent_vcpu_fd;
 
-		printk(KERN_ALERT "[%s:%d]child vcpu : %d\n\n", __func__, __LINE__, child_vcpu_fd);
-		printk(KERN_ALERT "[%s:%d]parent vcpu : %d\n\n", __func__, __LINE__, parent_vcpu_fd);
+		// printk(KERN_ALERT "[%s:%d]child vcpu : %d\n\n", __func__, __LINE__, child_vcpu_fd);
+		// printk(KERN_ALERT "[%s:%d]parent vcpu : %d\n\n", __func__, __LINE__, parent_vcpu_fd);
 
 		parent_vcpu_file = fdget(parent_vcpu_fd).file;
 		child_vcpu_file = fdget(child_vcpu_fd).file;
@@ -4696,10 +4695,10 @@ static long kvm_dev_ioctl(struct file *filp,
 		parent_vcpu = parent_vcpu_file->private_data;
 		child_vcpu = child_vcpu_file->private_data;
 
-		printk(KERN_ALERT "calling the kvm_arch_tdp_mmu_copy\n\n");
+		// printk(KERN_ALERT "calling the kvm_arch_tdp_mmu_copy\n\n");
 
 		kvm_arch_tdp_mmu_copy(parent_vcpu, child_vcpu, info.mem_size);
-		printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Done sharing the EPT>>>>>>>>>>>>>>>>>>>>>>>\n\n");
+		// printk(KERN_ALERT "<<<<<<<<<<<<<<<<<<<<<<<<<Done sharing the EPT>>>>>>>>>>>>>>>>>>>>>>>\n\n");
 		r = 0;
 		break; 
 	}

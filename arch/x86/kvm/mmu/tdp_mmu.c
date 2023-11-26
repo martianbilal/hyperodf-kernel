@@ -474,7 +474,7 @@ static void __handle_changed_spte(struct kvm *kvm, int as_id, gfn_t gfn,
 
 	if(level == 2 && old_spte){
 		vm_count = (to_shadow_page(spte_to_pfn(old_spte) << PAGE_SHIFT)->vm_count);
-		printk(KERN_ALERT "Value of vm_count in %s is : %d", __func__, vm_count);
+		// printk(KERN_ALERT "Value of vm_count in %s is : %d", __func__, vm_count);
 	}
 
 	/*
@@ -482,7 +482,7 @@ static void __handle_changed_spte(struct kvm *kvm, int as_id, gfn_t gfn,
 	 * the paging structure.
 	 */
 	if (was_present && !was_leaf && (pfn_changed || !is_present) && !vm_count) {
-		printk("In %s, these are the values that are being udpated ====  old_spte :  %llu === spte : %llu === level : %u === vm_count %d", __func__ , old_spte , new_spte, level, vm_count);
+		// printk("In %s, these are the values that are being udpated ====  old_spte :  %llu === spte : %llu === level : %u === vm_count %d", __func__ , old_spte , new_spte, level, vm_count);
 		handle_removed_tdp_mmu_page(kvm,
 				spte_to_child_pt(old_spte, level), shared);
 		
@@ -822,7 +822,7 @@ retry:
 		// }
 
 		if (!shared){
-			printk("In %s, these are the values that are being udpated ====  gfn :  %u === spte : %llu === level : %u", __func__ , iter.gfn , *iter.sptep, iter.level);
+			// printk("In %s, these are the values that are being udpated ====  gfn :  %u === spte : %llu === level : %u", __func__ , iter.gfn , *iter.sptep, iter.level);
 			tdp_mmu_set_spte(kvm, &iter, 0);
 			flush = true;
 		} else if (!tdp_mmu_zap_spte_atomic(kvm, &iter)) {
