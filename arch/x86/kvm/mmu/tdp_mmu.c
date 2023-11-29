@@ -1087,7 +1087,7 @@ void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 		}
 	}
 
-	// kvm_tdp_print_ept(vcpu, gfn, gfn+1);	
+	kvm_tdp_print_ept(vcpu, gfn, gfn+1);	
 	
 	return;
 }
@@ -1096,28 +1096,28 @@ void kvm_tdp_mmu_cow_ept(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 *	A function for dumping out all the information of the EPT
 */
 void kvm_tdp_print_ept(struct kvm_vcpu *vcpu, int start, int end){
-	// struct kvm_mmu *mmu = vcpu->arch.mmu;
-	// struct tdp_iter _iter;
+	struct kvm_mmu *mmu = vcpu->arch.mmu;
+	struct tdp_iter _iter;
 	
-	// printk(KERN_ALERT "Printing the EPT for vcpu id : %d", vcpu->pid->numbers[0].nr);
-	// printk(KERN_ALERT "GFN ---- LEVEL ---- NEW SPTE ---- PFN ---- OLD SPTE ---- WRITE ---- READ ---- vm_count");
-	// tdp_mmu_for_each_pte(_iter, mmu, start, end){
-	// 	if (!is_shadow_present_pte(_iter.old_spte))
-	// 		continue;
-	// 	if (_iter.level >= 2) {
-	// 		printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0, to_shadow_page(spte_to_pfn(*_iter.sptep) << PAGE_SHIFT)->vm_count );
-	// 	} else {
-	// 		printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0);
-	// 	}
+	printk(KERN_ALERT "Printing the EPT for vcpu id : %d", vcpu->pid->numbers[0].nr);
+	printk(KERN_ALERT "GFN ---- LEVEL ---- NEW SPTE ---- PFN ---- OLD SPTE ---- WRITE ---- READ ---- vm_count");
+	tdp_mmu_for_each_pte(_iter, mmu, start, end){
+		if (!is_shadow_present_pte(_iter.old_spte))
+			continue;
+		if (_iter.level >= 2) {
+			printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0, to_shadow_page(spte_to_pfn(*_iter.sptep) << PAGE_SHIFT)->vm_count );
+		} else {
+			printk(KERN_ALERT "%llu --- %d --- %llu --- %llu --- %llu --- %d --- %d\n", _iter.gfn, _iter.level, *_iter.sptep, spte_to_pfn(*_iter.sptep), _iter.old_spte, (*_iter.sptep & PT_WRITABLE_MASK) > 0, (*_iter.sptep & PT64_EPT_READABLE_MASK)  > 0);
+		}
 		
-	// }
+	}
 	// commenting out --> cause it is a huge over head for the large VMs
 	return;
 }
 
 
 // uncomment this to debug tdb sharing
-// #define DEBUG_TDP_MMU
+#define DEBUG_TDP_MMU
 #ifdef DEBUG_TDP_MMU
 // add the function name and line number to printk
 #define dprintk(fmt, ...) printk(KERN_ALERT "[%s:%d] " fmt, __func__, __LINE__, ##__VA_ARGS__)
