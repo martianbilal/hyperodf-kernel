@@ -1413,7 +1413,7 @@ int kvm_tdp_mmu_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	rcu_read_unlock();
 
 	if(gfn == 0) {
-		// kvm_tdp_print_ept(vcpu, 0, 0x100000);
+		kvm_tdp_print_ept(vcpu, 0, 0x100000);
 	}
 
 
